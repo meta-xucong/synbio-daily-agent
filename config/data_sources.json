@@ -1,0 +1,19 @@
+{
+  "international_sources": [
+    {"name": "SynBioBeta", "url": "https://synbiobeta.com", "priority": "high"},
+    {"name": "GEN", "url": "https://genengnews.com", "priority": "high"},
+    {"name": "Labiotech", "url": "https://labiotech.eu", "priority": "medium"},
+    {"name": "CRISPR Medicine News", "url": "https://crisprmedicinenews.com", "priority": "medium"},
+    {"name": "FierceBiotech", "url": "https://fiercebiotech.com", "priority": "high"},
+    {"name": "iGEM", "url": "https://competition.igem.org", "priority": "low"}
+  ],
+  "domestic_sources": [
+    {"name": "深波synbio", "type": "wechat", "priority": "high"},
+    {"name": "合成生物学网", "url": "https://synbio-he.com", "priority": "high"},
+    {"name": "动脉网", "url": "https://vbdata.cn", "priority": "high"},
+    {"name": "医药魔方", "url": "https://bydrug.pharmcube.com", "priority": "medium"},
+    {"name": "生物谷", "url": "https://bioon.com", "priority": "medium"},
+    {"name": "投资界", "url": "https://pedaily.cn", "priority": "high"},
+    {"name": "36氪", "url": "https://36kr.com", "priority": "high"}
+  ]
+}
