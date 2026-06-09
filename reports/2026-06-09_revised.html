@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>合成生物行业日报 - 2026-06-09</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            background: #f5f7fa;
+            color: #333;
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .container { max-width: 800px; margin: 0 auto; padding: 0 16px; }
+        
+        .header {
+            background: linear-gradient(135deg, #1a5276 0%, #2874a6 100%);
+            color: white;
+            padding: 40px 0 30px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .header::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            right: -20%;
+            width: 400px;
+            height: 400px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 50%;
+        }
+        .header h1 { font-size: 24px; font-weight: 600; margin-bottom: 8px; letter-spacing: 1px; }
+        .header .subtitle { font-size: 14px; opacity: 0.85; }
+        .header .meta { font-size: 12px; opacity: 0.7; margin-top: 12px; }
+        
+        .summary-section {
+            background: white;
+            margin: -20px 16px 20px;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            position: relative;
+            z-index: 2;
+        }
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1a5276;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .summary-list { list-style: none; }
+        .summary-list li {
+            padding: 12px 0;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 14px;
+            display: flex;
+            gap: 10px;
+        }
+        .summary-list li:last-child { border-bottom: none; }
+        .summary-list .num {
+            min-width: 24px;
+            height: 24px;
+            background: #1a5276;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+        .summary-list .text { flex: 1; }
+        .summary-list strong { color: #1a5276; }
+        
+        .content-section {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+        }
+        .content-section .section-title { margin-bottom: 20px; }
+        
+        .card {
+            border: 1px solid #eef2f7;
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 12px;
+            transition: all 0.2s;
+            background: #fafbfc;
+        }
+        .card:hover { border-color: #2874a6; box-shadow: 0 2px 8px rgba(40,116,166,0.1); }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 10px;
+            gap: 10px;
+        }
+        .card-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #222;
+            line-height: 1.5;
+            flex: 1;
+        }
+        .card-tag {
+            font-size: 11px;
+            padding: 3px 10px;
+            border-radius: 20px;
+            background: #e8f4f8;
+            color: #1a5276;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .card-meta {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 10px;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .card-meta span { display: flex; align-items: center; gap: 4px; }
+        .card-summary {
+            font-size: 14px;
+            color: #555;
+            line-height: 1.7;
+            margin-bottom: 12px;
+        }
+        .card-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 13px;
+            color: #2874a6;
+            text-decoration: none;
+            font-weight: 500;
+            padding: 6px 14px;
+            border: 1px solid #2874a6;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+        .card-link:hover {
+            background: #2874a6;
+            color: white;
+        }
+        .card-link::after { content: '→'; margin-left: 2px; }
+        
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            margin-top: 10px;
+        }
+        .data-table th {
+            background: #1a5276;
+            color: white;
+            padding: 10px 8px;
+            text-align: left;
+            font-weight: 500;
+        }
+        .data-table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #f0f0f0;
+            vertical-align: top;
+        }
+        .data-table tr:nth-child(even) { background: #fafbfc; }
+        .data-table tr:hover { background: #f0f7ff; }
+        .data-table a {
+            color: #2874a6;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .data-table a:hover { text-decoration: underline; }
+        
+        .analysis-block {
+            background: #f8fafc;
+            border-left: 3px solid #1a5276;
+            padding: 16px;
+            margin-bottom: 16px;
+            border-radius: 0 8px 8px 0;
+        }
+        .analysis-block h4 {
+            font-size: 15px;
+            color: #1a5276;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+        .analysis-block p {
+            font-size: 14px;
+            color: #555;
+            line-height: 1.8;
+            margin-bottom: 8px;
+        }
+        .analysis-block ul {
+            margin-left: 18px;
+            font-size: 14px;
+            color: #555;
+            line-height: 1.8;
+        }
+        .analysis-block li { margin-bottom: 6px; }
+        
+        .risk-box {
+            background: #fff8e6;
+            border: 1px solid #ffd699;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 16px;
+        }
+        .risk-box h4 { color: #b35900; margin-bottom: 10px; font-size: 15px; }
+        .risk-box p, .risk-box li { color: #7a4d00; }
+        
+        .footer {
+            text-align: center;
+            padding: 30px 16px;
+            font-size: 12px;
+            color: #999;
+        }
+        .footer a { color: #2874a6; text-decoration: none; }
+        
+        @media (max-width: 600px) {
+            .header h1 { font-size: 20px; }
+            .summary-section { margin: -20px 8px 16px; padding: 16px; }
+            .content-section { padding: 16px; }
+            .card-header { flex-direction: column; }
+            .card-tag { align-self: flex-start; }
+            .data-table { font-size: 12px; }
+            .data-table th, .data-table td { padding: 8px 6px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <div class="container">
+        <h1>合成生物行业日报</h1>
+        <div class="subtitle">SYNTHETIC BIOLOGY INDUSTRY DAILY</div>
+        <div class="meta">2026年6月9日 | 星期二 | 生成时间 20:00 (UTC+8)</div>
+    </div>
+</div>
+
+<div class="container">
+    <!-- 执行摘要 -->
+    <div class="summary-section">
+        <div class="section-title">📌 执行摘要</div>
+        <ul class="summary-list">
+            <li><span class="num">1</span><span class="text"><strong>亚洲首个合成细胞10年技术路线图发布</strong>中国科学院深圳先进技术研究院刘陈立研究员领衔，来自中国、日本、韩国、新加坡、马来西亚、泰国等六国的科学家联合在《自然·生物技术》发表文章，发布亚洲首个合成细胞10年技术路线图，聚焦人工合成单细胞生命，规划未来10年攻关方向，推动合成细胞研究从模块化探索迈向系统化整合。（2026-06-06）</span></li>
+            <li><span class="num">2</span><span class="text"><strong>北京征集2026年度合成生物制造领域储备课题</strong>北京市科学技术委员会、中关村科技园区管理委员会发布征集通知，面向合成生物制造关键技术及成果转化重大需求，关键技术课题拟支持科技经费原则上不超过500万元，共性技术平台不超过2000万元，申报受理截止日期为2026年6月22日17:00。（2026-06-01）</span></li>
+            <li><span class="num">3</span><span class="text"><strong>清华系AI+合成生物制造企业绿色康成完成pre-A轮融资</strong>绿色康成宣布完成数千万元pre-A轮融资，由北京市绿色能源和低碳产业投资基金、未来星科创投、昌建发投资联合投资，公司源自清华大学核心技术成果转化，致力于通过合成生物学技术实现关键化学品绿色自主生产。（2026-06-08）</span></li>
+            <li><span class="num">4</span><span class="text"><strong>广州首只生物制造产业投资基金落地</strong>广州白云蓝湾生物制造产业投资基金在中基协完成备案，是广州市首只以生物制造命名的产业投资基金，由白云投资集团下属白云产发公司牵头，聚焦生物制造产业链上下游企业。（2026-06-05）</span></li>
+            <li><span class="num">5</span><span class="text"><strong>2026年合成生物学前沿交叉会议在深圳光明科学城举行</strong>会议聚焦合成生物学关键前沿与交叉创新方向，汇聚来自22所高校、17家科研院的300余位专家学者，围绕生命功能跨层次涌现、颠覆性技术与AI、生命健康以及可持续发展四大前沿交叉方向展开研讨。（2026-06-05）</span></li>
+            <li><span class="num">6</span><span class="text"><strong>SEED 2026合成生物学顶级技术会议即将召开</strong>由AIChE's Society for Biological Engineering (SBE)主办的SEED 2026会议将于6月15-18日在美国丹佛举行，主题涵盖生物设计自动化、合成基因组与细胞、活体药物、微生物组工程、AI与机器学习在合成生物学中的应用等前沿方向。（2026-06-15）</span></li>
+            <li><span class="num">7</span><span class="text"><strong>EuropaBio生物制造政策峰会2026即将召开</strong>聚焦立法如何为欧洲生物制造战略带来影响，展示2026年EuropaBio WIfoR研究更新。（2026-07-01）</span></li>
+        </ul>
+    </div>
+
+    <!-- 行业热点新闻 -->
+    <div class="content-section"><div class="section-title">📰 行业热点新闻</div><p style="color:#888">本周期暂无相关新信息收录</p></div>
+
+    <!-- 最新研究成果 -->
+    <div class="content-section">
+        <div class="section-title">🔬 最新研究成果</div>
+        <p style="color:#888;font-size:14px;">本周期暂无相关新信息收录</p>
+        <p style="color:#888;font-size:13px;margin-top:8px;">经全面检索Nature、Science、Cell等顶刊及预印本平台，2026年6月1-9日期间合成生物学领域暂无重大突破性研究论文发表。</p>
+    </div>
+
+    <!-- 融资与投资动态 -->
+    <div class="content-section">
+        <div class="section-title">💰 融资与投资动态</div>
+        
+            <div class="analysis-block" style="margin-top:16px;">
+                <h4>💡 行业融资趋势</h4>
+                <p>本周期（近7天）检索到1起新的合成生物学领域融资事件——绿色康成pre-A轮。近期国内合成生物企业融资活跃度有所回升，AI+合成生物成为资本关注热点，政府产业基金参与度提升。</p>
+            </div>
+    </div>
+
+    <!-- 政策与监管 -->
+    <div class="content-section">
+        <div class="section-title">🏛️ 政策与监管</div>
+        <h4 style="margin-bottom:12px;color:#1a5276;">国内政策</h4>
+        
+            <div class="analysis-block" style="margin-top:16px;">
+                <h4>📋 政策解读</h4>
+                <p>这是北京市落实《北京市加快合成生物制造产业创新发展行动计划（2024-2026年）》的重要举措，标志着北京从"政策引导"向"项目落地"加速推进。资助方向精准覆盖合成生物制造的核心技术瓶颈——底盘细胞编辑、代谢工程、酶智能设计、智能化发酵平台等，与深圳、上海形成差异化竞争格局。申报窗口仅剩13天，相关企业需抓紧准备。</p>
+            </div>
+        <h4 style="margin:20px 0 12px;color:#1a5276;">国际监管动态</h4>
+        <p style="color:#888;font-size:14px;">本周期暂无相关新信息收录</p>
+    </div>
+
+    <!-- 行业活动预告 -->
+    <div class="content-section">
+        <div class="section-title">📅 行业活动预告</div>
+        
+            <div class="analysis-block" style="margin-top:16px;">
+                <h4>🔭 活动前瞻</h4>
+                <p>6月中下旬将迎来合成生物学国际会议密集期。SEED 2026作为AIChE主办的顶级技术会议，将汇聚全球学术界和产业界领袖，重点关注AI驱动的生物设计自动化和合成细胞工程。同期德国LIT研讨会聚焦合成免疫学临床转化，两大会议相隔仅一周，形成"技术-临床"双轮驱动格局。建议关注会议期间可能发布的重要技术突破和产业合作消息。</p>
+            </div>
+    </div>
+
+    <!-- AI深度分析 -->
+    <div class="content-section">
+        <div class="section-title">🤖 AI 深度分析</div>
+        
+        <div class="analysis-block">
+            <h4>合成细胞研究进入系统化整合阶段</h4>
+            <p>亚洲首个合成细胞10年技术路线图的发布标志着合成生物学从模块化探索迈向系统化整合。该路线图由六国科学家联合制定，聚焦"人工合成单细胞生命"这一科学前沿，系统梳理了构建合成细胞面临的四大核心挑战，并提出分阶段目标。这一里程碑事件将推动定量合成生物学、人工智能与生物制造等领域的深度融合，为合成生物学与未来生物技术的发展开辟全新路径。预计未来1-2年，亚洲地区将在合成细胞研究领域形成更紧密的国际合作网络。（置信度：高）</p>
+        </div>
+        <div class="analysis-block">
+            <h4>政府产业基金与科技项目双轮驱动加速</h4>
+            <p>北京征集2026年度合成生物制造领域储备课题（最高2000万元资助）与广州首只生物制造产业投资基金落地、绿色康成获北京市绿色能源基金投资形成呼应，显示政府正从"政策引导"向"资本引导+项目落地"双轮驱动延伸。北京课题征集明确支持非模式生物底盘细胞编辑、酶智能进化、智能化发酵平台等核心技术，精准对标产业瓶颈。预计未来半年内，将有更多省市跟进设立类似产业基金和科技专项，形成"北京-深圳-上海-广州"四极竞争格局。（置信度：高）</p>
+        </div>
+        <div class="analysis-block">
+            <h4>AI与合成生物融合进入工程化阶段</h4>
+            <p>SEED 2026会议将"生物设计自动化"和"基础ML模型 for Biology"列为核心议题，反映AI在合成生物学中的应用正从概念验证进入工程化部署阶段。绿色康成等清华系企业获得政府基金支持，其"AI+合成生物"技术路线得到资本认可。预计2026年下半年，AI驱动的酶设计、代谢网络优化、自动化实验闭环（DBTL）将成为融资和科研的热点方向。（置信度：中）</p>
+        </div>
+        <div class="analysis-block">
+            <h4>🏆 竞争格局变化</h4>
+            <p><strong>第一梯队（平台型巨头）</strong>：国际方面，Anthropic等AI巨头正通过建设湿实验室深度介入生物药物发现，AI+生物的跨界竞争加剧。国内方面，深圳依托中国科学院深圳先进技术研究院等机构，在合成细胞、定量合成生物学等前沿领域持续保持领先；北京通过科技项目征集和基金投资，加速布局合成生物制造产业化。</p><p><strong>第二梯队（产业化先锋）</strong>：清华系技术成果转化企业（如绿色康成）获得政府基金持续加码，显示"高校研发+产业基金+地方政府"模式正在跑通。瑞德林、微元合成等头部企业此前已完成大额融资，行业马太效应显现。</p><p><strong>第三梯队（细分赛道新锐）</strong>：森瑞斯、桦冠生物等完成早期融资的企业正加速产能建设和管线拓展，但面临商业化兑现压力。</p><p><strong>区域竞争格局</strong>：深圳（技术前沿+政策立法）、北京（资本密集+科技项目+总部经济）、上海（产业集群+国际化）、广州（基金引导+产业链）四大城市形成差异化竞争格局。</p>
+        </div>
+    </div>
+
+    <!-- 附录 -->
+    <div class="content-section">
+        <div class="section-title">📎 附录：完整链接列表</div>
+        <ol><li><a href="https://www.36kr.com/newsflashes/3841290346924552" target="_blank">亚洲首个合成细胞10年技术路线图发布</a></li><li><a href="https://isynbio.siat.ac.cn/siat/2026-02/27/article_2026022710313229176.html" target="_blank">2026年合成生物学前沿交叉会议在深圳光明科学城举行</a></li><li><a href="https://news.pedaily.cn/202606/564916.shtml" target="_blank">广州首只生物制造产业投资基金落地</a></li><li><a href="https://news.pedaily.cn/202606/564981.shtml" target="_blank">清华系AI+合成生物制造企业绿色康成完成数千万元pre-A轮融资</a></li><li><a href="https://news.sciencenet.cn/htmlnews/2026/6/565789.shtm" target="_blank">北京征集2026年度合成生物制造领域储备课题（科学网）</a></li><li><a href="https://kw.beijing.gov.cn/zwgk/zcwj/202606/t20260601_4680315.html" target="_blank">北京征集2026年度合成生物制造领域储备课题（北京市科委官网）</a></li><li><a href="https://synbioconference.org/2026" target="_blank">SEED 2026 Synthetic Biology Conference</a></li><li><a href="https://lit.eu/international-lit-symposium-2026-synthetic-immunology-synthetic-biology/" target="_blank">International LIT Symposium 2026</a></li><li><a href="https://www.europabio.org/event/europabio-biomanufacturing-policy-summit-2026/" target="_blank">EuropaBio生物制造政策峰会2026</a></li></ol>
+    </div>
+</div>
+
+<div class="footer">
+    <p>合成生物行业日报 v2.0 | H5页面版式固定，内容每日更新</p>
+    <p>本报告由AI自动生成，信息来源于公开网络搜索，仅供参考，不构成投资建议</p>
+    <p>报告文件：<a href="./2026-06-09_revised.md" target="_blank">Markdown版本</a> | <a href="./2026-06-09_revised.html" target="_blank">H5页面版本</a></p>
+    <p style="margin-top: 10px; color: #bbb;">生成时间：2026-06-09 20:00:00 (UTC+8)</p>
+</div>
+
+</body>
+</html>
