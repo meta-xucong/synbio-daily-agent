@@ -1,123 +1,200 @@
-# 脚本使用指南
+# AS hub NEWs agent - 脚本使用指南
+# 本指南供Cron子Agent参考，确保正确使用report_pipeline.py
 
-## report_pipeline.py
+## 脚本位置
+`D:\AI\合成生物行业报告\scripts\report_pipeline.py`
 
-### 功能概述
+## 核心功能
 
-`report_pipeline.py` 是 AS hub 合成生物行业日报的核心处理脚本，负责：
+### 1. 处理原始数据（过滤 + 去重 + 排序）
 
-1. **历史事件指纹提取与去重**
-2. **时效性过滤**
-3. **信息聚合与价值排序**
-4. **报告格式验证**
-5. **合规复检与迭代修正**
-6. **邮件一致性验证**
-7. **MIME类型验证**
-
-### 使用方法
-
-#### 1. 处理原始数据
+**输入**：原始信息JSON文件
+**输出**：处理后的合规信息JSON文件
 
 ```python
+import subprocess
 import sys
-sys.path.insert(0, r"scripts")
-from report_pipeline import process_raw_data
+import json
 
-# 处理新闻类数据
-result = process_raw_data(raw_news_items, "news")
-print(f"通过: {result['stats']['approved']}条, 拒绝: {result['stats']['rejected']}条")
+# 1. 将搜索到的原始信息保存为JSON
+raw_data = {
+    "news": [
+        {"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "...", "type": "news"},
+        # ...
+    ],
+    "research": [...],
+    "funding": [...],
+    "policy": [...],
+    "events": [...],
+}
 
-# approved 列表中的信息可用于生成报告
-approved_items = result["approved"]
+raw_path = r"D:\AI\合成生物行业报告\data\raw_2026-06-08.json"
+with open(raw_path, 'w', encoding='utf-8') as f:
+    json.dump(raw_data, f, ensure_ascii=False, indent=2)
+
+# 2. 调用脚本处理每个类别
+for category in ["news", "research", "funding", "policy", "events"]:
+    output_path = r"D:\AI\合成生物行业报告\data\processed_{category}_2026-06-08.json"
+    result = subprocess.run(
+        [sys.executable, r"D:\AI\合成生物行业报告\scripts\report_pipeline.py",
+         "--process", raw_path,
+         "--type", category,
+         "--output", output_path],
+        capture_output=True, text=True
+    )
+    
+    # 读取处理结果
+    with open(output_path, 'r', encoding='utf-8') as f:
+        processed = json.load(f)
+    
+    approved_items = processed["approved"]  # 通过审核的信息
+    rejected_items = processed["rejected"]   # 被拒绝的信息及原因
+    stats = processed["stats"]               # 统计信息
 ```
 
-#### 2. 运行合规复检
+### 2. 验证报告（结构 + 时效性）
+
+**输入**：生成的报告Markdown文件
+**输出**：验证结果JSON文件
 
 ```python
-from report_pipeline import run_compliance_check
+import subprocess
+import sys
+import json
 
-result = run_compliance_check("reports/2026-06-08.md")
-print(f"通过: {result['passed']}, 可发送邮件: {result['can_send_email']}, 得分: {result['overall_score']}")
+report_path = r"D:\AI\合成生物行业报告\reports\2026-06-08.md"
+validation_path = r"D:\AI\合成生物行业报告\data\validation_result.json"
 
-if result['fix_instructions']:
-    print("需要修复:")
-    for instr in result['fix_instructions']:
+result = subprocess.run(
+    [sys.executable, r"D:\AI\合成生物行业报告\scripts\report_pipeline.py",
+     "--validate", report_path,
+     "--output", validation_path],
+    capture_output=True, text=True
+)
+
+with open(validation_path, 'r', encoding='utf-8') as f:
+    validation = json.load(f)
+
+# 检查结果
+if validation["passed"] and validation["can_send_email"]:
+    print("报告通过验证，可以发送邮件")
+else:
+    print(f"报告未通过验证，得分: {validation['overall_score']}")
+    print("需要修复的问题:")
+    for instr in validation["fix_instructions"]:
         print(f"  - {instr}")
 ```
 
-#### 3. 验证邮件一致性
+## 迭代修正流程
 
-```python
-from report_pipeline import validate_email_consistency
-
-result = validate_email_consistency(email_body_html, approved_data)
-print(f"一致: {result['is_consistent']}")
-
-if result['errors']:
-    print("错误:")
-    for e in result['errors']:
-        print(f"  - {e}")
+```
+生成报告 → 调用脚本验证 → 检查fix_instructions
+    ↑                                    ↓
+    └──── 根据fix_instructions修正 ─────┘
+         （最多迭代3次）
 ```
 
-#### 4. 验证MIME类型
+**迭代规则**：
+1. 第一次生成报告后，立即调用脚本验证
+2. 如果 `passed = false` 或 `can_send_email = false`，根据 `fix_instructions` 修正报告
+3. 修正后再次验证
+4. 最多迭代3次，如果仍不通过，记录错误并跳过邮件发送
 
-```python
-from report_pipeline import validate_email_mime_type
+## 关键检查点
 
-result = validate_email_mime_type(email_msg)
-print(f"有效: {result['is_valid']}")
+### 检查点0：信息源全面搜索（四轮搜索法，严禁遗漏）
 
-if result['errors']:
-    print("MIME错误:")
-    for e in result['errors']:
-        print(f"  - {e}")
-```
+**第一轮：通用关键词搜索**
+- 使用中文关键词：合成生物、合成生物学、生物制造
+- 使用英文关键词：synthetic biology, biomanufacturing
 
-#### 5. 完整验证
+**第二轮：site:限定符定向搜索（必须逐个执行）**
+- 国内源（7个）：`site:36kr.com 合成生物`、`site:pedaily.cn 合成生物 融资`、`site:vbdata.cn 合成生物`、`site:bydrug.pharmcube.com 合成生物`、`site:bioon.com 合成生物`、`site:synbio-he.com 合成生物`、`site:stdaily.com 合成生物`
+- 国际源（6个）：`site:synbiobeta.com synthetic biology`、`site:genengnews.com synthetic biology`、`site:fiercebiotech.com synthetic biology`、`site:labiotech.eu synthetic biology`、`site:crisprmedicinenews.com CRISPR`
 
-```python
-from report_pipeline import run_full_validation
+**第三轮：英文关键词补充搜索**
+- `synthetic biology news today`
+- `biomanufacturing funding 2026`
+- `precision fermentation breakthrough`
+- `cell factory engineering`
 
-result = run_full_validation(
-    report_md_path="reports/2026-06-08.md",
-    email_body=email_html,
-    approved_data=approved_items,
-    raw_stats={"total": 25, "approved": 8}
-)
+**第四轮：报告生成前复查**
+- 重点检查投资界、36氪、动脉网、科技日报等高频更新源
+- 确认今日/本周无新信息发布
+- 如发现有遗漏，立即补充收录
 
-print(f"报告通过: {result['report_passed']}")
-print(f"邮件一致: {result['email_consistent']}")
-print(f"可发送: {result['can_send_email']}")
-print(f"综合得分: {result['overall_score']}")
-```
+**第五轮：空白板块强制补搜（新增，防止遗漏）**
 
-### 命令行使用
+如果某板块在四轮搜索后仍为空，必须执行定向补搜：
 
-```bash
-# 验证报告
-python scripts/report_pipeline.py --validate reports/2026-06-08.md --output reports/validation.json
+| 空白板块 | 强制补搜关键词 | 必查来源 |
+|---------|-------------|---------|
+| **政策板块为空** | `site:kw.beijing.gov.cn 合成生物`、`site:stic.sz.gov.cn 合成生物`、`site:sh.gov.cn 合成生物`、`site:sciencenet.cn 征集 合成生物`、`site:sohu.com 合成生物 政策 征集` | 北京市科委、深圳市科创委、上海市经信委、科学网政策频道 |
+| **活动板块为空** | `SEED 2026 synthetic biology`、`site:synbioconference.org`、`site:scientificwisdom.org 合成生物`、`site:europabio.org event`、`site:academicx.org 合成生物` | AIChE/SBE、EuropaBio、学术会议网 |
+| **研究板块为空** | `site:nature.com synthetic biology`、`site:science.org synthetic biology`、`site:cell.com synthetic biology`、`site:biorxiv.org synthetic biology` | Nature、Science、Cell、bioRxiv |
+| **融资板块为空** | `site:pedaily.cn 合成生物 融资 2026`、`site:36kr.com 合成生物 融资`、`site:vbdata.cn 合成生物 融资` | 投资界、36氪、动脉网 |
 
-# 处理原始数据
-python scripts/report_pipeline.py --process data/raw_2026-06-08.json --type news --output data/processed.json
+**⚠️ 信息源遗漏陷阱**：
+- 只搜通用关键词 → 遗漏垂直媒体独家信息
+- 只搜一次不复查 → 错过下午发布的新信息
+- 只搜中文不搜英文 → 错过国际重要动态
+- **政策只搜"政策"二字 → 遗漏"征集""申报""储备课题"等行政术语**
+- **会议只搜"会议"二字 → 遗漏英文会议名如SEED、SynBioBeta等**
 
-# 查看统计
-python scripts/report_pipeline.py
-```
+### 检查点1：信息处理阶段
+- [ ] 原始信息已保存为JSON
+- [ ] 每个类别已调用脚本处理
+- [ ] 已查看被拒绝的信息及原因
+- [ ] 只使用 `approved` 列表中的信息生成报告
 
-### 配置常量
+### 检查点2：报告生成阶段
+- [ ] 严格使用模板 `templates/daily_report_template.md`
+- [ ] 只包含脚本输出的合规信息
+- [ ] 执行摘要精选5条最有价值的信息
+- [ ] **空白板块检查**：如政策/研究/活动/融资板块为空，必须确认已执行第五轮定向补搜，并在报告中注明"经全面检索，本周期暂无新信息"，而非直接留空
 
-| 常量 | 默认值 | 说明 |
-|------|--------|------|
-| `TIME_WINDOWS["news"]` | 7 | 新闻时效性窗口（天） |
-| `TIME_WINDOWS["research"]` | 14 | 研究时效性窗口（天） |
-| `TIME_WINDOWS["funding"]` | 7 | 融资时效性窗口（天） |
-| `TIME_WINDOWS["policy"]` | 30 | 政策时效性窗口（天） |
-| `TIME_WINDOWS["events"]` | 90 | 活动时效性窗口（天） |
+### 检查点3：验证阶段
+- [ ] 报告生成后立即调用脚本验证
+- [ ] 检查 `validation["passed"]` 是否为 true
+- [ ] 检查 `validation["can_send_email"]` 是否为 true
+- [ ] 检查 `validation["overall_score"]` 是否 >= 80
 
-### 权威来源分级
+### 检查点4：迭代修正
+- [ ] 如有fix_instructions，逐项修正
+- [ ] 修正后重新验证
+- [ ] 最多迭代3次
 
-| 级别 | 来源 |
-|------|------|
-| Tier 1 | Nature, Science, Cell, Nature Biotechnology, Nature Communications, Science Advances, Cell Metabolism, PNAS |
-| Tier 2 | GEN, FierceBiotech, SynBioBeta, 36氪, 投资界, 动脉网, 医药魔方, 科技日报, IT之家 |
-| Tier 3 | 生物谷, 合成生物学网, 搜狐, 新浪, 微信 |
+### 检查点5：邮件发送
+- [ ] 验证通过后，才生成HTML并发送邮件
+- [ ] **邮件附件MIME类型必须正确**：
+  - HTML附件：`MIMEText(html_content, 'html', 'utf-8')` → MIME类型 `text/html`
+  - Markdown附件：`MIMEText(md_content, 'plain', 'utf-8')` → MIME类型 `text/plain`
+  - **严禁使用 `MIMEBase('application', 'octet-stream')`**（会导致附件变成.bin文件）
+- [ ] 邮件必须附带HTML附件
+- [ ] 发送失败重试一次
+
+**⚠️ 邮件附件MIME类型陷阱**：
+- 使用 `MIMEBase('application', 'octet-stream')` → QQ邮箱显示为 `.bin` 文件
+- 正确做法：HTML用 `MIMEText(content, 'html', 'utf-8')`，MD用 `MIMEText(content, 'plain', 'utf-8')`
+
+## 注意事项
+
+1. **不要跳过脚本验证直接发送邮件** — 这是强制步骤
+2. **不要忽略fix_instructions** — 每个指令都必须处理
+3. **不要使用被拒绝的信息** — 只使用approved列表
+4. **保留处理日志** — 被拒绝的信息和验证结果保存到data目录，便于审计
+5. **信息源搜索必须执行四轮** — 通用搜索 → site:定向搜索 → 英文补充搜索 → 生成前复查
+6. **邮件附件MIME类型必须正确** — HTML用text/html，MD用text/plain，严禁用octet-stream
+
+## 文件命名规范
+
+- 原始数据：`data/raw_YYYY-MM-DD.json`
+- 处理后数据：`data/processed_{category}_YYYY-MM-DD.json`
+- 验证结果：`data/validation_result.json` 或 `data/validation_YYYY-MM-DD.json`
+- 拒绝日志：`data/rejected_YYYY-MM-DD.json`
+
+---
+
+*指南版本：v1.1*
+*更新日期：2026-06-08*
+*更新内容：新增信息源四轮搜索法 + 邮件附件MIME类型检查*

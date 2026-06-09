@@ -26,7 +26,7 @@ import glob
 
 # ==================== 配置常量 ====================
 
-BASE_DIR = Path(r".")
+BASE_DIR = Path(r"D:\AI\合成生物行业报告")
 REPORTS_DIR = BASE_DIR / "reports"
 CONFIG_DIR = BASE_DIR / "config"
 DATA_DIR = BASE_DIR / "data"
@@ -533,6 +533,25 @@ def validate_report_structure(report_path: str) -> Dict[str, Any]:
         if len(links) < 5:
             warnings.append(f"附录链接过少: {len(links)}条")
     
+    # 8. 检查空白板块（新增）
+    blank_sections = []
+    for section_name, section_marker in [
+        ("行业热点新闻", "## 📰 行业热点新闻"),
+        ("最新研究成果", "## 🔬 最新研究成果"),
+        ("融资与投资动态", "## 💰 融资与投资动态"),
+        ("政策与监管", "## 🏛️ 政策与监管"),
+        ("行业活动预告", "## 📅 行业活动预告"),
+    ]:
+        section_content = re.search(re.escape(section_marker) + r'\n\n(.*?)(?=\n## )', content, re.DOTALL)
+        if section_content:
+            section_text = section_content.group(1)
+            # 检查是否只有"暂无"或空白
+            if re.search(r'暂无|本周期暂无|color:#888|—\s*—\s*—', section_text) and not re.search(r'\w{10,}', section_text):
+                blank_sections.append(section_name)
+    
+    if blank_sections:
+        warnings.append(f"以下板块为空或未收录有效信息: {', '.join(blank_sections)}。请确认已执行第五轮定向补搜，并在报告中注明'经全面检索，本周期暂无新信息'")
+    
     is_valid = len(errors) == 0
     
     return {
@@ -852,7 +871,6 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
         "report_check": report_result,
         "email_check": email_result,
     }
-
 
 def save_event_fingerprints(new_events: List[Dict[str, Any]], report_date: str):
     """保存新事件到指纹库"""
