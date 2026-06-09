@@ -480,28 +480,66 @@ def validate_report_structure(report_path: str) -> Dict[str, Any]:
         if re.search(pattern, content, re.IGNORECASE):
             errors.append(f"发现禁止的额外板块，匹配模式: {pattern}")
     
-    # 3. 检查执行摘要数量
+    # 3. 检查执行摘要格式（日期标注 + 降序排列）
     summary_section = re.search(r'## 📌 执行摘要\n\n(.*?)(?=\n## )', content, re.DOTALL)
     if summary_section:
         summary_text = summary_section.group(1)
         summary_items = re.findall(r'^\d+\.', summary_text, re.MULTILINE)
         if len(summary_items) < 3:
-            errors.append(f"执行摘要条目过少: {len(summary_items)}条 (要求5条)")
-        elif len(summary_items) > 7:
-            warnings.append(f"执行摘要条目过多: {len(summary_items)}条 (建议5条)")
+            errors.append(f"执行摘要条目过少: {len(summary_items)}条 (要求5-8条)")
+        elif len(summary_items) > 8:
+            warnings.append(f"执行摘要条目过多: {len(summary_items)}条 (建议5-8条)")
+        
+        # 检查每条是否有日期标注
+        date_annotations = re.findall(r'\（\d{4}-\d{2}-\d{2}\）', summary_text)
+        if len(date_annotations) < len(summary_items):
+            errors.append(f"执行摘要日期标注不完整: {len(date_annotations)}/{len(summary_items)}条有日期标注，每条必须末尾标注（YYYY-MM-DD）")
+        
+        # 检查日期是否按降序排列
+        dates = re.findall(r'\（(\d{4}-\d{2}-\d{2})\）', summary_text)
+        if len(dates) >= 2:
+            parsed_dates = []
+            for d in dates:
+                try:
+                    parsed_dates.append(datetime.strptime(d, "%Y-%m-%d"))
+                except:
+                    pass
+            for i in range(1, len(parsed_dates)):
+                if parsed_dates[i] > parsed_dates[i-1]:
+                    errors.append(f"执行摘要日期未按降序排列: 第{i}条日期({dates[i]})晚于第{i+1}条({dates[i-1]})")
+                    break
     else:
         errors.append("无法解析执行摘要板块")
     
-    # 4. 检查表格格式
-    table_sections = ["## 📰 行业热点新闻", "## 🔬 最新研究成果", "## 💰 融资与投资动态"]
-    for section in table_sections:
-        section_content = re.search(re.escape(section) + r'\n\n(.*?)(?=\n## )', content, re.DOTALL)
+    # 4. 检查表格格式及日期排序
+    table_sections = {
+        "## 📰 行业热点新闻": "news",
+        "## 🔬 最新研究成果": "research", 
+        "## 💰 融资与投资动态": "funding",
+        "## 📅 行业活动预告": "events"
+    }
+    for section_name, section_key in table_sections.items():
+        section_content = re.search(re.escape(section_name) + r'\n\n(.*?)(?=\n## )', content, re.DOTALL)
         if section_content:
             section_text = section_content.group(1)
-            if "| 标题 |" not in section_text and "| 公司 |" not in section_text:
-                errors.append(f"{section} 未使用表格格式")
+            if "| 标题 |" not in section_text and "| 公司 |" not in section_text and "| 活动名称 |" not in section_text:
+                errors.append(f"{section_name} 未使用表格格式")
+            
+            # 检查表格日期列是否按降序排列
+            date_rows = re.findall(r'\|\s*(\d{4}-\d{2}-\d{2})\s*\|', section_text)
+            if len(date_rows) >= 2:
+                parsed_dates = []
+                for d in date_rows:
+                    try:
+                        parsed_dates.append(datetime.strptime(d.strip(), "%Y-%m-%d"))
+                    except:
+                        pass
+                for i in range(1, len(parsed_dates)):
+                    if parsed_dates[i] > parsed_dates[i-1]:
+                        errors.append(f"{section_name} 表格日期未按降序排列: 第{i}行日期({date_rows[i]})晚于第{i+1}行({date_rows[i-1]})")
+                        break
     
-    # 5. 检查政策板块格式
+    # 5. 检查政策板块格式及日期排序
     policy_section = re.search(r'## 🏛️ 政策与监管\n\n(.*?)(?=\n## )', content, re.DOTALL)
     if policy_section:
         policy_text = policy_section.group(1)
@@ -509,6 +547,23 @@ def validate_report_structure(report_path: str) -> Dict[str, Any]:
             warnings.append("政策与监管板块缺少 '### 国内政策' 子标题")
         if "### 国际监管动态" not in policy_text:
             warnings.append("政策与监管板块缺少 '### 国际监管动态' 子标题")
+        
+        # 检查国内政策表格日期是否按降序排列
+        domestic_match = re.search(r'### 国内政策\n\n(.*?)(?=### 国际监管动态)', policy_text, re.DOTALL)
+        if domestic_match:
+            domestic_text = domestic_match.group(1)
+            date_rows = re.findall(r'\|\s*(\d{4}-\d{2}-\d{2})\s*\|', domestic_text)
+            if len(date_rows) >= 2:
+                parsed_dates = []
+                for d in date_rows:
+                    try:
+                        parsed_dates.append(datetime.strptime(d.strip(), "%Y-%m-%d"))
+                    except:
+                        pass
+                for i in range(1, len(parsed_dates)):
+                    if parsed_dates[i] > parsed_dates[i-1]:
+                        errors.append(f"政策与监管-国内政策表格日期未按降序排列: 第{i}行日期({date_rows[i]})晚于第{i+1}行({date_rows[i-1]})")
+                        break
     
     # 6. 检查AI分析深度
     analysis_section = re.search(r'## 🤖 AI 深度分析\n\n(.*?)(?=\n## )', content, re.DOTALL)
