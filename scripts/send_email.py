@@ -6,20 +6,34 @@
 
 import smtplib
 import sys
+import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 from datetime import datetime
 
+def load_email_config():
+    """从配置文件读取邮件配置"""
+    config_path = Path(r"D:\AI\合成生物行业报告\config\email_config.json")
+    if not config_path.exists():
+        raise FileNotFoundError(f"邮件配置文件不存在: {config_path}")
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
 def send_daily_report(date_str, md_path, html_path, email_html_path=None):
     """发送日报邮件"""
     
-    # 邮件配置
-    smtp_server = "smtp.exmail.qq.com"
-    smtp_port = 465
-    sender = "xuc@alcochrom.com"
-    password = "Xucheng123"  # 请确保这是正确的密码
-    receiver = "197286184@qq.com"
+    # 读取邮件配置
+    config = load_email_config()
+    smtp_server = config["smtp_server"]
+    smtp_port = config["smtp_port"]
+    sender = config["sender_email"]
+    password = config["sender_password"]
+    receiver = config["receiver_email"]
+    
+    if not config.get("enabled", True):
+        print("邮件发送已禁用 (enabled=false)")
+        return False
     
     # 读取文件
     with open(md_path, 'r', encoding='utf-8') as f:
