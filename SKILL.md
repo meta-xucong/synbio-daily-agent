@@ -21,7 +21,7 @@ description: |
 
 ```
 Step 1: 读取配置（数据源 + 去重规则 + 脚本指南）
-Step 2: 多维度搜索（重点网站优先，四轮搜索法）
+Step 2: 多维度搜索（重点网站优先，五轮搜索法）
 Step 3: 脚本强制过滤与去重（严禁跳过）
 Step 4: 生成Markdown报告
 Step 5: 生成H5 HTML报告（使用定稿模板）
@@ -65,7 +65,7 @@ Step 9: 更新政策库
 
 ---
 
-## Step 2: 多维度搜索（四轮搜索法）
+## Step 2: 多维度搜索（五轮搜索法）
 
 ### 2.1 第一轮：通用搜索
 使用 kimi_search_v2 进行通用搜索：
@@ -117,11 +117,36 @@ synbio policy regulation
 synthetic biology today news
 ```
 
+### 2.5 第五轮：政府与学术会议定向搜索（每日必搜，严禁跳过）
+无论前四轮结果如何，每日必须执行以下定向搜索，防止遗漏政府征集通知和学术会议信息：
+
+**政府网站（政策征集通知）**：
+```
+site:kw.beijing.gov.cn 合成生物
+site:kw.beijing.gov.cn 生物制造
+site:kw.beijing.gov.cn 征集
+site:stic.sz.gov.cn 合成生物
+site:sh.gov.cn 合成生物
+site:sciencenet.cn 合成生物 征集
+site:sciencenet.cn 生物制造 申报
+```
+
+**学术会议（国际+国内）**：
+```
+site:synbioconference.org
+site:aiche.org synthetic biology
+SEED 2026 synthetic biology
+site:europabio.org event synthetic biology
+site:scientificwisdom.org 合成生物
+site:academicx.org 合成生物
+```
+
 **搜索要求**：
 - 每个 query 的 limit 设为 10
 - **必须记录每条信息的来源网站和发布日期**
 - 优先选择有明确日期的新闻
 - **必须记录每条信息的原始URL链接**
+- **政府网站和会议网站的信息往往不在商业媒体出现，必须直接搜索**
 
 ---
 

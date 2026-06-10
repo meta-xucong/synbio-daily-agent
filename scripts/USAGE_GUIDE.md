@@ -102,7 +102,7 @@ else:
 
 ## 关键检查点
 
-### 检查点0：信息源全面搜索（四轮搜索法，严禁遗漏）
+### 检查点0：信息源全面搜索（五轮搜索法，严禁遗漏）
 
 **第一轮：通用关键词搜索**
 - 使用中文关键词：合成生物、合成生物学、生物制造
@@ -123,23 +123,27 @@ else:
 - 确认今日/本周无新信息发布
 - 如发现有遗漏，立即补充收录
 
-**第五轮：空白板块强制补搜（新增，防止遗漏）**
+**第五轮：政府与学术会议定向搜索（每日必搜，严禁跳过）**
 
-如果某板块在四轮搜索后仍为空，必须执行定向补搜：
+无论前四轮结果如何，每日必须执行以下定向搜索，防止遗漏政府征集通知和学术会议信息：
 
-| 空白板块 | 强制补搜关键词 | 必查来源 |
-|---------|-------------|---------|
-| **政策板块为空** | `site:kw.beijing.gov.cn 合成生物`、`site:stic.sz.gov.cn 合成生物`、`site:sh.gov.cn 合成生物`、`site:sciencenet.cn 征集 合成生物`、`site:sohu.com 合成生物 政策 征集` | 北京市科委、深圳市科创委、上海市经信委、科学网政策频道 |
-| **活动板块为空** | `SEED 2026 synthetic biology`、`site:synbioconference.org`、`site:scientificwisdom.org 合成生物`、`site:europabio.org event`、`site:academicx.org 合成生物` | AIChE/SBE、EuropaBio、学术会议网 |
-| **研究板块为空** | `site:nature.com synthetic biology`、`site:science.org synthetic biology`、`site:cell.com synthetic biology`、`site:biorxiv.org synthetic biology` | Nature、Science、Cell、bioRxiv |
-| **融资板块为空** | `site:pedaily.cn 合成生物 融资 2026`、`site:36kr.com 合成生物 融资`、`site:vbdata.cn 合成生物 融资` | 投资界、36氪、动脉网 |
+| 搜索目标 | 必搜关键词 | 必查来源 |
+|---------|-----------|---------|
+| **北京市科委** | `site:kw.beijing.gov.cn 合成生物`、`site:kw.beijing.gov.cn 生物制造`、`site:kw.beijing.gov.cn 征集` | 北京市科委官网政策文件、征集通知 |
+| **深圳市科创委** | `site:stic.sz.gov.cn 合成生物`、`site:stic.sz.gov.cn 生物制造` | 深圳市科创委 |
+| **上海市经信委** | `site:sh.gov.cn 合成生物`、`site:sh.gov.cn 生物制造` | 上海市经信委 |
+| **科学网政策** | `site:sciencenet.cn 合成生物 征集`、`site:sciencenet.cn 生物制造 申报` | 科学网政策频道 |
+| **AIChE/SBE会议** | `site:synbioconference.org`、`site:aiche.org synthetic biology`、`SEED 2026 synthetic biology` | AIChE/SBE合成生物会议 |
+| **国际会议** | `site:europabio.org event synthetic biology`、`site:scientificwisdom.org 合成生物` | EuropaBio、学术会议网 |
+| **国内会议** | `site:academicx.org 合成生物`、`site:sohu.com 合成生物 会议 征集` | 学术会议网 |
 
 **⚠️ 信息源遗漏陷阱**：
 - 只搜通用关键词 → 遗漏垂直媒体独家信息
 - 只搜一次不复查 → 错过下午发布的新信息
 - 只搜中文不搜英文 → 错过国际重要动态
-- **政策只搜"政策"二字 → 遗漏"征集""申报""储备课题"等行政术语**
-- **会议只搜"会议"二字 → 遗漏英文会议名如SEED、SynBioBeta等**
+- **政策只搜"政策"二字 → 遗漏"征集""申报""储备课题""指南"等行政术语**
+- **会议只搜"会议"二字 → 遗漏英文会议名如SEED、SynBioBeta、AIChE等**
+- **政府网站不直接搜 → 遗漏科委/经信委官网发布的征集通知（这些通知往往不在商业媒体出现）**
 
 ### 检查点1：信息处理阶段
 - [ ] 原始信息已保存为JSON
@@ -185,7 +189,7 @@ else:
 2. **不要忽略fix_instructions** — 每个指令都必须处理
 3. **不要使用被拒绝的信息** — 只使用approved列表
 4. **保留处理日志** — 被拒绝的信息和验证结果保存到data目录，便于审计
-5. **信息源搜索必须执行四轮** — 通用搜索 → site:定向搜索 → 英文补充搜索 → 生成前复查
+5. **信息源搜索必须执行五轮** — 通用搜索 → site:定向搜索 → 英文补充搜索 → 生成前复查 → 政府与会议定向搜索
 6. **邮件附件MIME类型必须正确** — HTML用text/html，MD用text/plain，严禁用octet-stream
 
 ## 文件命名规范
@@ -197,6 +201,6 @@ else:
 
 ---
 
-*指南版本：v1.1*
-*更新日期：2026-06-08*
-*更新内容：新增信息源四轮搜索法 + 邮件附件MIME类型检查*
+*指南版本：v1.2*
+*更新日期：2026-06-10*
+*更新内容：升级为五轮搜索法（新增政府与学术会议定向搜索）+ 邮件附件MIME类型检查 + 日期排序规则固化*
