@@ -90,6 +90,7 @@ site:genengnews.com synthetic biology biomanufacturing
 site:fiercebiotech.com synthetic biology funding
 site:labiotech.eu biotech synthetic
 site:crisprmedicinenews.com CRISPR gene editing
+site:competition.igem.org synthetic biology
 ```
 
 **中文搜索**：
@@ -100,6 +101,9 @@ site:pedaily.cn 合成生物 投资
 site:bydrug.pharmcube.com 合成生物
 site:bioon.com 合成生物
 site:synbio-he.com 合成生物
+深波synbio 合成生物
+深波synbio 融资
+深波synbio 政策
 ```
 
 ### 2.3 第三轮：英文补充搜索

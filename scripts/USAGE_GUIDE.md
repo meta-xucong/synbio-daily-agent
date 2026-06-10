@@ -109,8 +109,8 @@ else:
 - 使用英文关键词：synthetic biology, biomanufacturing
 
 **第二轮：site:限定符定向搜索（必须逐个执行）**
-- 国内源（7个）：`site:36kr.com 合成生物`、`site:pedaily.cn 合成生物 融资`、`site:vbdata.cn 合成生物`、`site:bydrug.pharmcube.com 合成生物`、`site:bioon.com 合成生物`、`site:synbio-he.com 合成生物`、`site:stdaily.com 合成生物`
-- 国际源（6个）：`site:synbiobeta.com synthetic biology`、`site:genengnews.com synthetic biology`、`site:fiercebiotech.com synthetic biology`、`site:labiotech.eu synthetic biology`、`site:crisprmedicinenews.com CRISPR`
+- 国内源（7个site:+3个微信关键词）：`site:36kr.com 合成生物`、`site:pedaily.cn 合成生物 融资`、`site:vbdata.cn 合成生物`、`site:bydrug.pharmcube.com 合成生物`、`site:bioon.com 合成生物`、`site:synbio-he.com 合成生物`、`site:stdaily.com 合成生物`、`深波synbio 合成生物`、`深波synbio 融资`、`深波synbio 政策`
+- 国际源（7个）：`site:synbiobeta.com synthetic biology`、`site:genengnews.com synthetic biology`、`site:fiercebiotech.com synthetic biology`、`site:labiotech.eu synthetic biology`、`site:crisprmedicinenews.com CRISPR`、`site:competition.igem.org synthetic biology`
 
 **第三轮：英文关键词补充搜索**
 - `synthetic biology news today`
@@ -119,7 +119,7 @@ else:
 - `cell factory engineering`
 
 **第四轮：报告生成前复查**
-- 重点检查投资界、36氪、动脉网、科技日报等高频更新源
+- 重点检查投资界、36氪、动脉网、科技日报、深波synbio等高频更新源
 - 确认今日/本周无新信息发布
 - 如发现有遗漏，立即补充收录
 
