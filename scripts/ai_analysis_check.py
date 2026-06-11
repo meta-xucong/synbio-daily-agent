@@ -104,7 +104,7 @@ def validate_ai_analysis(report_path: str) -> Dict[str, Any]:
         
         # 检查关键词是否都在事实库中
         found_count = sum(1 for kw in keywords if kw in facts)
-        if found_count >= len(keywords) * 0.5:  # 至少50%关键词匹配
+        if found_count >= len(keywords):  # 100%关键词必须全部匹配
             verified.append(text)
         else:
             # 未找到匹配，可能是幻觉
@@ -178,31 +178,37 @@ STRUCTURE_TITLES = {
 }
 
 ENGLISH_WHITELIST = {
-    "AI", "DNA", "RNA", "FDA", "GRAS", "CAGR", "EPFL", "JCVI", "UPF", "LIT",
-    "SBE", "Nature", "Science", "Cell", "Biotechnology", "Biology",
+    # 通用缩写和技术术语
+    "AI", "DNA", "RNA", "FDA", "GRAS", "CAGR",
+    # 期刊名（通用）
+    "Nature", "Science", "Cell", "Biotechnology", "Biology",
+    # 通用行业词
     "Synthetic", "Biology", "Engineering", "Evolution", "Design",
-    "SynBYSS", "EuropaBio", "WIfoR", "LanzaTech", "Twist", "Bioscience",
-    "Ginkgo", "Bioworks", "Anthropic", "Reshma", "Shetty", "George", "Church",
-    "Harris", "Wang", "Peyton", "Greenside", "BigHat", "Columbia",
-    "DTU", "LanzaX", "SynBioAI", "NGS", "C1", "SDL", "Kamau", "Therapeutics",
-    "China", "Asia", "Europe", "US", "USA", "EU", "Beijing", "Shanghai",
-    "Shenzhen", "Guangzhou", "Wuxi", "Nanjing", "Hangzhou", "Chengdu",
-    "Hong Kong", "HKEX", "A1", "IPO", "VC", "PE", "Q4", "Q3", "Q2", "Q1",
-    "ML", "DBTL",
+    # 地名
+    "China", "Asia", "Europe", "US", "USA", "EU",
+    "Beijing", "Shanghai", "Shenzhen", "Guangzhou", "Wuxi",
+    "Nanjing", "Hangzhou", "Chengdu", "Hong Kong",
+    # 通用金融/商业术语
+    "IPO", "VC", "PE", "Q4", "Q3", "Q2", "Q1",
+    "ML", "DBTL", "NGS", "C1",
+    # 会议/组织通用词
+    "SBE", "WIfoR", "SynBYSS", "EuropaBio", "LIT",
 }
 
 CHINESE_WHITELIST = {
+    # 通用行业词
     "合成生物学", "合成生物", "生物制造", "生物技术", "人工智能",
     "技术转化", "产业化", "商业化", "市场规模", "研发投入",
     "企业", "公司", "行业", "产业", "市场", "资本", "投资", "融资",
     "技术", "产品", "平台", "管线", "产能", "成本", "收入", "利润",
+    # 通用动词/形容词
     "预计", "预测", "有望", "或将", "可能", "趋势", "格局", "风险",
     "重要", "关键", "核心", "主要", "显著", "明显", "潜在", "长期", "短期",
+    # 通用连接词
     "此外", "同时", "另一方面", "综上所述", "总体而言", "具体来看",
     "置信度", "高", "中", "低",
-    "绿色康成", "三星", "北京昌平", "上海", "深圳", "广州", "无锡",
-    "百雀羚", "引航生物", "微元合成", "森瑞斯", "瑞德林", "桦冠生物",
-    "川宁生物",
+    # 地名
+    "北京昌平", "上海", "深圳", "广州", "无锡",
 }
 
 

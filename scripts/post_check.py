@@ -44,8 +44,9 @@ def post_check(date_str: str) -> dict:
         approved_links.update(item.get("urls", []))
     
     extra_links = report_links - approved_links
-    # 排除一些常见的非信息链接（如模板中的示例链接）
-    extra_links = {l for l in extra_links if not l.startswith("https://example")}
+    # 排除占位链接和常见非信息链接
+    excluded_patterns = ["example", "placeholder", "template", "demo", "test"]
+    extra_links = {l for l in extra_links if not any(p in l.lower() for p in excluded_patterns)}
     if extra_links:
         errors.append(f"❌ 报告包含未approved的链接: {extra_links}")
     

@@ -51,11 +51,15 @@ def pre_check(date_str: str) -> dict:
         except Exception as e:
             errors.append(f"❌ approved数据格式错误: {approved_path} ({e})")
     
-    # 检查3: 各类别处理结果存在
+    # 检查3: 各类别处理结果存在（可选，因为 process_raw_data 需要 --output 才保存）
+    missing_proc = []
     for cat in ["news", "research", "funding", "policy", "events"]:
         proc_path = DATA_DIR / f"processed_{cat}_{date_str}.json"
         if not proc_path.exists():
-            errors.append(f"❌ 处理结果不存在: {proc_path} → 必须先调用report_pipeline.py")
+            missing_proc.append(cat)
+    
+    if missing_proc:
+        warnings.append(f"⚠️ 部分类别未保存处理结果: {', '.join(missing_proc)}。如已调用 report_pipeline.py 但无输出，可忽略此警告")
     
     can_proceed = len(errors) == 0
     
