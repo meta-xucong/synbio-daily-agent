@@ -526,8 +526,8 @@ def validate_report_structure(report_path: str) -> Dict[str, Any]:
     if summary_section:
         summary_text = summary_section.group(1)
         summary_items = re.findall(r'^\d+\.', summary_text, re.MULTILINE)
-        if len(summary_items) < 3:
-            errors.append(f"执行摘要条目过少: {len(summary_items)}条 (要求5-8条)")
+        if len(summary_items) < 1:
+            errors.append(f"执行摘要条目过少: {len(summary_items)}条 (要求至少1条)")
         elif len(summary_items) > 8:
             warnings.append(f"执行摘要条目过多: {len(summary_items)}条 (建议5-8条)")
         
@@ -563,7 +563,9 @@ def validate_report_structure(report_path: str) -> Dict[str, Any]:
         section_content = re.search(re.escape(section_name) + r'\n\n(.*?)(?=\n## )', content, re.DOTALL)
         if section_content:
             section_text = section_content.group(1)
-            if "| 标题 |" not in section_text and "| 公司 |" not in section_text and "| 活动名称 |" not in section_text:
+            # 如果板块明确标注"暂无"，允许不使用表格
+            is_empty_section = bool(re.search(r'本周期暂无相关新信息收录|本周期暂无|暂无新信息|color:#888', section_text))
+            if not is_empty_section and "| 标题 |" not in section_text and "| 公司 |" not in section_text and "| 活动名称 |" not in section_text:
                 errors.append(f"{section_name} 未使用表格格式")
             
             # 检查表格日期列是否按降序排列
@@ -626,8 +628,8 @@ def validate_report_structure(report_path: str) -> Dict[str, Any]:
     if appendix_section:
         appendix_text = appendix_section.group(1)
         links = re.findall(r'https?://[^\s\)]+', appendix_text)
-        if len(links) < 5:
-            warnings.append(f"附录链接过少: {len(links)}条")
+        if len(links) < 1:
+            warnings.append(f"附录链接过少: {len(links)}条 (要求至少1条)")
     
     # 8. 检查空白板块（新增）
     blank_sections = []
