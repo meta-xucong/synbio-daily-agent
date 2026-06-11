@@ -164,6 +164,8 @@ def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, 
     normalized["type"] = normalized.get("type") or item_type
     if normalized["type"] not in VALID_ITEM_TYPES:
         return False, f"[schema] invalid type: {normalized['type']}", normalized
+    if normalized["type"] != item_type:
+        return False, f"[schema] type mismatch: item has {normalized['type']}, category is {item_type}", normalized
 
     url = str(normalized.get("url", ""))
     if not re.match(r"^https?://[^/\s]+", url):
@@ -866,6 +868,7 @@ def run_compliance_check(report_path: str, raw_stats: Dict[str, Any] = None) -> 
     """
     structure = validate_report_structure(report_path)
     timeliness = validate_timeliness_in_report(report_path)
+    ai_result = validate_ai_analysis(report_path)
     
     fix_instructions = []
     
@@ -876,22 +879,30 @@ def run_compliance_check(report_path: str, raw_stats: Dict[str, Any] = None) -> 
     # 时效性错误必须修复
     if timeliness["has_errors"]:
         fix_instructions.extend(timeliness["errors"])
+
+    # AI分析错误必须修复
+    if ai_result["has_errors"]:
+        fix_instructions.extend(ai_result["errors"])
     
     # 警告建议修复
     if structure["warnings"]:
         fix_instructions.extend([f"[建议] {w}" for w in structure["warnings"]])
     if timeliness["warnings"]:
         fix_instructions.extend([f"[建议] {w}" for w in timeliness["warnings"]])
+    if ai_result["warnings"]:
+        fix_instructions.extend([f"[AI分析建议] {w}" for w in ai_result["warnings"]])
     
     # 计算综合分数
     score = 100
     score -= len(structure["errors"]) * 20
     score -= len(timeliness["errors"]) * 15
+    score -= len(ai_result["errors"]) * 15
     score -= len(structure["warnings"]) * 5
     score -= len(timeliness["warnings"]) * 3
+    score -= len(ai_result["warnings"]) * 3
     score = max(0, score)
     
-    passed = len(structure["errors"]) == 0 and len(timeliness["errors"]) == 0
+    passed = len(structure["errors"]) == 0 and len(timeliness["errors"]) == 0 and not ai_result["has_errors"]
     can_send = passed and score >= 80
     
     return {
@@ -899,6 +910,7 @@ def run_compliance_check(report_path: str, raw_stats: Dict[str, Any] = None) -> 
         "can_send_email": can_send,
         "structure_check": structure,
         "timeliness_check": timeliness,
+        "ai_check": ai_result,
         "overall_score": score,
         "fix_instructions": fix_instructions,
         "raw_stats": raw_stats or {},
@@ -939,9 +951,11 @@ def validate_email_consistency(email_body: str, approved_data: List[Dict[str, An
         url = item.get("url", "")
         if url:
             approved_urls.append(url)
+        approved_urls.extend([u for u in item.get("urls", []) if u])
         title = item.get("title", "")
         if title:
             approved_titles.append(title)
+    approved_urls = list(set(approved_urls))
     
     # 检查邮件URL是否都在approved中
     missing_urls = [u for u in email_urls if u not in approved_urls]
@@ -1155,6 +1169,9 @@ def main():
     
     parser = argparse.ArgumentParser(description="AS hub NEWs agent - Report Pipeline")
     parser.add_argument("--validate", type=str, help="验证报告文件路径")
+    parser.add_argument("--full-validate", type=str, help="运行报告+邮件+AI完整验证的Markdown报告路径")
+    parser.add_argument("--email", type=str, help="完整验证使用的邮件HTML路径")
+    parser.add_argument("--approved", type=str, help="完整验证使用的approved JSON路径")
     parser.add_argument("--process", type=str, help="处理原始数据JSON文件")
     parser.add_argument("--type", type=str, default="news", help="数据类型")
     parser.add_argument("--output", type=str, help="输出文件路径")
@@ -1175,9 +1192,28 @@ def main():
         if result['fix_instructions']:
             print(f"Fix instructions ({len(result['fix_instructions'])} items):")
             for i, instr in enumerate(result['fix_instructions'][:10], 1):
-                # Remove emoji for safe console output
-                safe_instr = instr.encode('ascii', 'ignore').decode('ascii')
-                print(f"  {i}. {safe_instr}")
+                print(f"  {i}. {instr}")
+        sys.exit(0 if result["passed"] else 1)
+
+    elif args.full_validate:
+        if not args.email or not args.approved:
+            parser.error("--full-validate requires --email and --approved")
+        with open(args.email, 'r', encoding='utf-8') as f:
+            email_body = f.read()
+        with open(args.approved, 'r', encoding='utf-8') as f:
+            approved_data = json.load(f)
+        result = run_full_validation(args.full_validate, email_body, approved_data)
+        output_path = args.output or (args.full_validate.replace('.md', '_full_validation.json'))
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        can_send = "YES" if result["can_send_email"] else "NO"
+        print(f"Full validation result saved to: {output_path}")
+        print(f"Can send email: {can_send}, Score: {result['overall_score']}")
+        if result["fix_instructions"]:
+            print(f"Fix instructions ({len(result['fix_instructions'])} items):")
+            for i, instr in enumerate(result["fix_instructions"][:10], 1):
+                print(f"  {i}. {instr}")
+        sys.exit(0 if result["can_send_email"] else 1)
     
     elif args.process:
         with open(args.process, 'r', encoding='utf-8') as f:

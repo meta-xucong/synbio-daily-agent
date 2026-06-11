@@ -83,7 +83,11 @@ def pre_check(date_str: str) -> dict:
 
 
 if __name__ == "__main__":
+    import io
     import sys
+    if sys.platform == 'win32':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
     if len(sys.argv) > 1:
         date_str = sys.argv[1]
     else:

@@ -37,6 +37,7 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 
 - 必填字段：`title/source/date/summary/url`
 - 缺少 `type` 时自动补为 `--type`
+- 如果 item 自带 `type` 且与 `--type` 不一致，将作为 schema 错误拒绝
 - 不合规 URL、缺字段、过期信息、重复信息写入 `rejected`
 - `value_score` 为 0-10，`raw_score` 保留原始分
 
@@ -44,6 +45,14 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 
 ```powershell
 python scripts\report_pipeline.py --validate reports\2026-06-11.md --output data\validation_2026-06-11.json
+```
+
+`--validate` 会执行结构、基础时效性和 AI 防幻觉检查；AI 未收录实体/数字会导致验证失败。
+
+如需同时验证邮件正文与 approved 数据：
+
+```powershell
+python scripts\report_pipeline.py --full-validate reports\2026-06-11.md --email reports\2026-06-11_email.html --approved data\approved_2026-06-11.json --output data\full_validation_2026-06-11.json
 ```
 
 必须满足：
@@ -54,6 +63,17 @@ python scripts\report_pipeline.py --validate reports\2026-06-11.md --output data
 - 附录链接来自 approved 数据
 
 ## 邮件 Gate 与 Dry Run
+
+## 安全渲染
+
+从 approved JSON 生成 HTML/邮件正文时，优先使用安全渲染脚本：
+
+```powershell
+python scripts\render_html.py --approved data\approved_2026-06-11.json --date 2026-06-11 --output reports\2026-06-11.html
+python scripts\render_email.py --approved data\approved_2026-06-11.json --date 2026-06-11 --output reports\2026-06-11_email.html
+```
+
+渲染器会对外部文本执行 HTML escape，对 URL 执行 http/https allowlist，并给新窗口链接加 `rel="noopener noreferrer"`。
 
 推荐发送前先 dry-run：
 
@@ -71,6 +91,8 @@ python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\2026-06-11
 6. 构造 MIME 后执行 `validate_email_mime_type(msg)`
 
 任一 gate 失败，脚本返回非 0，且不会连接 SMTP。
+
+`--dry-run` 不要求存在真实 `config/email_config.json`；真实发送仍必须配置邮箱。
 
 ## 本地测试
 

@@ -58,7 +58,7 @@ def post_check(date_str: str) -> dict:
     
     # 检查3: 报告头部是否有流水线追踪标记
     if "流水线追踪" not in report and "approved=" not in report:
-        warnings.append("⚠️ 报告缺少流水线追踪标记")
+        errors.append("❌ 报告缺少流水线追踪标记")
     
     can_send = len(errors) == 0
     
@@ -89,7 +89,11 @@ def post_check(date_str: str) -> dict:
 
 
 if __name__ == "__main__":
+    import io
     import sys
+    if sys.platform == 'win32':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
     
     if len(sys.argv) > 1:
         date_str = sys.argv[1]

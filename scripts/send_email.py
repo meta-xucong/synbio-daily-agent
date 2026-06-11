@@ -45,6 +45,18 @@ def load_email_config() -> Dict[str, Any]:
     return config
 
 
+def dry_run_email_config() -> Dict[str, Any]:
+    """Return a non-secret config suitable for validation-only dry runs."""
+    return {
+        "enabled": True,
+        "smtp_server": "smtp.invalid",
+        "smtp_port": 465,
+        "sender_email": "dry-run@example.invalid",
+        "sender_password": "",
+        "receiver_email": "dry-run@example.invalid",
+    }
+
+
 def read_report_files(md_path: str | Path, html_path: str | Path, email_html_path: str | Path | None = None) -> Dict[str, str]:
     """Read report body and attachment contents."""
     md_path = Path(md_path)
@@ -174,7 +186,13 @@ def validate_send_gate(
 
 def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_run=False):
     """发送日报邮件。发送前必须通过 gate；dry-run 不连接 SMTP。"""
-    config = load_email_config()
+    try:
+        config = load_email_config()
+    except FileNotFoundError:
+        if dry_run:
+            config = dry_run_email_config()
+        else:
+            raise
     if not config.get("enabled", True):
         print("邮件发送已禁用 (enabled=false)")
         return False
@@ -213,6 +231,13 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_ru
 
 
 def main() -> int:
+    import io
+    import sys
+
+    if sys.platform == 'win32':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
     parser = argparse.ArgumentParser(description="Send synbio daily report after validation gate")
     parser.add_argument("date")
     parser.add_argument("md_path")
