@@ -44,7 +44,7 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None):
     
     # 创建邮件
     msg = MIMEMultipart('related')
-    msg['Subject'] = f'合成生物行业日报 - {date_str}（修订版）'
+    msg['Subject'] = f'合成生物行业日报 - {date_str}'
     msg['From'] = sender
     msg['To'] = receiver
     

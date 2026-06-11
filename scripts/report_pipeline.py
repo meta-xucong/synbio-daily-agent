@@ -34,7 +34,7 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 
 # 时间窗口配置（天）
 TIME_WINDOWS = {
-    "industry_news": 7,
+    "news": 7,
     "research": 14,
     "policy": 30,
     "events": 90,  # 未来90天
@@ -117,7 +117,7 @@ def generate_fingerprint(item: Dict[str, Any]) -> str:
     event_type = item.get("type", "")
     
     # 提取核心实体（公司名、产品名、技术名）
-    fingerprint_text = f"{company}|{event_type}|{title[:50]}"
+    fingerprint_text = f"{company}|{event_type}|{title}"
     return hashlib.md5(fingerprint_text.encode('utf-8')).hexdigest()[:16]
 
 
@@ -148,11 +148,17 @@ def extract_events_from_report(report_path: str) -> List[Dict[str, Any]]:
         elif '行业活动预告' in section:
             current_type = "events"
         
-        # 提取表格中的事件
-        table_pattern = r'\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|'
-        matches = re.findall(table_pattern, section)
+        # 提取表格中的事件（支持4列和5列表格）
+        # 5列表格: | 标题 | 来源 | 时间 | 摘要 | 链接 |
+        table_pattern_5col = r'\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|'
+        # 4列表格: | 标题 | 期刊/机构 | 核心发现 | 链接 |
+        table_pattern_4col = r'\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|'
         
-        for match in matches:
+        matches_5col = re.findall(table_pattern_5col, section)
+        matches_4col = re.findall(table_pattern_4col, section)
+        
+        # 处理5列表格
+        for match in matches_5col:
             if len(match) >= 5:
                 title = match[0].strip()
                 source = match[1].strip()
@@ -162,13 +168,9 @@ def extract_events_from_report(report_path: str) -> List[Dict[str, Any]]:
                 if (title and title != "标题" and not title.startswith("-") and title != "公司"
                     and not title.startswith("本周期暂无") and not title.startswith("暂无")
                     and title != "—"):
-                    # 推断company
                     company = ""
                     if current_type == "funding":
-                        company = title  # 融资表格第一列是公司名
-                    elif current_type == "policy":
-                        # 从标题中提取政策名称
-                        company = ""
+                        company = title
                     
                     event = {
                         "title": title,
@@ -178,7 +180,27 @@ def extract_events_from_report(report_path: str) -> List[Dict[str, Any]]:
                         "type": current_type,
                         "company": company,
                     }
-                    # 使用统一的指纹生成
+                    event["fingerprint"] = generate_fingerprint(event)
+                    events.append(event)
+        
+        # 处理4列表格（研究成果等）
+        for match in matches_4col:
+            if len(match) >= 4:
+                title = match[0].strip()
+                source = match[1].strip()
+                summary = match[2].strip()
+                
+                if (title and title != "标题" and not title.startswith("-")
+                    and not title.startswith("本周期暂无") and not title.startswith("暂无")
+                    and title != "—"):
+                    event = {
+                        "title": title,
+                        "source": source,
+                        "date": "",  # 4列表格通常没有独立日期列
+                        "summary": summary,
+                        "type": current_type,
+                        "company": "",
+                    }
                     event["fingerprint"] = generate_fingerprint(event)
                     events.append(event)
     
@@ -302,7 +324,9 @@ def check_timeliness(item: Dict[str, Any], item_type: str) -> Tuple[bool, str]:
     if item_type == "events":
         # 活动预告：检查是否在未来90天内
         future_cutoff = datetime.now() + timedelta(days=window_days)
-        if item_date < datetime.now():
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        item_day = item_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        if item_day < today:
             return False, f"活动已过期 ({date_str})"
         if item_date > future_cutoff:
             return False, f"活动太远 ({date_str}, 超过{window_days}天)"
@@ -352,10 +376,10 @@ def calculate_value_score(item: Dict[str, Any]) -> int:
     
     # 4. 行业影响力（关键词匹配）
     title = item.get("title", "").lower()
-    impact_keywords = ["融资", "并购", "上市", "获批", "突破", " Nature", " Science", 
-                       "政策", "法规", "规划", "亿元", "亿美元", "FDA", "GRAS"]
+    impact_keywords = ["融资", "并购", "上市", "获批", "突破", "nature", "science", 
+                       "政策", "法规", "规划", "亿元", "亿美元", "fda", "gras"]
     for kw in impact_keywords:
-        if kw.lower() in title:
+        if kw in title:
             score += VALUE_WEIGHTS["impact"]
     
     return score
@@ -984,33 +1008,6 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
         "report_check": report_result,
         "email_check": email_result,
     }
-
-def save_event_fingerprints(new_events: List[Dict[str, Any]], report_date: str):
-    """保存新事件到指纹库"""
-    db_file = DATA_DIR / "event_fingerprints.json"
-    
-    db = {}
-    if db_file.exists():
-        try:
-            with open(db_file, 'r', encoding='utf-8') as f:
-                db = json.load(f)
-        except:
-            db = {}
-    
-    for event in new_events:
-        fp = generate_fingerprint(event)
-        db[fp] = {
-            "title": event.get("title", ""),
-            "date": event.get("date", ""),
-            "added_date": report_date,
-        }
-    
-    # 清理超过30天的旧记录
-    cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    db = {k: v for k, v in db.items() if v.get("added_date", "") >= cutoff}
-    
-    with open(db_file, 'w', encoding='utf-8') as f:
-        json.dump(db, f, ensure_ascii=False, indent=2)
 
 
 def save_rejection_log(rejected: List[Dict[str, Any]], report_date: str):
