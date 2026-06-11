@@ -159,7 +159,9 @@ def extract_events_from_report(report_path: str) -> List[Dict[str, Any]]:
                 date_str = match[2].strip()
                 summary = match[3].strip()
                 
-                if title and title != "标题" and not title.startswith("-") and title != "公司":
+                if (title and title != "标题" and not title.startswith("-") and title != "公司"
+                    and not title.startswith("本周期暂无") and not title.startswith("暂无")
+                    and title != "—"):
                     # 推断company
                     company = ""
                     if current_type == "funding":
@@ -188,24 +190,36 @@ def load_historical_events(days: int = 7) -> Dict[str, Dict[str, Any]]:
     fingerprint_db = {}
     
     cutoff_date = datetime.now() - timedelta(days=days)
+    today_str = datetime.now().strftime("%Y-%m-%d")
     
-    # 查找最近N天的报告文件
-    report_files = sorted(
-        glob.glob(str(REPORTS_DIR / "*.md")),
-        key=os.path.getmtime,
-        reverse=True
-    )
+    # 查找最近N天的报告文件，排除当天报告和变体文件
+    all_files = glob.glob(str(REPORTS_DIR / "*.md"))
+    
+    # 按日期分组，每个日期只保留标准命名文件（如 2026-06-10.md）
+    date_to_file = {}
+    for f in all_files:
+        filename = os.path.basename(f)
+        date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+        if not date_match:
+            continue
+        file_date_str = date_match.group(1)
+        # 排除当天报告（防止自我去重）
+        if file_date_str == today_str:
+            continue
+        file_date = datetime.strptime(file_date_str, "%Y-%m-%d")
+        if file_date < cutoff_date:
+            continue
+        # 优先选择标准命名文件（不含 _revised, _full 等后缀）
+        if file_date_str not in date_to_file:
+            date_to_file[file_date_str] = f
+        elif "_" not in filename and "_" in os.path.basename(date_to_file[file_date_str]):
+            # 当前文件是标准命名，替换变体
+            date_to_file[file_date_str] = f
+    
+    report_files = sorted(date_to_file.values(), key=os.path.getmtime, reverse=True)
     
     for report_file in report_files:
-        # 从文件名提取日期
         filename = os.path.basename(report_file)
-        date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
-        
-        if date_match:
-            file_date = datetime.strptime(date_match.group(1), "%Y-%m-%d")
-            if file_date < cutoff_date:
-                continue
-        
         events = extract_events_from_report(report_file)
         for event in events:
             fp = event.get("fingerprint", "")
