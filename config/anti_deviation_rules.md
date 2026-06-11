@@ -22,7 +22,7 @@ Step 5: 基于 approved 列表生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 生成H5 HTML报告
 Step 8: 生成邮件正文（与H5严格一致）
-Step 9: 邮件推送（三重验证通过后才发送）
+Step 9: 邮件推送（send gate通过后才发送）
 ```
 
 **任何情况下，Step 3→Step 4→Step 5→Step 6 必须连续执行，不得跳过。**
@@ -92,48 +92,13 @@ Step 9: 邮件推送（三重验证通过后才发送）
 在生成报告前，自动检查前置条件：
 
 ```python
-# scripts/pre_check.py
-import json
-from pathlib import Path
-from datetime import datetime
+from scripts.pre_check import pre_check
 
-def pre_check(date_str: str) -> dict:
-    """生成报告前的强制检查"""
-    base = Path(r"D:\AI\合成生物行业报告")
-    errors = []
-    warnings = []
-    
-    # 检查1: 原始数据存在
-    raw_path = base / f"data/raw_{date_str}.json"
-    if not raw_path.exists():
-        errors.append(f"原始数据不存在: {raw_path}")
-    else:
-        try:
-            with open(raw_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            for cat in ["news", "research", "funding", "policy", "events"]:
-                if cat not in data:
-                    warnings.append(f"原始数据缺少 {cat} 类别")
-        except:
-            errors.append(f"原始数据JSON格式错误: {raw_path}")
-    
-    # 检查2: 脚本处理结果存在
-    approved_path = base / f"data/approved_{date_str}.json"
-    if not approved_path.exists():
-        errors.append(f"approved数据不存在: {approved_path} → 必须先调用report_pipeline.py")
-    
-    # 检查3: 各类别处理结果存在
-    for cat in ["news", "research", "funding", "policy", "events"]:
-        proc_path = base / f"data/processed_{cat}_{date_str}.json"
-        if not proc_path.exists():
-            errors.append(f"处理结果不存在: {proc_path} → 必须先调用report_pipeline.py")
-    
-    return {
-        "can_proceed": len(errors) == 0,
-        "errors": errors,
-        "warnings": warnings,
-    }
+result = pre_check("YYYY-MM-DD")
+assert result["can_proceed"]
 ```
+
+脚本路径来自 `scripts/settings.py`，默认仓库根目录，也可用 `SYNBIO_DAILY_HOME` 覆盖。
 
 ### 4.2 报告生成后检查
 

@@ -16,7 +16,7 @@
 - **脚本强制去重**: 基于历史报告指纹库，严禁手动绕过
 - **防偏差机制**: 9步完整流水线，任何情况下不得跳过
 - **AI分析防幻觉**: AI深度分析只能引用正文已收录的信息
-- **三重验证**: 结构验证 + 时效性验证 + 邮件一致性验证，全部通过才发送
+- **发送门禁**: pre-check + 报告验证 + AI防幻觉 + post-check + MIME检查，全部通过才发送
 
 ---
 
@@ -30,12 +30,14 @@ synbio-daily-agent/
 │   ├── anti_deviation_rules.md        # 防偏差机制（强制规则，任何情况不得绕过）
 │   ├── data_sources.json              # 重点网站数据源配置
 │   ├── dedup_rules.md                 # 时效性与去重规则
-│   ├── email_config.json              # 邮件配置（真实配置，已脱敏）
+│   ├── email_config.json              # 邮件配置（本地文件，已gitignore）
 │   ├── email_config.example.json      # 邮件配置模板
 │   └── policy_database.json           # 已收录政策库
 ├── scripts/
-│   ├── report_pipeline.py             # 核心过滤/去重/验证脚本（1085行）
+│   ├── settings.py                    # 路径、时区和环境变量配置
+│   ├── report_pipeline.py             # 核心过滤/去重/验证脚本
 │   ├── send_email.py                  # 邮件发送脚本
+│   ├── render_utils.py                # HTML安全转义和URL校验
 │   ├── pre_check.py                   # 预检查脚本（生成报告前强制检查）
 │   ├── post_check.py                  # 报告后检查脚本（确保只含approved信息）
 │   └── ai_analysis_check.py          # AI分析防幻觉验证脚本
@@ -58,7 +60,7 @@ Step 5: 基于 approved 列表生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 生成H5 HTML报告
 Step 8: 生成邮件正文（与H5严格一致）
-Step 9: 邮件推送（三重验证通过后才发送）
+Step 9: 邮件推送（send gate通过后才发送）
 ```
 
 **任何情况下，Step 3→Step 4→Step 5→Step 6 必须连续执行，不得跳过。**
@@ -87,8 +89,9 @@ Step 9: 邮件推送（三重验证通过后才发送）
 2. **去重检查**: 
    - 指纹匹配（MD5哈希，基于 company+type+完整title）
    - 公司重复（同一公司+同一类型视为重复）
-   - 标题相似度（60%关键词重叠视为重复）
-3. **价值评分**: 来源权威性 + 信息完整性 + 时效性 + 行业影响力
+   - 标题相似度（SequenceMatcher ≥80% 视为重复）
+   - 历史窗口30天，并检查当前批次内部重复
+3. **价值评分**: 保留 `raw_score`，`value_score` 归一化为0-10
 4. **聚合多源报道**: 同一事件的多源报道合并
 
 ### 3. 报告格式验证
@@ -124,20 +127,16 @@ Step 9: 邮件推送（三重验证通过后才发送）
 
 ---
 
-## 已知漏洞修复记录
+## 当前验证方式
 
-### 2026-06-11 修复批次
+项目状态以自动化测试和脚本返回码为准，不在文档中声明永久满分状态。
 
-| 批次 | 修复内容 | 严重程度 |
-|------|----------|----------|
-| **批次1** | 去重bug: extract_events_from_report 未保存 company/type 字段，导致公司匹配失效 | P0 |
-| **批次2** | 3个严重缺陷: 空type穿透、金额正则错误、空白检测失效 | P0 |
-| **批次3** | 信息匮乏日验证规则优化: 执行摘要下限1条、附录链接下限1条、空板块豁免 | P1 |
-| **批次4** | 历史库加载修复: 排除当天报告、排除变体文件、排除"暂无"伪事件 | P0 |
-| **批次5** | 7个漏洞: 当天活动误判过期、研究成果不提取、双历史库、指纹截断、关键词空格、键名不一致、邮件主题硬编码 | 3P0+4P1 |
-| **批次6** | 10个问题: 白名单含幻觉公司、50%阈值过松、pre_check检查不存在文件、模板缺失日期标注、占位链接排除不完整 | 2P0+3P1+5P2 |
+```powershell
+python -m pytest -q
+python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\2026-06-11.html reports\2026-06-11_email.html --dry-run
+```
 
-**当前状态**: 所有已知P0/P1缺陷已修复，验证通过（score=100）。
+邮件发送必须通过 `send_email.py` 的 gate；gate 失败时不会连接 SMTP。
 
 ---
 
@@ -204,6 +203,9 @@ Prompt: 读取 config/anti_deviation_rules.md，执行完整9步流水线
 
 ### 调整去重规则
 编辑 `config/dedup_rules.md` 修改时效性窗口或相似度阈值。
+
+### 路径配置
+设置 `SYNBIO_DAILY_HOME` 可覆盖项目根目录；默认使用仓库根目录。设置 `SYNBIO_DAILY_TZ` 可覆盖时区，默认 `Asia/Shanghai`。
 
 ### 修改防偏差机制
 编辑 `config/anti_deviation_rules.md`，任何修改必须经过测试验证。

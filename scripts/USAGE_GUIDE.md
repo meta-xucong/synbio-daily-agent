@@ -1,206 +1,93 @@
 # AS hub NEWs agent - 脚本使用指南
-# 本指南供Cron子Agent参考，确保正确使用report_pipeline.py
 
-## 脚本位置
-`D:\AI\合成生物行业报告\scripts\report_pipeline.py`
+本指南供本地运行、Cron 子 Agent 和 CI 验证使用。当前验证状态以 `python -m pytest -q` 和脚本实际返回码为准。
 
-## 核心功能
+## 路径与环境
 
-### 1. 处理原始数据（过滤 + 去重 + 排序）
+默认项目根目录为仓库根目录，也可以用环境变量覆盖：
 
-**输入**：原始信息JSON文件
-**输出**：处理后的合规信息JSON文件
+```powershell
+$env:SYNBIO_DAILY_HOME = "D:\path\to\synbio-daily-agent"
+$env:SYNBIO_DAILY_TZ = "Asia/Shanghai"
+```
 
-```python
-import subprocess
-import sys
-import json
+脚本均使用相对路径或 `SYNBIO_DAILY_HOME`，不依赖固定本机目录。
 
-# 1. 将搜索到的原始信息保存为JSON
-raw_data = {
-    "news": [
-        {"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "...", "type": "news"},
-        # ...
-    ],
-    "research": [...],
-    "funding": [...],
-    "policy": [...],
-    "events": [...],
+## 处理原始数据
+
+`--process` 支持完整 raw dict，也支持单类别 list。
+
+```powershell
+python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news --output data\processed_news_2026-06-11.json
+```
+
+完整 raw dict 结构：
+
+```json
+{
+  "news": [{"title": "...", "source": "...", "date": "2026-06-11", "summary": "...", "url": "https://example.com/a"}],
+  "research": [],
+  "funding": [],
+  "policy": [],
+  "events": []
 }
-
-raw_path = r"D:\AI\合成生物行业报告\data\raw_2026-06-08.json"
-with open(raw_path, 'w', encoding='utf-8') as f:
-    json.dump(raw_data, f, ensure_ascii=False, indent=2)
-
-# 2. 调用脚本处理每个类别
-for category in ["news", "research", "funding", "policy", "events"]:
-    output_path = r"D:\AI\合成生物行业报告\data\processed_{category}_2026-06-08.json"
-    result = subprocess.run(
-        [sys.executable, r"D:\AI\合成生物行业报告\scripts\report_pipeline.py",
-         "--process", raw_path,
-         "--type", category,
-         "--output", output_path],
-        capture_output=True, text=True
-    )
-    
-    # 读取处理结果
-    with open(output_path, 'r', encoding='utf-8') as f:
-        processed = json.load(f)
-    
-    approved_items = processed["approved"]  # 通过审核的信息
-    rejected_items = processed["rejected"]   # 被拒绝的信息及原因
-    stats = processed["stats"]               # 统计信息
 ```
 
-### 2. 验证报告（结构 + 时效性）
+处理规则：
 
-**输入**：生成的报告Markdown文件
-**输出**：验证结果JSON文件
+- 必填字段：`title/source/date/summary/url`
+- 缺少 `type` 时自动补为 `--type`
+- 不合规 URL、缺字段、过期信息、重复信息写入 `rejected`
+- `value_score` 为 0-10，`raw_score` 保留原始分
 
-```python
-import subprocess
-import sys
-import json
+## 验证报告
 
-report_path = r"D:\AI\合成生物行业报告\reports\2026-06-08.md"
-validation_path = r"D:\AI\合成生物行业报告\data\validation_result.json"
-
-result = subprocess.run(
-    [sys.executable, r"D:\AI\合成生物行业报告\scripts\report_pipeline.py",
-     "--validate", report_path,
-     "--output", validation_path],
-    capture_output=True, text=True
-)
-
-with open(validation_path, 'r', encoding='utf-8') as f:
-    validation = json.load(f)
-
-# 检查结果
-if validation["passed"] and validation["can_send_email"]:
-    print("报告通过验证，可以发送邮件")
-else:
-    print(f"报告未通过验证，得分: {validation['overall_score']}")
-    print("需要修复的问题:")
-    for instr in validation["fix_instructions"]:
-        print(f"  - {instr}")
+```powershell
+python scripts\report_pipeline.py --validate reports\2026-06-11.md --output data\validation_2026-06-11.json
 ```
 
-## 迭代修正流程
+必须满足：
 
+- 8 个固定板块全部保留
+- 无信息板块写明：`经五轮检索，本周期暂无相关新信息收录。`
+- AI 分析只引用正文已收录实体和数字
+- 附录链接来自 approved 数据
+
+## 邮件 Gate 与 Dry Run
+
+推荐发送前先 dry-run：
+
+```powershell
+python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\2026-06-11.html reports\2026-06-11_email.html --dry-run
 ```
-生成报告 → 调用脚本验证 → 检查fix_instructions
-    ↑                                    ↓
-    └──── 根据fix_instructions修正 ─────┘
-         （最多迭代3次）
+
+`send_email.py` 会强制执行：
+
+1. `pre_check(date)`
+2. 读取 `data/approved_YYYY-MM-DD.json`
+3. `run_full_validation(report_md, email_body, approved_data)`
+4. `validate_ai_analysis(report_md)`
+5. `post_check(date)`
+6. 构造 MIME 后执行 `validate_email_mime_type(msg)`
+
+任一 gate 失败，脚本返回非 0，且不会连接 SMTP。
+
+## 本地测试
+
+```powershell
+python -m pytest -q
+python -m compileall scripts
+rg -n -F 'D:\AI\合成生物行业报告' .
 ```
 
-**迭代规则**：
-1. 第一次生成报告后，立即调用脚本验证
-2. 如果 `passed = false` 或 `can_send_email = false`，根据 `fix_instructions` 修正报告
-3. 修正后再次验证
-4. 最多迭代3次，如果仍不通过，记录错误并跳过邮件发送
-
-## 关键检查点
-
-### 检查点0：信息源全面搜索（五轮搜索法，严禁遗漏）
-
-**第一轮：通用关键词搜索**
-- 使用中文关键词：合成生物、合成生物学、生物制造
-- 使用英文关键词：synthetic biology, biomanufacturing
-
-**第二轮：site:限定符定向搜索（必须逐个执行）**
-- 国内源（7个site:+3个微信关键词）：`site:36kr.com 合成生物`、`site:pedaily.cn 合成生物 融资`、`site:vbdata.cn 合成生物`、`site:bydrug.pharmcube.com 合成生物`、`site:bioon.com 合成生物`、`site:synbio-he.com 合成生物`、`site:stdaily.com 合成生物`、`深波synbio 合成生物`、`深波synbio 融资`、`深波synbio 政策`
-- 国际源（7个）：`site:synbiobeta.com synthetic biology`、`site:genengnews.com synthetic biology`、`site:fiercebiotech.com synthetic biology`、`site:labiotech.eu synthetic biology`、`site:crisprmedicinenews.com CRISPR`、`site:competition.igem.org synthetic biology`
-
-**第三轮：英文关键词补充搜索**
-- `synthetic biology news today`
-- `biomanufacturing funding 2026`
-- `precision fermentation breakthrough`
-- `cell factory engineering`
-
-**第四轮：报告生成前复查**
-- 重点检查投资界、36氪、动脉网、科技日报、深波synbio等高频更新源
-- 确认今日/本周无新信息发布
-- 如发现有遗漏，立即补充收录
-
-**第五轮：政府与学术会议定向搜索（每日必搜，严禁跳过）**
-
-无论前四轮结果如何，每日必须执行以下定向搜索，防止遗漏政府征集通知和学术会议信息：
-
-| 搜索目标 | 必搜关键词 | 必查来源 |
-|---------|-----------|---------|
-| **北京市科委** | `site:kw.beijing.gov.cn 合成生物`、`site:kw.beijing.gov.cn 生物制造`、`site:kw.beijing.gov.cn 征集` | 北京市科委官网政策文件、征集通知 |
-| **深圳市科创委** | `site:stic.sz.gov.cn 合成生物`、`site:stic.sz.gov.cn 生物制造` | 深圳市科创委 |
-| **上海市经信委** | `site:sh.gov.cn 合成生物`、`site:sh.gov.cn 生物制造` | 上海市经信委 |
-| **科学网政策** | `site:sciencenet.cn 合成生物 征集`、`site:sciencenet.cn 生物制造 申报` | 科学网政策频道 |
-| **AIChE/SBE会议** | `site:synbioconference.org`、`site:aiche.org synthetic biology`、`SEED 2026 synthetic biology` | AIChE/SBE合成生物会议 |
-| **国际会议** | `site:europabio.org event synthetic biology`、`site:scientificwisdom.org 合成生物` | EuropaBio、学术会议网 |
-| **国内会议** | `site:academicx.org 合成生物`、`site:sohu.com 合成生物 会议 征集` | 学术会议网 |
-
-**⚠️ 信息源遗漏陷阱**：
-- 只搜通用关键词 → 遗漏垂直媒体独家信息
-- 只搜一次不复查 → 错过下午发布的新信息
-- 只搜中文不搜英文 → 错过国际重要动态
-- **政策只搜"政策"二字 → 遗漏"征集""申报""储备课题""指南"等行政术语**
-- **会议只搜"会议"二字 → 遗漏英文会议名如SEED、SynBioBeta、AIChE等**
-- **政府网站不直接搜 → 遗漏科委/经信委官网发布的征集通知（这些通知往往不在商业媒体出现）**
-
-### 检查点1：信息处理阶段
-- [ ] 原始信息已保存为JSON
-- [ ] 每个类别已调用脚本处理
-- [ ] 已查看被拒绝的信息及原因
-- [ ] 只使用 `approved` 列表中的信息生成报告
-
-### 检查点2：报告生成阶段
-- [ ] 严格使用模板 `templates/daily_report_template.md`
-- [ ] 只包含脚本输出的合规信息
-- [ ] **执行摘要按日期降序排列，每条末尾标注 `（YYYY-MM-DD）`**
-- [ ] **所有板块表格/卡片按日期降序排列（最新→最旧）**
-- [ ] 执行摘要精选5-8条最有价值的信息（优先选日期最近、价值分数最高的）
-- [ ] **空白板块检查**：如政策/研究/活动/融资板块为空，必须确认已执行第五轮定向补搜，并在报告中注明"经全面检索，本周期暂无新信息"，而非直接留空
-
-### 检查点3：验证阶段
-- [ ] 报告生成后立即调用脚本验证
-- [ ] 检查 `validation["passed"]` 是否为 true
-- [ ] 检查 `validation["can_send_email"]` 是否为 true
-- [ ] 检查 `validation["overall_score"]` 是否 >= 80
-
-### 检查点4：迭代修正
-- [ ] 如有fix_instructions，逐项修正
-- [ ] 修正后重新验证
-- [ ] 最多迭代3次
-
-### 检查点5：邮件发送
-- [ ] 验证通过后，才生成HTML并发送邮件
-- [ ] **邮件附件MIME类型必须正确**：
-  - HTML附件：`MIMEText(html_content, 'html', 'utf-8')` → MIME类型 `text/html`
-  - Markdown附件：`MIMEText(md_content, 'plain', 'utf-8')` → MIME类型 `text/plain`
-  - **严禁使用 `MIMEBase('application', 'octet-stream')`**（会导致附件变成.bin文件）
-- [ ] 邮件必须附带HTML附件
-- [ ] 发送失败重试一次
-
-**⚠️ 邮件附件MIME类型陷阱**：
-- 使用 `MIMEBase('application', 'octet-stream')` → QQ邮箱显示为 `.bin` 文件
-- 正确做法：HTML用 `MIMEText(content, 'html', 'utf-8')`，MD用 `MIMEText(content, 'plain', 'utf-8')`
-
-## 注意事项
-
-1. **不要跳过脚本验证直接发送邮件** — 这是强制步骤
-2. **不要忽略fix_instructions** — 每个指令都必须处理
-3. **不要使用被拒绝的信息** — 只使用approved列表
-4. **保留处理日志** — 被拒绝的信息和验证结果保存到data目录，便于审计
-5. **信息源搜索必须执行五轮** — 通用搜索 → site:定向搜索 → 英文补充搜索 → 生成前复查 → 政府与会议定向搜索
-6. **邮件附件MIME类型必须正确** — HTML用text/html，MD用text/plain，严禁用octet-stream
+最后一条不应出现运行逻辑中的硬编码路径。
 
 ## 文件命名规范
 
 - 原始数据：`data/raw_YYYY-MM-DD.json`
-- 处理后数据：`data/processed_{category}_YYYY-MM-DD.json`
-- 验证结果：`data/validation_result.json` 或 `data/validation_YYYY-MM-DD.json`
-- 拒绝日志：`data/rejected_YYYY-MM-DD.json`
-
----
-
-*指南版本：v1.2*
-*更新日期：2026-06-10*
-*更新内容：升级为五轮搜索法（新增政府与学术会议定向搜索）+ 邮件附件MIME类型检查 + 日期排序规则固化*
+- 处理结果：`data/processed_{category}_YYYY-MM-DD.json`
+- approved：`data/approved_YYYY-MM-DD.json`
+- rejected：`data/rejected_YYYY-MM-DD.json`
+- Markdown：`reports/YYYY-MM-DD.md`
+- H5：`reports/YYYY-MM-DD.html`
+- 邮件 HTML：`reports/YYYY-MM-DD_email.html`

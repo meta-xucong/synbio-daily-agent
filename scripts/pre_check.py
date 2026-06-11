@@ -6,11 +6,10 @@ AS hub NEWs agent - 预检查脚本
 """
 
 import json
-from pathlib import Path
-from datetime import datetime
-
-BASE_DIR = Path(r"D:\AI\合成生物行业报告")
-DATA_DIR = BASE_DIR / "data"
+try:
+    from .settings import DATA_DIR, date_str as current_date_str
+except ImportError:
+    from settings import DATA_DIR, date_str as current_date_str
 
 
 def pre_check(date_str: str) -> dict:
@@ -88,7 +87,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         date_str = sys.argv[1]
     else:
-        date_str = datetime.now().strftime("%Y-%m-%d")
+        date_str = current_date_str()
     
     result = pre_check(date_str)
     sys.exit(0 if result["can_proceed"] else 1)

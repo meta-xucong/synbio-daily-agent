@@ -19,18 +19,20 @@ import json
 import os
 import re
 import hashlib
+from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 import glob
 
-# ==================== 配置常量 ====================
+try:
+    from .settings import CONFIG_DIR, DATA_DIR, REPORTS_DIR, TEMPLATES_DIR, now_local
+    from .ai_analysis_check import validate_ai_analysis
+except ImportError:
+    from settings import CONFIG_DIR, DATA_DIR, REPORTS_DIR, TEMPLATES_DIR, now_local
+    from ai_analysis_check import validate_ai_analysis
 
-BASE_DIR = Path(r"D:\AI\合成生物行业报告")
-REPORTS_DIR = BASE_DIR / "reports"
-CONFIG_DIR = BASE_DIR / "config"
-DATA_DIR = BASE_DIR / "data"
-TEMPLATES_DIR = BASE_DIR / "templates"
+# ==================== 配置常量 ====================
 
 # 时间窗口配置（天）
 TIME_WINDOWS = {
@@ -40,6 +42,12 @@ TIME_WINDOWS = {
     "events": 90,  # 未来90天
     "funding": 7,
 }
+
+REQUIRED_RAW_FIELDS = {"title", "source", "date", "summary", "url"}
+VALID_ITEM_TYPES = {"news", "research", "funding", "policy", "events"}
+TITLE_SIMILARITY_THRESHOLD = 0.80
+HISTORY_DEDUP_DAYS = 30
+MAX_RAW_SCORE = 30
 
 # 板块名称映射
 SECTION_MAP = {
@@ -119,6 +127,65 @@ def generate_fingerprint(item: Dict[str, Any]) -> str:
     # 提取核心实体（公司名、产品名、技术名）
     fingerprint_text = f"{company}|{event_type}|{title}"
     return hashlib.md5(fingerprint_text.encode('utf-8')).hexdigest()[:16]
+
+
+def normalize_raw_input(raw_obj: Any, item_type: str) -> List[Dict[str, Any]]:
+    """Normalize raw JSON into a list for one category."""
+    if item_type not in VALID_ITEM_TYPES:
+        raise ValueError(f"unknown item type: {item_type}")
+
+    if isinstance(raw_obj, dict):
+        items = raw_obj.get(item_type, [])
+    elif isinstance(raw_obj, list):
+        items = raw_obj
+    else:
+        raise ValueError("raw data must be a list or a category dict")
+
+    if not isinstance(items, list):
+        raise ValueError(f"raw data for {item_type} must be a list")
+
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(f"raw item at index {index} must be a dict")
+
+    return items
+
+
+def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, Dict[str, Any]]:
+    """Validate and normalize one raw item before filtering."""
+    normalized = dict(item)
+    missing = sorted(
+        field for field in REQUIRED_RAW_FIELDS
+        if field not in normalized or normalized.get(field) in (None, "")
+    )
+    if missing:
+        return False, f"[schema] missing required fields: {', '.join(missing)}", normalized
+
+    normalized["type"] = normalized.get("type") or item_type
+    if normalized["type"] not in VALID_ITEM_TYPES:
+        return False, f"[schema] invalid type: {normalized['type']}", normalized
+
+    url = str(normalized.get("url", ""))
+    if not re.match(r"^https?://[^/\s]+", url):
+        return False, f"[schema] invalid url: {url}", normalized
+
+    return True, "", normalized
+
+
+def normalize_title(title: str) -> str:
+    """Normalize titles before similarity checks."""
+    title = re.sub(r"\s+", "", str(title or "").lower())
+    title = re.sub(r"[^\w\u4e00-\u9fff]+", "", title)
+    return title
+
+
+def title_similarity(a: str, b: str) -> float:
+    """Return SequenceMatcher title similarity in the 0-1 range."""
+    left = normalize_title(a)
+    right = normalize_title(b)
+    if not left or not right:
+        return 0.0
+    return SequenceMatcher(None, left, right).ratio()
 
 
 def extract_events_from_report(report_path: str) -> List[Dict[str, Any]]:
@@ -207,12 +274,13 @@ def extract_events_from_report(report_path: str) -> List[Dict[str, Any]]:
     return events
 
 
-def load_historical_events(days: int = 7) -> Dict[str, Dict[str, Any]]:
+def load_historical_events(days: int = HISTORY_DEDUP_DAYS) -> Dict[str, Dict[str, Any]]:
     """加载最近N天的历史事件指纹库"""
     fingerprint_db = {}
     
-    cutoff_date = datetime.now() - timedelta(days=days)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    now = now_local().replace(tzinfo=None)
+    cutoff_date = now - timedelta(days=days)
+    today_str = now.strftime("%Y-%m-%d")
     
     # 查找最近N天的报告文件，排除当天报告和变体文件
     all_files = glob.glob(str(REPORTS_DIR / "*.md"))
@@ -302,29 +370,31 @@ def is_duplicate(item: Dict[str, Any], fingerprint_db: Dict[str, Any]) -> Tuple[
             
             if len(title_words) > 0 and len(existing_words) > 0:
                 overlap = len(title_words & existing_words) / max(len(title_words), len(existing_words))
-                if overlap > 0.6:  # 60%关键词重叠视为重复
-                    return True, f"标题相似: {existing_title} ({existing_data['date']})"
+                similarity = title_similarity(title, existing_title)
+                if similarity >= TITLE_SIMILARITY_THRESHOLD:
+                    return True, f"标题相似度{similarity:.0%}: {existing_title} ({existing_data['date']})"
     
     return False, ""
 
 
-def check_timeliness(item: Dict[str, Any], item_type: str) -> Tuple[bool, str]:
+def check_timeliness(item: Dict[str, Any], item_type: str, now: Optional[datetime] = None) -> Tuple[bool, str]:
     """检查时效性"""
     date_str = item.get("date", "")
     item_date = parse_date(date_str)
+    current_time = (now or now_local()).replace(tzinfo=None)
     
     if not item_date:
         return True, "无法解析日期，保留待人工审核"
     
     window_days = TIME_WINDOWS.get(item_type, 7)
-    cutoff = datetime.now() - timedelta(days=window_days)
+    cutoff = current_time - timedelta(days=window_days)
     # 只比较日期部分，避免边界时间问题
     cutoff = cutoff.replace(hour=0, minute=0, second=0, microsecond=0)
     
     if item_type == "events":
         # 活动预告：检查是否在未来90天内
-        future_cutoff = datetime.now() + timedelta(days=window_days)
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        future_cutoff = current_time + timedelta(days=window_days)
+        today = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
         item_day = item_date.replace(hour=0, minute=0, second=0, microsecond=0)
         if item_day < today:
             return False, f"活动已过期 ({date_str})"
@@ -338,8 +408,8 @@ def check_timeliness(item: Dict[str, Any], item_type: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def calculate_value_score(item: Dict[str, Any]) -> int:
-    """计算信息价值分数"""
+def calculate_raw_score(item: Dict[str, Any]) -> int:
+    """计算信息价值原始分数"""
     score = 0
     
     # 1. 来源权威性
@@ -366,7 +436,7 @@ def calculate_value_score(item: Dict[str, Any]) -> int:
     date_str = item.get("date", "")
     item_date = parse_date(date_str)
     if item_date:
-        days_ago = (datetime.now() - item_date).days
+        days_ago = (now_local().replace(tzinfo=None) - item_date).days
         if days_ago <= 1:
             score += VALUE_WEIGHTS["timeliness"] * 3
         elif days_ago <= 3:
@@ -383,6 +453,16 @@ def calculate_value_score(item: Dict[str, Any]) -> int:
             score += VALUE_WEIGHTS["impact"]
     
     return score
+
+
+def normalize_value_score(raw_score: int) -> float:
+    """Normalize raw score into the documented 0-10 range."""
+    return min(10.0, round(max(raw_score, 0) / MAX_RAW_SCORE * 10, 1))
+
+
+def calculate_value_score(item: Dict[str, Any]) -> float:
+    """计算0-10范围的信息价值分数"""
+    return normalize_value_score(calculate_raw_score(item))
 
 
 def aggregate_duplicates(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -433,15 +513,21 @@ def process_raw_data(raw_data: List[Dict[str, Any]], item_type: str) -> Dict[str
         "stats": {...},         # 统计信息
     }
     """
-    fingerprint_db = load_historical_events(days=7)
+    fingerprint_db = load_historical_events(days=HISTORY_DEDUP_DAYS)
     policy_db = load_policy_database()
     
     approved = []
     rejected = []
     
     for item in raw_data:
-        item_id = item.get("id", "")
-        title = item.get("title", "")
+        schema_ok, schema_reason, item = validate_raw_item(item, item_type)
+        if not schema_ok:
+            rejected.append({
+                "item": item,
+                "reason": schema_reason,
+                "action": "排除",
+            })
+            continue
         
         # 1. 时效性检查
         timely, reason = check_timeliness(item, item_type)
@@ -481,13 +567,33 @@ def process_raw_data(raw_data: List[Dict[str, Any]], item_type: str) -> Dict[str
                 continue
         
         # 4. 计算价值分数
-        score = calculate_value_score(item)
-        item["value_score"] = score
+        raw_score = calculate_raw_score(item)
+        item["raw_score"] = raw_score
+        item["value_score"] = normalize_value_score(raw_score)
         
         approved.append(item)
     
     # 5. 聚合多源报道
     approved = aggregate_duplicates(approved)
+    batch_fingerprint_db = dict(fingerprint_db)
+    batch_deduped = []
+    for item in approved:
+        is_dup, dup_reason = is_duplicate(item, batch_fingerprint_db)
+        if is_dup:
+            rejected.append({
+                "item": item,
+                "reason": f"[批次去重] {dup_reason}",
+                "action": "排除",
+            })
+            continue
+        batch_fingerprint_db[generate_fingerprint(item)] = {
+            "title": item.get("title", ""),
+            "date": item.get("date", ""),
+            "company": item.get("company", ""),
+            "type": item.get("type", ""),
+        }
+        batch_deduped.append(item)
+    approved = batch_deduped
     
     # 6. 按价值分数排序
     approved.sort(key=lambda x: x.get("value_score", 0), reverse=True)
@@ -498,6 +604,7 @@ def process_raw_data(raw_data: List[Dict[str, Any]], item_type: str) -> Dict[str
         "rejected": len(rejected),
         "timeliness_rejected": len([r for r in rejected if "时效性" in r["reason"]]),
         "duplicate_rejected": len([r for r in rejected if "去重" in r["reason"] or "政策库" in r["reason"]]),
+        "schema_rejected": len([r for r in rejected if "[schema]" in r["reason"]]),
         "avg_score": sum(a.get("value_score", 0) for a in approved) / max(len(approved), 1),
     }
     
@@ -699,7 +806,7 @@ def validate_report_structure(report_path: str) -> Dict[str, Any]:
     }
 
 
-def validate_timeliness_in_report(report_path: str) -> Dict[str, Any]:
+def validate_timeliness_in_report(report_path: str, now: Optional[datetime] = None) -> Dict[str, Any]:
     """验证报告中所有信息的时效性"""
     errors = []
     warnings = []
@@ -718,13 +825,13 @@ def validate_timeliness_in_report(report_path: str) -> Dict[str, Any]:
         matches = re.findall(pattern, content)
         for match in matches:
             if len(match) >= 3:
-                date_str = match[-3].strip() if len(match) > 3 else match[2].strip()
+                date_str = match[-1].strip() if len(match) > 3 else match[2].strip()
                 title = match[0].strip()
                 if title and title != "标题" and not title.startswith("-"):
                     all_dates.append((title, date_str))
     
     # 检查每个日期
-    now = datetime.now()
+    now = (now or now_local()).replace(tzinfo=None)
     for title, date_str in all_dates:
         item_date = parse_date(date_str)
         if item_date:
@@ -976,16 +1083,24 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
     
     # 2. 验证邮件一致性
     email_result = validate_email_consistency(email_body, approved_data)
+
+    # 3. 验证AI分析只引用正文事实
+    ai_result = validate_ai_analysis(report_md_path)
     
     fix_instructions = list(report_result.get("fix_instructions", []))
     
     # 邮件一致性错误必须修复
     if not email_result["is_consistent"]:
         fix_instructions.extend(email_result["errors"])
+
+    if ai_result["has_errors"]:
+        fix_instructions.extend(ai_result["errors"])
     
     # 邮件一致性警告建议修复
     if email_result["warnings"]:
         fix_instructions.extend([f"[邮件一致性建议] {w}" for w in email_result["warnings"]])
+    if ai_result["warnings"]:
+        fix_instructions.extend([f"[AI分析建议] {w}" for w in ai_result["warnings"]])
     
     # 计算综合分数
     score = report_result["overall_score"]
@@ -993,20 +1108,27 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
         score -= len(email_result["errors"]) * 15
     if email_result["warnings"]:
         score -= len(email_result["warnings"]) * 3
+    if ai_result["has_errors"]:
+        score -= len(ai_result["errors"]) * 15
+    if ai_result["warnings"]:
+        score -= len(ai_result["warnings"]) * 3
     score = max(0, score)
     
     report_passed = report_result["passed"]
     email_consistent = email_result["is_consistent"]
-    can_send = report_passed and email_consistent and score >= 80
+    ai_passed = not ai_result["has_errors"]
+    can_send = report_passed and email_consistent and ai_passed and score >= 80
     
     return {
         "report_passed": report_passed,
         "email_consistent": email_consistent,
+        "ai_passed": ai_passed,
         "can_send_email": can_send,
         "overall_score": score,
         "fix_instructions": fix_instructions,
         "report_check": report_result,
         "email_check": email_result,
+        "ai_check": ai_result,
     }
 
 
@@ -1059,8 +1181,9 @@ def main():
     
     elif args.process:
         with open(args.process, 'r', encoding='utf-8') as f:
-            raw_data = json.load(f)
+            raw_obj = json.load(f)
         
+        raw_data = normalize_raw_input(raw_obj, args.type)
         result = process_raw_data(raw_data, args.type)
         
         if args.output:
@@ -1071,7 +1194,7 @@ def main():
     
     else:
         # 默认：显示历史事件库统计
-        fp_db = load_historical_events(days=7)
+        fp_db = load_historical_events(days=HISTORY_DEDUP_DAYS)
         print(f"历史事件指纹库: {len(fp_db)}条记录")
         
         policy_db = load_policy_database()

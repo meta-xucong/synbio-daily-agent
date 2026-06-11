@@ -1,0 +1,38 @@
+{
+  "news": [
+    {
+      "title": "Synthetic Bio Company Raises Series A",
+      "source": "SynBioBeta",
+      "date": "2026-06-10",
+      "summary": "The company raised 5000万元 to expand biomanufacturing capacity.",
+      "url": "https://example.com/news/series-a"
+    },
+    {
+      "title": "Synthetic Bio Company Raises Series A!",
+      "source": "SynBioBeta",
+      "date": "2026-06-10",
+      "summary": "A second report covers the same Series A financing.",
+      "url": "https://example.com/news/series-a-duplicate",
+      "type": "news"
+    },
+    {
+      "source": "Missing Title Daily",
+      "date": "2026-06-10",
+      "summary": "This item is missing a title.",
+      "url": "https://example.com/news/missing-title",
+      "type": "news"
+    }
+  ],
+  "research": [
+    {
+      "title": "Cell factory engineering improves yield",
+      "source": "Nature Biotechnology",
+      "date": "2026-06-09",
+      "summary": "A study reports improved yield.",
+      "url": "https://example.com/research/cell-factory"
+    }
+  ],
+  "funding": [],
+  "policy": [],
+  "events": []
+}

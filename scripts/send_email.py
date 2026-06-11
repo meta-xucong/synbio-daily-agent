@@ -1,77 +1,209 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-合成生物行业日报 - 邮件发送脚本
-"""
+"""合成生物行业日报 - 邮件发送脚本"""
 
-import smtplib
-import sys
+from __future__ import annotations
+
+import argparse
 import json
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import os
+import smtplib
 from pathlib import Path
-from datetime import datetime
+from typing import Any, Dict
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
-def load_email_config():
+try:
+    from .settings import CONFIG_DIR, DATA_DIR
+    from . import pre_check as pre_check_module
+    from . import post_check as post_check_module
+    from .pre_check import pre_check
+    from .post_check import post_check
+    from . import report_pipeline as report_pipeline_module
+    from .report_pipeline import run_full_validation, validate_email_mime_type
+except ImportError:
+    from settings import CONFIG_DIR, DATA_DIR
+    import pre_check as pre_check_module
+    import post_check as post_check_module
+    from pre_check import pre_check
+    from post_check import post_check
+    import report_pipeline as report_pipeline_module
+    from report_pipeline import run_full_validation, validate_email_mime_type
+
+
+def load_email_config() -> Dict[str, Any]:
     """从配置文件读取邮件配置"""
-    config_path = Path(r"D:\AI\合成生物行业报告\config\email_config.json")
+    config_path = CONFIG_DIR / "email_config.json"
     if not config_path.exists():
         raise FileNotFoundError(f"邮件配置文件不存在: {config_path}")
-    with open(config_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
 
-def send_daily_report(date_str, md_path, html_path, email_html_path=None):
-    """发送日报邮件"""
-    
-    # 读取邮件配置
-    config = load_email_config()
-    smtp_server = config["smtp_server"]
-    smtp_port = config["smtp_port"]
-    sender = config["sender_email"]
-    password = config["sender_password"]
-    receiver = config["receiver_email"]
-    
-    if not config.get("enabled", True):
-        print("邮件发送已禁用 (enabled=false)")
-        return False
-    
-    # 读取文件
-    with open(md_path, 'r', encoding='utf-8') as f:
+    env_password = os.getenv("SMTP_PASSWORD")
+    if env_password:
+        config["sender_password"] = env_password
+    return config
+
+
+def read_report_files(md_path: str | Path, html_path: str | Path, email_html_path: str | Path | None = None) -> Dict[str, str]:
+    """Read report body and attachment contents."""
+    md_path = Path(md_path)
+    html_path = Path(html_path)
+    with open(md_path, "r", encoding="utf-8") as f:
         md_content = f.read()
-    
-    with open(html_path, 'r', encoding='utf-8') as f:
+    with open(html_path, "r", encoding="utf-8") as f:
         html_content = f.read()
-    
-    # 创建邮件
-    msg = MIMEMultipart('related')
-    msg['Subject'] = f'合成生物行业日报 - {date_str}'
-    msg['From'] = sender
-    msg['To'] = receiver
-    
-    # 邮件正文（HTML）
+
     if email_html_path and Path(email_html_path).exists():
-        with open(email_html_path, 'r', encoding='utf-8') as f:
+        with open(email_html_path, "r", encoding="utf-8") as f:
             email_body = f.read()
     else:
         email_body = html_content
-    
-    msg.attach(MIMEText(email_body, 'html', 'utf-8'))
-    
-    # HTML附件 - 必须使用 text/html MIME类型
-    html_attachment = MIMEText(html_content, 'html', 'utf-8')
-    html_attachment.add_header('Content-Disposition', 'attachment', filename=f'synbio_daily_{date_str}.html')
+
+    return {
+        "md_content": md_content,
+        "html_content": html_content,
+        "email_body": email_body,
+    }
+
+
+def build_email_message(
+    date_str: str,
+    sender: str,
+    receiver: str,
+    md_content: str,
+    html_content: str,
+    email_body: str,
+) -> MIMEMultipart:
+    """Build the MIME message without sending it."""
+    msg = MIMEMultipart("related")
+    msg["Subject"] = f"合成生物行业日报 - {date_str}"
+    msg["From"] = sender
+    msg["To"] = receiver
+
+    msg.attach(MIMEText(email_body, "html", "utf-8"))
+
+    html_attachment = MIMEText(html_content, "html", "utf-8")
+    html_attachment.add_header("Content-Disposition", "attachment", filename=f"synbio_daily_{date_str}.html")
     msg.attach(html_attachment)
-    
-    # Markdown附件 - 必须使用 text/plain MIME类型
-    md_attachment = MIMEText(md_content, 'plain', 'utf-8')
-    md_attachment.add_header('Content-Disposition', 'attachment', filename=f'synbio_daily_{date_str}.md')
+
+    md_attachment = MIMEText(md_content, "plain", "utf-8")
+    md_attachment.add_header("Content-Disposition", "attachment", filename=f"synbio_daily_{date_str}.md")
     msg.attach(md_attachment)
-    
-    # 发送邮件
+
+    return msg
+
+
+def load_approved_data(date_str: str) -> list[dict[str, Any]]:
+    """Load approved data for the send gate."""
+    approved_path = DATA_DIR / f"approved_{date_str}.json"
+    if not approved_path.exists():
+        raise FileNotFoundError(f"approved数据不存在: {approved_path}")
+    with open(approved_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError(f"approved数据必须是列表: {approved_path}")
+    return data
+
+
+def validate_send_gate(
+    date_str: str,
+    md_path: str | Path,
+    html_path: str | Path,
+    email_html_path: str | Path | None = None,
+    msg: MIMEMultipart | None = None,
+) -> Dict[str, Any]:
+    """Run all checks required before any SMTP connection is opened."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    details: Dict[str, Any] = {}
+
+    report_path = Path(md_path)
+    runtime_data_dir = DATA_DIR
+    runtime_reports_dir = report_path.parent
+    pre_check_module.DATA_DIR = runtime_data_dir
+    post_check_module.DATA_DIR = runtime_data_dir
+    post_check_module.REPORTS_DIR = runtime_reports_dir
+    report_pipeline_module.DATA_DIR = runtime_data_dir
+    report_pipeline_module.REPORTS_DIR = runtime_reports_dir
+
+    pre_result = pre_check(date_str)
+    details["pre_check"] = pre_result
+    errors.extend(pre_result.get("errors", []))
+    warnings.extend(pre_result.get("warnings", []))
+
     try:
-        server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-        server.login(sender, password)
-        server.sendmail(sender, [receiver], msg.as_string())
+        approved_data = load_approved_data(date_str)
+    except Exception as exc:
+        approved_data = []
+        errors.append(str(exc))
+
+    files = read_report_files(md_path, html_path, email_html_path)
+    validation = run_full_validation(str(md_path), files["email_body"], approved_data)
+    details["full_validation"] = validation
+    if not validation.get("can_send_email"):
+        errors.extend(validation.get("fix_instructions", []))
+
+    post_result = post_check(date_str)
+    details["post_check"] = post_result
+    errors.extend(post_result.get("errors", []))
+    warnings.extend(post_result.get("warnings", []))
+
+    if msg is None:
+        msg = build_email_message(
+            date_str=date_str,
+            sender="gate@example.invalid",
+            receiver="gate@example.invalid",
+            md_content=files["md_content"],
+            html_content=files["html_content"],
+            email_body=files["email_body"],
+        )
+    mime_result = validate_email_mime_type(msg)
+    details["mime_check"] = mime_result
+    if not mime_result.get("is_valid"):
+        errors.extend(mime_result.get("errors", []))
+    warnings.extend(mime_result.get("warnings", []))
+
+    return {
+        "passed": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "details": details,
+    }
+
+
+def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_run=False):
+    """发送日报邮件。发送前必须通过 gate；dry-run 不连接 SMTP。"""
+    config = load_email_config()
+    if not config.get("enabled", True):
+        print("邮件发送已禁用 (enabled=false)")
+        return False
+
+    files = read_report_files(md_path, html_path, email_html_path)
+    msg = build_email_message(
+        date_str=date_str,
+        sender=config["sender_email"],
+        receiver=config["receiver_email"],
+        md_content=files["md_content"],
+        html_content=files["html_content"],
+        email_body=files["email_body"],
+    )
+
+    gate = validate_send_gate(date_str, md_path, html_path, email_html_path, msg=msg)
+    if not gate["passed"]:
+        print(f"邮件发送门禁未通过: {len(gate['errors'])} 个错误")
+        for error in gate["errors"][:10]:
+            print(f"  - {error}")
+        return False
+
+    if dry_run:
+        print(f"邮件 dry-run 通过: {date_str}")
+        return True
+
+    try:
+        server = smtplib.SMTP_SSL(config["smtp_server"], config["smtp_port"])
+        server.login(config["sender_email"], config["sender_password"])
+        server.sendmail(config["sender_email"], [config["receiver_email"]], msg.as_string())
         server.quit()
         print(f"邮件发送成功: {date_str}")
         return True
@@ -79,15 +211,25 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None):
         print(f"邮件发送失败: {e}")
         return False
 
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Send synbio daily report after validation gate")
+    parser.add_argument("date")
+    parser.add_argument("md_path")
+    parser.add_argument("html_path")
+    parser.add_argument("email_html_path", nargs="?")
+    parser.add_argument("--dry-run", action="store_true", help="run gate and build email without SMTP")
+    args = parser.parse_args()
+
+    success = send_daily_report(
+        args.date,
+        args.md_path,
+        args.html_path,
+        args.email_html_path,
+        dry_run=args.dry_run,
+    )
+    return 0 if success else 1
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python send_email.py <date> <md_path> <html_path> [email_html_path]")
-        sys.exit(1)
-    
-    date_str = sys.argv[1]
-    md_path = sys.argv[2]
-    html_path = sys.argv[3]
-    email_html_path = sys.argv[4] if len(sys.argv) > 4 else None
-    
-    success = send_daily_report(date_str, md_path, html_path, email_html_path)
-    sys.exit(0 if success else 1)
+    raise SystemExit(main())

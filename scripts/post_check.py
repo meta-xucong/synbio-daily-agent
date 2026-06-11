@@ -7,11 +7,10 @@ AS hub NEWs agent - 报告后检查脚本
 
 import json
 import re
-from pathlib import Path
-
-BASE_DIR = Path(r"D:\AI\合成生物行业报告")
-DATA_DIR = BASE_DIR / "data"
-REPORTS_DIR = BASE_DIR / "reports"
+try:
+    from .settings import DATA_DIR, REPORTS_DIR, date_str as current_date_str
+except ImportError:
+    from settings import DATA_DIR, REPORTS_DIR, date_str as current_date_str
 
 
 def post_check(date_str: str) -> dict:
@@ -91,12 +90,11 @@ def post_check(date_str: str) -> dict:
 
 if __name__ == "__main__":
     import sys
-    from datetime import datetime
     
     if len(sys.argv) > 1:
         date_str = sys.argv[1]
     else:
-        date_str = datetime.now().strftime("%Y-%m-%d")
+        date_str = current_date_str()
     
     result = post_check(date_str)
     sys.exit(0 if result["can_send"] else 1)
