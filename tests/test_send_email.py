@@ -71,3 +71,15 @@ def test_send_dry_run_does_not_require_email_config(tmp_path, monkeypatch):
     monkeypatch.setattr(send_email, "smtplib", type("SMTPModule", (), {"SMTP_SSL": lambda *a, **k: (_ for _ in ()).throw(AssertionError("SMTP called"))}))
 
     assert send_email.send_daily_report("2026-06-10", md, html, dry_run=True) is True
+
+
+def test_send_gate_blocks_unsafe_html(tmp_path, monkeypatch):
+    md, html = _write_runtime_tree(tmp_path)
+    html.write_text('<script>alert(1)</script>', encoding="utf-8")
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+
+    result = send_email.validate_send_gate("2026-06-10", md, html)
+
+    assert not result["passed"]
+    assert any("HTML安全" in error for error in result["errors"])

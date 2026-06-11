@@ -28,9 +28,11 @@ import glob
 try:
     from .settings import CONFIG_DIR, DATA_DIR, REPORTS_DIR, TEMPLATES_DIR, now_local
     from .ai_analysis_check import validate_ai_analysis
+    from .render_utils import safe_url
 except ImportError:
     from settings import CONFIG_DIR, DATA_DIR, REPORTS_DIR, TEMPLATES_DIR, now_local
     from ai_analysis_check import validate_ai_analysis
+    from render_utils import safe_url
 
 # ==================== 配置常量 ====================
 
@@ -167,8 +169,10 @@ def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, 
     if normalized["type"] != item_type:
         return False, f"[schema] type mismatch: item has {normalized['type']}, category is {item_type}", normalized
 
-    url = str(normalized.get("url", ""))
-    if not re.match(r"^https?://[^/\s]+", url):
+    try:
+        safe_url(str(normalized.get("url", "")))
+    except ValueError:
+        url = str(normalized.get("url", ""))
         return False, f"[schema] invalid url: {url}", normalized
 
     return True, "", normalized
@@ -1080,6 +1084,28 @@ def validate_email_mime_type(email_msg) -> Dict[str, Any]:
     }
 
 
+def validate_approved_timeliness(approved_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Validate approved items against their type-specific business windows."""
+    errors = []
+    warnings = []
+    total_checked = 0
+
+    for item in approved_data:
+        item_type = item.get("type") or "news"
+        ok, reason = check_timeliness(item, item_type)
+        total_checked += 1
+        if not ok:
+            title = item.get("title", "未命名信息")
+            errors.append(f"approved信息时效性不合规: {title} ({item_type}) - {reason}")
+
+    return {
+        "has_errors": len(errors) > 0,
+        "errors": errors,
+        "warnings": warnings,
+        "total_checked": total_checked,
+    }
+
+
 def run_full_validation(report_md_path: str, email_body: str, approved_data: List[Dict[str, Any]], raw_stats: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     运行完整的报告+邮件一致性验证
@@ -1097,9 +1123,8 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
     
     # 2. 验证邮件一致性
     email_result = validate_email_consistency(email_body, approved_data)
-
-    # 3. 验证AI分析只引用正文事实
-    ai_result = validate_ai_analysis(report_md_path)
+    approved_timeliness = validate_approved_timeliness(approved_data)
+    ai_result = report_result.get("ai_check", {"has_errors": False, "errors": [], "warnings": []})
     
     fix_instructions = list(report_result.get("fix_instructions", []))
     
@@ -1107,14 +1132,14 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
     if not email_result["is_consistent"]:
         fix_instructions.extend(email_result["errors"])
 
-    if ai_result["has_errors"]:
-        fix_instructions.extend(ai_result["errors"])
+    if approved_timeliness["has_errors"]:
+        fix_instructions.extend(approved_timeliness["errors"])
     
     # 邮件一致性警告建议修复
     if email_result["warnings"]:
         fix_instructions.extend([f"[邮件一致性建议] {w}" for w in email_result["warnings"]])
-    if ai_result["warnings"]:
-        fix_instructions.extend([f"[AI分析建议] {w}" for w in ai_result["warnings"]])
+    if approved_timeliness["warnings"]:
+        fix_instructions.extend([f"[approved时效性建议] {w}" for w in approved_timeliness["warnings"]])
     
     # 计算综合分数
     score = report_result["overall_score"]
@@ -1122,27 +1147,30 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
         score -= len(email_result["errors"]) * 15
     if email_result["warnings"]:
         score -= len(email_result["warnings"]) * 3
-    if ai_result["has_errors"]:
-        score -= len(ai_result["errors"]) * 15
-    if ai_result["warnings"]:
-        score -= len(ai_result["warnings"]) * 3
+    if approved_timeliness["has_errors"]:
+        score -= len(approved_timeliness["errors"]) * 15
+    if approved_timeliness["warnings"]:
+        score -= len(approved_timeliness["warnings"]) * 3
     score = max(0, score)
     
     report_passed = report_result["passed"]
     email_consistent = email_result["is_consistent"]
     ai_passed = not ai_result["has_errors"]
-    can_send = report_passed and email_consistent and ai_passed and score >= 80
+    approved_timely = not approved_timeliness["has_errors"]
+    can_send = report_passed and email_consistent and ai_passed and approved_timely and score >= 80
     
     return {
         "report_passed": report_passed,
         "email_consistent": email_consistent,
         "ai_passed": ai_passed,
+        "approved_timely": approved_timely,
         "can_send_email": can_send,
         "overall_score": score,
         "fix_instructions": fix_instructions,
         "report_check": report_result,
         "email_check": email_result,
         "ai_check": ai_result,
+        "approved_timeliness_check": approved_timeliness,
     }
 
 

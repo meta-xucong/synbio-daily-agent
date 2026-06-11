@@ -27,3 +27,19 @@ def test_safe_url_rejects_unsafe_schemes():
             pass
         else:
             raise AssertionError(f"expected unsafe url rejection for {url!r}")
+
+
+def test_safe_url_rejects_attribute_injection():
+    for url in [
+        'https://example.com" onmouseover="alert(1)',
+        "https://example.com/a b",
+        "https://example.com/<x>",
+        "https://example.com/`x`",
+        "https://example.com/\\x",
+    ]:
+        try:
+            render_utils.safe_url(url)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected unsafe url rejection for {url!r}")

@@ -59,6 +59,16 @@ def test_process_raw_data_rejects_type_category_mismatch(monkeypatch):
     assert "type mismatch" in result["rejected"][0]["reason"]
 
 
+def test_process_raw_data_rejects_url_attribute_injection(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    result = report_pipeline.process_raw_data([
+        _item(url='https://example.com" onmouseover="alert(1)'),
+    ], "news")
+
+    assert result["stats"]["approved"] == 0
+    assert result["stats"]["schema_rejected"] == 1
+
+
 def test_process_raw_data_deduplicates_current_batch(monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     result = report_pipeline.process_raw_data([
@@ -129,21 +139,35 @@ def test_report_pipeline_cli_validate_exits_nonzero_on_ai_errors(tmp_path):
     assert "ai_check" in payload
 
 
-def test_report_pipeline_cli_full_validate(tmp_path):
+def _write_full_validate_inputs(tmp_path, report_name="valid_report.md", email_name="full_valid_email.html", approved_date="2026-06-10"):
     approved = tmp_path / "approved.json"
     approved.write_text(json.dumps([{
         "title": "星河生物完成数千万元 pre-A 轮融资",
         "url": "https://example.com/news/xinghe",
+        "type": "news",
+        "date": approved_date,
     }], ensure_ascii=False), encoding="utf-8")
+    email = tmp_path / email_name
+    email.write_text(
+        '<span class="num">1</span><span class="num">2</span><span class="num">3</span><span class="num">4</span><span class="num">5</span>'
+        '<div class="card-title">星河生物完成数千万元 pre-A 轮融资</div>'
+        '<a href="https://example.com/news/xinghe">查看</a>',
+        encoding="utf-8",
+    )
+    return approved, email, ROOT / "tests" / "fixtures" / report_name
+
+
+def test_report_pipeline_cli_full_validate_valid_exits_zero(tmp_path):
+    approved, email, report = _write_full_validate_inputs(tmp_path)
     output = tmp_path / "full_validation.json"
     result = subprocess.run(
         [
             sys.executable,
             str(ROOT / "scripts" / "report_pipeline.py"),
             "--full-validate",
-            str(ROOT / "tests" / "fixtures" / "valid_report.md"),
+            str(report),
             "--email",
-            str(ROOT / "tests" / "fixtures" / "valid_report.html"),
+            str(email),
             "--approved",
             str(approved),
             "--output",
@@ -158,7 +182,49 @@ def test_report_pipeline_cli_full_validate(tmp_path):
     assert output.exists()
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert "ai_check" in payload
-    assert result.returncode in (0, 1)
+    assert result.returncode == 0
+
+
+def test_report_pipeline_cli_full_validate_invalid_exits_nonzero(tmp_path):
+    approved, email, report = _write_full_validate_inputs(tmp_path, report_name="invalid_ai_report.md")
+    output = tmp_path / "full_validation.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "report_pipeline.py"),
+            "--full-validate",
+            str(report),
+            "--email",
+            str(email),
+            "--approved",
+            str(approved),
+            "--output",
+            str(output),
+        ],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+
+    assert output.exists()
+    assert result.returncode == 1
+
+
+def test_run_full_validation_blocks_approved_type_timeliness():
+    report = str(ROOT / "tests" / "fixtures" / "valid_report.md")
+    email = '<span class="num">1</span><span class="num">2</span><span class="num">3</span><span class="num">4</span><span class="num">5</span><div class="card-title">星河生物完成数千万元 pre-A 轮融资</div><a href="https://example.com/news/xinghe">查看</a>'
+    approved = [{
+        "title": "星河生物完成数千万元 pre-A 轮融资",
+        "url": "https://example.com/news/xinghe",
+        "type": "news",
+        "date": "2026-05-01",
+    }]
+
+    result = report_pipeline.run_full_validation(report, email, approved)
+
+    assert not result["can_send_email"]
+    assert result["approved_timeliness_check"]["has_errors"]
 
 
 def test_validate_email_consistency_accepts_aggregated_urls():

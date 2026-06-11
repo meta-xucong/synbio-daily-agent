@@ -21,6 +21,7 @@ try:
     from .post_check import post_check
     from . import report_pipeline as report_pipeline_module
     from .report_pipeline import run_full_validation, validate_email_mime_type
+    from .html_safety import validate_html_safety
 except ImportError:
     from settings import CONFIG_DIR, DATA_DIR
     import pre_check as pre_check_module
@@ -29,6 +30,7 @@ except ImportError:
     from post_check import post_check
     import report_pipeline as report_pipeline_module
     from report_pipeline import run_full_validation, validate_email_mime_type
+    from html_safety import validate_html_safety
 
 
 def load_email_config() -> Dict[str, Any]:
@@ -151,6 +153,15 @@ def validate_send_gate(
         errors.append(str(exc))
 
     files = read_report_files(md_path, html_path, email_html_path)
+    html_safety = validate_html_safety(files["html_content"])
+    email_safety = validate_html_safety(files["email_body"])
+    details["html_safety"] = html_safety
+    details["email_safety"] = email_safety
+    if not html_safety["is_safe"]:
+        errors.extend([f"[HTML安全] {e}" for e in html_safety["errors"]])
+    if not email_safety["is_safe"]:
+        errors.extend([f"[邮件HTML安全] {e}" for e in email_safety["errors"]])
+
     validation = run_full_validation(str(md_path), files["email_body"], approved_data)
     details["full_validation"] = validation
     if not validation.get("can_send_email"):

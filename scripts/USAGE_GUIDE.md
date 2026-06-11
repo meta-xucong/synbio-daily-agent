@@ -66,14 +66,14 @@ python scripts\report_pipeline.py --full-validate reports\2026-06-11.md --email 
 
 ## 安全渲染
 
-从 approved JSON 生成 HTML/邮件正文时，优先使用安全渲染脚本：
+从 approved JSON 生成 HTML/邮件正文时，可以使用安全渲染脚本做最小安全版本或测试夹具：
 
 ```powershell
 python scripts\render_html.py --approved data\approved_2026-06-11.json --date 2026-06-11 --output reports\2026-06-11.html
 python scripts\render_email.py --approved data\approved_2026-06-11.json --date 2026-06-11 --output reports\2026-06-11_email.html
 ```
 
-渲染器会对外部文本执行 HTML escape，对 URL 执行 http/https allowlist，并给新窗口链接加 `rel="noopener noreferrer"`。
+渲染器会对外部文本执行 HTML escape，对 URL 执行 http/https allowlist，并给新窗口链接加 `rel="noopener noreferrer"`。`render_html.py` 是安全最小渲染器；正式 H5 视觉仍以 `templates/daily_report_template_v2.html` 为准。
 
 推荐发送前先 dry-run：
 

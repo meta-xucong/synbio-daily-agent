@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Render approved data into safe HTML report sections."""
+"""Render approved data into a safe minimal HTML report.
+
+This is a validation-friendly fallback renderer. The production H5 layout still
+uses `templates/daily_report_template_v2.html`.
+"""
 
 from __future__ import annotations
 
@@ -78,7 +82,7 @@ def render_report_html(items: list[dict[str, Any]], date_str: str) -> str:
 def main() -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Render safe HTML report from approved JSON")
+    parser = argparse.ArgumentParser(description="Render safe minimal HTML report from approved JSON")
     parser.add_argument("--approved", required=True)
     parser.add_argument("--date", required=True)
     parser.add_argument("--output", required=True)

@@ -22,6 +22,7 @@ python scripts\render_html.py --approved tests\fixtures\approved_render.json --d
 ```
 
 The validation and AI analysis commands above are expected to fail for the invalid fixture.
+`render_html.py` is a safe minimal renderer for validation and fallback output; production H5 styling remains based on `templates/daily_report_template_v2.html`.
 
 ## Send Gate
 
