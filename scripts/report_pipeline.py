@@ -255,7 +255,8 @@ def is_duplicate(item: Dict[str, Any], fingerprint_db: Dict[str, Any]) -> Tuple[
         
         # 1. company匹配：同一公司+同一类型视为重复（主要用于融资事件）
         if company and existing_company and company == existing_company:
-            if event_type == existing_type or not event_type or not existing_type:
+            # 只有当双方type都明确且相同时，才判定为公司重复
+            if event_type and existing_type and event_type == existing_type:
                 return True, f"公司重复: {existing_title} ({existing_data['date']})"
         
         # 2. 标题相似度
@@ -318,7 +319,7 @@ def calculate_value_score(item: Dict[str, Any]) -> int:
     
     # 2. 信息完整性（有具体数据）
     summary = item.get("summary", "")
-    if re.search(r'\d+\.?\d*\s*[亿万元美元]', summary):
+    if re.search(r'\d+\.?\d*\s*(?:亿|万)?(?:元|美元|欧元|英镑)', summary):
         score += VALUE_WEIGHTS["completeness"] * 2
     if re.search(r'\d{4}-\d{2}-\d{2}', summary):
         score += VALUE_WEIGHTS["completeness"]
@@ -641,7 +642,8 @@ def validate_report_structure(report_path: str) -> Dict[str, Any]:
         if section_content:
             section_text = section_content.group(1)
             # 检查是否只有"暂无"或空白
-            if re.search(r'暂无|本周期暂无|color:#888|—\s*—\s*—', section_text) and not re.search(r'\w{10,}', section_text):
+            has_content = len(re.findall(r'[\u4e00-\u9fff]|[a-zA-Z0-9]', section_text)) >= 10
+            if re.search(r'暂无|本周期暂无|color:#888|—\s*—\s*—', section_text) and not has_content:
                 blank_sections.append(section_name)
     
     if blank_sections:
