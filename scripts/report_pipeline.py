@@ -131,27 +131,54 @@ def extract_events_from_report(report_path: str) -> List[Dict[str, Any]]:
     with open(report_path, 'r', encoding='utf-8') as f:
         content = f.read()
     
-    # 提取表格中的事件
-    # 匹配 Markdown 表格行
-    table_pattern = r'\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|'
-    matches = re.findall(table_pattern, content)
+    # 按板块分割内容，以便推断类型
+    sections = re.split(r'(##\s+📰|##\s+🔬|##\s+💰|##\s+🏛️|##\s+📅)', content)
     
-    for match in matches:
-        if len(match) >= 5:
-            title = match[0].strip()
-            source = match[1].strip()
-            date_str = match[2].strip()
-            summary = match[3].strip()
-            
-            if title and title != "标题" and not title.startswith("-"):
-                event = {
-                    "title": title,
-                    "source": source,
-                    "date": date_str,
-                    "summary": summary,
-                    "fingerprint": hashlib.md5(title[:50].encode()).hexdigest()[:16],
-                }
-                events.append(event)
+    current_type = "news"
+    for i, section in enumerate(sections):
+        # 推断当前板块类型
+        if '行业热点新闻' in section:
+            current_type = "news"
+        elif '最新研究成果' in section:
+            current_type = "research"
+        elif '融资与投资动态' in section:
+            current_type = "funding"
+        elif '政策与监管' in section:
+            current_type = "policy"
+        elif '行业活动预告' in section:
+            current_type = "events"
+        
+        # 提取表格中的事件
+        table_pattern = r'\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|'
+        matches = re.findall(table_pattern, section)
+        
+        for match in matches:
+            if len(match) >= 5:
+                title = match[0].strip()
+                source = match[1].strip()
+                date_str = match[2].strip()
+                summary = match[3].strip()
+                
+                if title and title != "标题" and not title.startswith("-") and title != "公司":
+                    # 推断company
+                    company = ""
+                    if current_type == "funding":
+                        company = title  # 融资表格第一列是公司名
+                    elif current_type == "policy":
+                        # 从标题中提取政策名称
+                        company = ""
+                    
+                    event = {
+                        "title": title,
+                        "source": source,
+                        "date": date_str,
+                        "summary": summary,
+                        "type": current_type,
+                        "company": company,
+                    }
+                    # 使用统一的指纹生成
+                    event["fingerprint"] = generate_fingerprint(event)
+                    events.append(event)
     
     return events
 
@@ -187,6 +214,8 @@ def load_historical_events(days: int = 7) -> Dict[str, Dict[str, Any]]:
                     "title": event["title"],
                     "date": event.get("date", "unknown"),
                     "source_file": filename,
+                    "company": event.get("company", ""),
+                    "type": event.get("type", ""),
                 }
     
     return fingerprint_db
@@ -214,11 +243,22 @@ def is_duplicate(item: Dict[str, Any], fingerprint_db: Dict[str, Any]) -> Tuple[
     if fp in fingerprint_db:
         return True, f"指纹匹配: {fingerprint_db[fp]['title']} ({fingerprint_db[fp]['date']})"
     
-    # 模糊匹配：标题相似度
+    # 获取当前item的company和title
+    company = item.get("company", "")
     title = item.get("title", "")
+    event_type = item.get("type", "")
+    
     for existing_fp, existing_data in fingerprint_db.items():
         existing_title = existing_data.get("title", "")
-        # 简单相似度：共享关键词
+        existing_company = existing_data.get("company", "")
+        existing_type = existing_data.get("type", "")
+        
+        # 1. company匹配：同一公司+同一类型视为重复（主要用于融资事件）
+        if company and existing_company and company == existing_company:
+            if event_type == existing_type or not event_type or not existing_type:
+                return True, f"公司重复: {existing_title} ({existing_data['date']})"
+        
+        # 2. 标题相似度
         if title and existing_title:
             title_words = set(re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}', title.lower()))
             existing_words = set(re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}', existing_title.lower()))
