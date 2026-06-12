@@ -7,11 +7,10 @@ AS hub NEWs agent - 报告后检查脚本
 
 import json
 import re
-from pathlib import Path
-
-BASE_DIR = Path(r"D:\AI\合成生物行业报告")
-DATA_DIR = BASE_DIR / "data"
-REPORTS_DIR = BASE_DIR / "reports"
+try:
+    from .settings import DATA_DIR, REPORTS_DIR, date_str as current_date_str
+except ImportError:
+    from settings import DATA_DIR, REPORTS_DIR, date_str as current_date_str
 
 
 def post_check(date_str: str) -> dict:
@@ -59,7 +58,7 @@ def post_check(date_str: str) -> dict:
     
     # 检查3: 报告头部是否有流水线追踪标记
     if "流水线追踪" not in report and "approved=" not in report:
-        warnings.append("⚠️ 报告缺少流水线追踪标记")
+        errors.append("❌ 报告缺少流水线追踪标记")
     
     can_send = len(errors) == 0
     
@@ -90,13 +89,16 @@ def post_check(date_str: str) -> dict:
 
 
 if __name__ == "__main__":
+    import io
     import sys
-    from datetime import datetime
+    if sys.platform == 'win32':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
     
     if len(sys.argv) > 1:
         date_str = sys.argv[1]
     else:
-        date_str = datetime.now().strftime("%Y-%m-%d")
+        date_str = current_date_str()
     
     result = post_check(date_str)
     sys.exit(0 if result["can_send"] else 1)

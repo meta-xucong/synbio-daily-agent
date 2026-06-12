@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Dict, List, Any, Set
 
 
+NUMBER_TOKEN_PATTERN = re.compile(
+    r'(?:\d{4}-\d{1,2}-\d{1,2}|\d+(?:\.\d+)?\s*(?:%|％|家|名|个|项|亿元|万元|万美元|亿美元|元|美元|欧元|天|年|月|日|轮)?)'
+    r'|(?:数十|数百|数千|数万|上百|上千|近百|逾百|数百万|数千万|数亿元|数千万元|数百万元|数万元)'
+)
+
+
 def extract_report_facts(report_path: str) -> Set[str]:
     """从报告中提取所有事实关键词（标题、公司名、活动名等）"""
     facts = set()
@@ -65,6 +71,22 @@ def extract_report_facts(report_path: str) -> Set[str]:
     return facts
 
 
+def extract_number_tokens(text: str) -> Set[str]:
+    """Extract concrete numeric facts that must be grounded in non-AI content."""
+    tokens = set()
+    for match in NUMBER_TOKEN_PATTERN.finditer(text):
+        token = re.sub(r"\s+", "", match.group(0))
+        if token in {"1", "2", "3", "4", "5", "6", "7", "8"}:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def non_ai_content(content: str) -> str:
+    """Return report content with the AI analysis section removed."""
+    return re.sub(r'## 🤖 AI 深度分析\n\n.*?(?=\n## |\Z)', '', content, flags=re.DOTALL)
+
+
 def validate_ai_analysis(report_path: str) -> Dict[str, Any]:
     """验证AI分析是否只引用了正文已收录的信息"""
     errors = []
@@ -84,6 +106,7 @@ def validate_ai_analysis(report_path: str) -> Dict[str, Any]:
     
     # 提取正文事实库
     facts = extract_report_facts(report_path)
+    supported_numbers = extract_number_tokens(non_ai_content(content))
     
     # 检测策略：只检测明确的公司名和机构名
     # 策略1：检测加粗段落中的具体引用（排除结构标题）
@@ -132,15 +155,25 @@ def validate_ai_analysis(report_path: str) -> Dict[str, Any]:
                 errors.append(f"AI分析引用未收录公司: '{text}'")
     
     # 策略3：检测中文公司名（含行业后缀）
-    for match in re.finditer(r'[\u4e00-\u9fff]{2,}(?:生物|科技|医药|医疗|健康|制药|资本)', analysis_text):
+    for match in re.finditer(r'[\u4e00-\u9fff]{2,8}(?:公司|集团|科技|生物|医药|医疗|健康|制药|资本)', analysis_text):
         text = match.group(0)
         if text in CHINESE_WHITELIST:
+            continue
+        if any(noise in text for noise in ("的", "融资", "显示", "平台", "合成生物")):
             continue
         if text.lower() in facts:
             verified.append(text)
         else:
             hallucinations.append(text)
             errors.append(f"AI分析引用未收录公司: '{text}'")
+
+    # 策略4：检测数字、金额、比例、日期是否来自正文非AI部分
+    for token in sorted(extract_number_tokens(analysis_text)):
+        if token in supported_numbers:
+            verified.append(token)
+        else:
+            hallucinations.append(token)
+            errors.append(f"AI分析引用未收录数字: '{token}'")
     
     # 去重
     hallucinations = list(set(h for h in hallucinations if h.strip()))
@@ -214,6 +247,13 @@ CHINESE_WHITELIST = {
 
 def main():
     import argparse
+    import io
+    import sys
+
+    if sys.platform == 'win32':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
     parser = argparse.ArgumentParser(description="AI分析防幻觉验证 v3")
     parser.add_argument("--report", type=str, required=True, help="报告文件路径")
     parser.add_argument("--output", type=str, help="输出JSON路径")
@@ -234,6 +274,7 @@ def main():
         print(f"\n已验证 {len(result['verified'])} 个实体")
     if not result['hallucinations']:
         print("\nAI分析无幻觉，所有引用均能在正文中找到对应。")
+    raise SystemExit(1 if result["has_errors"] else 0)
 
 
 if __name__ == "__main__":

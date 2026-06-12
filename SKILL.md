@@ -27,7 +27,7 @@ Step 4: 生成Markdown报告
 Step 5: 生成H5 HTML报告（使用定稿模板）
 Step 6: 合规复检（迭代修正，最多3次）
 Step 7: 生成邮件正文（与H5严格一致）
-Step 8: 邮件推送（三重验证通过后才发送）
+Step 8: 邮件推送（send gate通过后才发送）
 Step 9: 更新政策库
 ```
 
@@ -161,9 +161,9 @@ site:academicx.org 合成生物
 
 ```python
 import json
-from datetime import datetime
+from settings import date_str
 
-date_str = datetime.now().strftime("%Y-%m-%d")
+date_str = date_str()
 raw_data = {
     "news": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "news"}],
     "research": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "research"}],
@@ -186,9 +186,9 @@ import sys
 sys.path.insert(0, r"scripts")
 from report_pipeline import process_raw_data
 import json
-from datetime import datetime
+from settings import date_str
 
-date_str = datetime.now().strftime("%Y-%m-%d")
+date_str = date_str()
 raw_path = rf"data/raw_{date_str}.json"
 
 with open(raw_path, 'r', encoding='utf-8') as f:
@@ -226,11 +226,11 @@ with open(approved_path, 'w', encoding='utf-8') as f:
 ### 4.1 读取模板
 读取 `templates/daily_report_template.md`
 
-### 4.2 报告结构（固定板块，但可临时去掉无信息的板块）
+### 4.2 报告结构（固定板块，空板块保留占位）
 
 **板块规则**：
 - 如果某板块有approved信息，**必须体现**该板块
-- 如果某板块无approved信息，**可以临时去掉**该板块，或在板块内标注"本周期暂无相关信息"
+- 如果某板块无approved信息，**必须保留板块标题**，并标注"经五轮检索，本周期暂无相关新信息收录。"
 - 执行摘要和AI深度分析**必须保留**
 
 **日期排序规则（强制要求）**：
@@ -316,7 +316,7 @@ with open(approved_path, 'w', encoding='utf-8') as f:
         <span>📅 2026-06-08</span>
     </div>
     <div class="card-summary">摘要内容...</div>
-    <a href="https://原始文章链接" target="_blank" class="card-link">查看详情</a>
+    <a href="https://原始文章链接" target="_blank" rel="noopener noreferrer" class="card-link">查看详情</a>
 </div>
 ```
 - 同一板块内的多个卡片必须按日期降序排列（最新→最旧）
@@ -382,8 +382,7 @@ with open(approved_path, 'w', encoding='utf-8') as f:
 ### 5.5 板块缺失处理
 
 如果某板块无approved信息：
-- **方案A（推荐）**：保留板块标题，内部标注"<p style="color:#888;font-size:14px;">本周期暂无相关新信息收录</p>"
-- **方案B**：直接去掉该板块的HTML代码
+- 保留板块标题，内部标注 `<p style="color:#888;font-size:14px;">经五轮检索，本周期暂无相关新信息收录。</p>`
 
 ### 5.6 保存H5报告
 保存到 `reports/YYYY-MM-DD.html`
@@ -399,9 +398,9 @@ import sys
 sys.path.insert(0, r"scripts")
 from report_pipeline import run_compliance_check
 import json
-from datetime import datetime
+from settings import date_str
 
-date_str = datetime.now().strftime("%Y-%m-%d")
+date_str = date_str()
 report_path = rf"reports/{date_str}.md"
 
 result = run_compliance_check(report_path)
@@ -501,7 +500,7 @@ IF 3次迭代后仍不通过:
     → 融资动态：H5 中有则放 1-2 条最重要的，带原始链接
     → 政策监管：H5 中有则放 1-2 条最重要的，带原始链接
     → 活动预告：H5 中有则放 1-2 条最重要的，带原始链接
-    → 如某板块无 approved 信息，标注"本周期暂无"或干脆不显示该板块
+    → 如某板块无 approved 信息，保留板块并标注"经五轮检索，本周期暂无相关新信息收录。"
 
 🧠 AI 深度分析要点（3个核心结论）
     → 趋势研判：1-2 句话（必须来自 H5 的 AI 分析板块）
@@ -531,9 +530,9 @@ import sys
 sys.path.insert(0, r"scripts")
 from report_pipeline import validate_email_consistency
 import json
-from datetime import datetime
+from settings import date_str
 
-date_str = datetime.now().strftime("%Y-%m-%d")
+date_str = date_str()
 
 approved_path = rf"data/approved_{date_str}.json"
 with open(approved_path, 'r', encoding='utf-8') as f:
@@ -568,69 +567,19 @@ if not result['is_consistent']:
 
 ---
 
-## Step 8: 邮件推送（三重验证通过后才发送）
+## Step 8: 邮件推送（send gate通过后才发送）
 
 ### 8.1 检查验证结果
-只有在以下**全部条件满足**时，才执行邮件发送：
-1. `result["passed"] == True`（Markdown报告合规）
-2. `result["can_send_email"] == True`（得分≥80）
-3. `email_validation["is_consistent"] == True`（邮件与H5一致）
+必须通过 `scripts/send_email.py` 的发送门禁。门禁会执行 pre-check、报告验证、AI防幻觉、post-check 和 MIME 检查；任一失败不得连接 SMTP。
 
 ### 8.2 邮件配置
 读取 `config/email_config.json`
 
 ### 8.3 发送邮件
 
-```python
-import json, smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from datetime import datetime
-
-date_str = datetime.now().strftime("%Y-%m-%d")
-
-with open(r'config/email_config.json', 'r', encoding='utf-8') as f:
-    config = json.load(f)
-
-# 读取H5报告作为附件
-html_path = rf"reports/{date_str}.html"
-with open(html_path, 'r', encoding='utf-8') as f:
-    html_content = f.read()
-
-# 读取邮件正文
-email_path = rf"reports/{date_str}_email.html"
-with open(email_path, 'r', encoding='utf-8') as f:
-    email_body = f.read()
-
-msg = MIMEMultipart('mixed')
-msg['From'] = config['sender_email']
-msg['To'] = config['receiver_email']
-msg['Subject'] = f'AS hub | 合成生物行业日报 {date_str}'
-
-# 邮件正文使用HTML格式
-msg.attach(MIMEText(email_body, 'html', 'utf-8'))
-
-# H5附件 - 使用text/html MIME类型
-h5_attachment = MIMEText(html_content, 'html', 'utf-8')
-h5_attachment.add_header('Content-Disposition', f'attachment; filename="{date_str}.html"')
-msg.attach(h5_attachment)
-
-# Markdown附件 - 使用text/plain MIME类型
-md_path = rf"reports/{date_str}.md"
-with open(md_path, 'r', encoding='utf-8') as f:
-    md_content = f.read()
-md_attachment = MIMEText(md_content, 'plain', 'utf-8')
-md_attachment.add_header('Content-Disposition', f'attachment; filename="{date_str}.md"')
-msg.attach(md_attachment)
-
-# 发送
-try:
-    with smtplib.SMTP_SSL(config['smtp_server'], config['smtp_port']) as server:
-        server.login(config['sender_email'], config['sender_password'])
-        server.send_message(msg)
-    print("✅ 邮件发送成功")
-except Exception as e:
-    print(f"❌ 邮件发送失败: {e}")
+```powershell
+python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\YYYY-MM-DD.html reports\YYYY-MM-DD_email.html --dry-run
+python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\YYYY-MM-DD.html reports\YYYY-MM-DD_email.html
 ```
 
 **MIME类型规则（严禁违反）**：
@@ -698,7 +647,7 @@ Step 5: 基于 approved 列表生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 生成H5 HTML报告
 Step 8: 生成邮件正文（与H5严格一致）
-Step 9: 邮件推送（三重验证通过后才发送）
+Step 9: 邮件推送（send gate通过后才发送）
 ```
 
 **任何情况下，Step 3→Step 4→Step 5→Step 6 必须连续执行，不得跳过。**
