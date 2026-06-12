@@ -98,6 +98,53 @@ def test_generate_from_template_escapes_text_and_rejects_unsafe_url(tmp_path):
         raise AssertionError("unsafe URL should fail generation")
 
 
+def test_generate_from_template_renders_ai_bold_markdown(tmp_path):
+    approved, approved_path, md_path = _write_inputs(tmp_path, [_approved(type="news")])
+    md_path.write_text(
+        """
+# 合成生物行业日报
+
+流水线追踪：approved=1
+
+## 📌 执行摘要
+
+1. 星河生物完成数千万元 pre-A 轮融资（2026-06-10）
+
+## 📰 行业热点新闻
+
+| 标题 | 来源 | 时间 | 摘要 | 链接 |
+|---|---|---|---|---|
+| 星河生物完成数千万元 pre-A 轮融资 | SynBioBeta | 2026-06-10 | 平台扩产。 | https://example.com/news/xinghe |
+
+## 🤖 AI 深度分析
+
+### 趋势研判
+
+**1. 产业化信号增强**
+
+星河生物融资显示平台扩产继续推进。
+
+### 风险提示
+
+- **技术放大风险** 仍需观察。
+
+## 📎 附录
+
+- https://example.com/news/xinghe
+""".strip(),
+        encoding="utf-8",
+    )
+    html_path = tmp_path / "reports" / "synbio_daily_2026-06-10.html"
+    email_path = tmp_path / "reports" / "email_2026-06-10.html"
+
+    generate_from_template.generate("2026-06-10", approved_path, md_path, html_path, email_path)
+
+    html = html_path.read_text(encoding="utf-8")
+    assert "<strong>1. 产业化信号增强</strong>" in html
+    assert "<strong>技术放大风险</strong>" in html
+    assert "**1. 产业化信号增强**" not in html
+
+
 def test_send_email_dry_run_passes_generated_template_output(tmp_path, monkeypatch):
     approved, approved_path, md_path = _write_inputs(tmp_path, [_approved(type="news")])
     raw_path = tmp_path / "data" / "raw_2026-06-10.json"

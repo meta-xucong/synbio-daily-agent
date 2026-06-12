@@ -196,6 +196,18 @@ def extract_ai_analysis(markdown: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def render_inline_markdown(text: str) -> str:
+    """Render a tiny safe subset of Markdown inline syntax."""
+    parts = []
+    pos = 0
+    for match in re.finditer(r"\*\*(.+?)\*\*", text):
+        parts.append(safe_text(text[pos:match.start()]))
+        parts.append(f"<strong>{safe_text(match.group(1))}</strong>")
+        pos = match.end()
+    parts.append(safe_text(text[pos:]))
+    return "".join(parts)
+
+
 def render_text_lines(text: str) -> str:
     parts = []
     for raw_line in text.splitlines():
@@ -203,9 +215,9 @@ def render_text_lines(text: str) -> str:
         if not line:
             continue
         if line.startswith(("- ", "* ")):
-            parts.append(f"<li>{safe_text(line[2:].strip())}</li>")
+            parts.append(f"<li>{render_inline_markdown(line[2:].strip())}</li>")
         else:
-            parts.append(f"<p>{safe_text(line)}</p>")
+            parts.append(f"<p>{render_inline_markdown(line)}</p>")
     if any(part.startswith("<li>") for part in parts):
         list_items = "".join(part for part in parts if part.startswith("<li>"))
         paras = "".join(part for part in parts if not part.startswith("<li>"))
