@@ -19,6 +19,7 @@ import json
 import os
 import re
 import hashlib
+from html import unescape
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -945,7 +946,7 @@ def validate_email_consistency(email_body: str, approved_data: List[Dict[str, An
     warnings = []
     
     # 提取邮件正文中的所有URL
-    email_urls = re.findall(r'href=["\'](https?://[^"\']+)["\']', email_body)
+    email_urls = [unescape(u) for u in re.findall(r'href=["\'](https?://[^"\']+)["\']', email_body)]
     email_urls = list(set(email_urls))
     
     # 提取approved数据中的所有URL

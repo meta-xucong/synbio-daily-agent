@@ -29,3 +29,15 @@ def test_validate_html_safety_requires_rel_for_blank_links():
 
     assert not html_safety.validate_html_safety(bad)["is_safe"]
     assert html_safety.validate_html_safety(good)["is_safe"]
+
+
+def test_validate_html_safety_rejects_decoded_url_attributes():
+    for html in [
+        '<a href="java&#x73;cript:alert(1)">x</a>',
+        '<img src="data:image/png;base64,AAAA">',
+        '<form action="https://example.com/submit\\evil"></form>',
+        '<button formaction="ftp://example.com/upload">go</button>',
+        '<video poster="https://example.com/poster.png onerror=alert(1)"></video>',
+    ]:
+        result = html_safety.validate_html_safety(html)
+        assert not result["is_safe"], html

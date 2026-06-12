@@ -5,8 +5,14 @@
 from __future__ import annotations
 
 import re
+from html import unescape
 from html.parser import HTMLParser
 from typing import Any
+
+try:
+    from .render_utils import safe_url
+except ImportError:
+    from render_utils import safe_url
 
 
 FORBIDDEN_HTML_PATTERNS = [
@@ -18,10 +24,11 @@ FORBIDDEN_HTML_PATTERNS = [
     (r"<\s*object\b", "object tag"),
     (r"<\s*embed\b", "embed tag"),
 ]
+URL_ATTRS = {"href", "src", "action", "formaction", "poster"}
 
 
 class LinkSafetyParser(HTMLParser):
-    """Collect target=_blank links that lack noopener/noreferrer."""
+    """Collect unsafe parsed link and URL attribute behavior."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -29,6 +36,13 @@ class LinkSafetyParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = {name.lower(): (value or "") for name, value in attrs}
+        for name, value in attr_map.items():
+            if name in URL_ATTRS and value:
+                decoded = unescape(value)
+                try:
+                    safe_url(decoded)
+                except ValueError:
+                    self.errors.append(f"unsafe URL attribute {name}={value!r}")
         if attr_map.get("target", "").lower() == "_blank":
             rel_values = set(attr_map.get("rel", "").lower().split())
             if not {"noopener", "noreferrer"}.issubset(rel_values):

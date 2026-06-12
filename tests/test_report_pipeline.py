@@ -240,6 +240,21 @@ def test_validate_email_consistency_accepts_aggregated_urls():
     assert result["is_consistent"]
 
 
+def test_validate_email_consistency_unescapes_href_entities():
+    approved = [{
+        "title": "星河生物完成数千万元 pre-A 轮融资",
+        "url": "https://example.com/article?id=1&utm_source=x",
+    }]
+    email = (
+        '<div class="card-title">星河生物完成数千万元 pre-A 轮融资</div>'
+        '<a href="https://example.com/article?id=1&amp;utm_source=x">查看</a>'
+    )
+
+    result = report_pipeline.validate_email_consistency(email, approved)
+
+    assert result["is_consistent"]
+
+
 def test_run_compliance_check_includes_ai_grounding_errors():
     result = report_pipeline.run_compliance_check(str(ROOT / "tests" / "fixtures" / "invalid_ai_report.md"))
 

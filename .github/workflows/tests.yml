@@ -8,6 +8,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      SYNBIO_DAILY_NOW: "2026-06-11T12:00:00+08:00"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -24,6 +24,12 @@ TZ = ZoneInfo(APP_TIMEZONE)
 
 def now_local() -> datetime:
     """Return the current datetime in the configured application timezone."""
+    fixed_now = os.getenv("SYNBIO_DAILY_NOW")
+    if fixed_now:
+        dt = datetime.fromisoformat(fixed_now.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=TZ)
+        return dt.astimezone(TZ)
     return datetime.now(TZ)
 
 
