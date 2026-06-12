@@ -138,6 +138,8 @@ python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\2026-06-11
 
 邮件发送必须通过 `send_email.py` 的 gate；gate 失败时不会连接 SMTP。
 
+`config/email_config.json` 中的 `allow_simple_fallback` 默认应保持 `false`。只有在 SMTP 服务商持续拒绝带附件的 multipart 邮件，并且可接受“仅 HTML 正文、无附件”的降级发送时，才显式设为 `true`。
+
 ---
 
 ## 重点数据源

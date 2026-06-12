@@ -9,8 +9,12 @@ import json
 import re
 try:
     from .settings import DATA_DIR, REPORTS_DIR, date_str as current_date_str
+    from .console_utils import ensure_utf8_console
 except ImportError:
     from settings import DATA_DIR, REPORTS_DIR, date_str as current_date_str
+    from console_utils import ensure_utf8_console
+
+ensure_utf8_console()
 
 
 def post_check(date_str: str) -> dict:
@@ -89,11 +93,7 @@ def post_check(date_str: str) -> dict:
 
 
 if __name__ == "__main__":
-    import io
     import sys
-    if sys.platform == 'win32':
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
     
     if len(sys.argv) > 1:
         date_str = sys.argv[1]

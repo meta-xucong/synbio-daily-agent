@@ -10,11 +10,50 @@ import json
 from pathlib import Path
 from typing import Dict, List, Any, Set
 
+try:
+    from .console_utils import ensure_utf8_console
+except ImportError:
+    from console_utils import ensure_utf8_console
+
+ensure_utf8_console()
+
 
 NUMBER_TOKEN_PATTERN = re.compile(
     r'(?:\d{4}-\d{1,2}-\d{1,2}|\d+(?:\.\d+)?\s*(?:%|％|家|名|个|项|亿元|万元|万美元|亿美元|元|美元|欧元|天|年|月|日|轮)?)'
     r'|(?:数十|数百|数千|数万|上百|上千|近百|逾百|数百万|数千万|数亿元|数千万元|数百万元|数万元)'
 )
+COMPANY_SUFFIXES = ("公司", "集团", "科技", "生物", "医药", "医疗", "健康", "制药", "资本")
+COMPANY_NAME_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,6}?(?:公司|集团|科技|生物|医药|医疗|健康|制药|资本)")
+FALSE_COMPANY_PREFIXES = {
+    "后续", "重大", "传统", "人工智能", "向生物", "对生物",
+    "在生物", "以生物", "将生物", "为生物", "从生物",
+    "相关", "行业", "产业", "企业", "技术", "平台",
+    "创新", "资本", "市场", "政策", "监管", "融资",
+    "制造", "投产", "说明",
+}
+FALSE_COMPANY_TERMS = {
+    "后续生物", "重大科技", "传统医药", "人工智能",
+    "合成生物", "生物技术", "生物制造", "生物医药",
+}
+FALSE_COMPANY_INFIXES = {
+    "后续", "重大", "传统", "人工智能", "合成生物",
+    "生物制造", "生物技术", "生物医药", "平台",
+    "显示", "说明", "正在", "仍获", "企业", "产业",
+}
+GENERIC_COMPANY_TERMS = {"科技", "生物", "医药", "医疗", "健康", "制药", "资本"}
+
+
+def is_probable_chinese_company_name(text: str) -> bool:
+    """Return whether a Chinese suffix phrase is likely a concrete company name."""
+    if not text or text in CHINESE_WHITELIST or text in FALSE_COMPANY_TERMS:
+        return False
+    if text in GENERIC_COMPANY_TERMS:
+        return False
+    if any(text.startswith(prefix) for prefix in FALSE_COMPANY_PREFIXES):
+        return False
+    if any(term in text for term in FALSE_COMPANY_INFIXES):
+        return False
+    return bool(re.fullmatch(rf"[\u4e00-\u9fff]{{2,6}}(?:{'|'.join(COMPANY_SUFFIXES)})", text))
 
 
 def extract_report_facts(report_path: str) -> Set[str]:
@@ -60,6 +99,10 @@ def extract_report_facts(report_path: str) -> Set[str]:
             words = re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}', title)
             for w in words:
                 facts.add(w.lower())
+            for company_match in COMPANY_NAME_PATTERN.finditer(title):
+                company_name = company_match.group(0)
+                if is_probable_chinese_company_name(company_name):
+                    facts.add(company_name.lower())
     
     # 提取执行摘要中的关键词
     summary_match = re.search(r'## 📌 执行摘要\n\n(.*?)(?=\n## )', content, re.DOTALL)
@@ -155,11 +198,9 @@ def validate_ai_analysis(report_path: str) -> Dict[str, Any]:
                 errors.append(f"AI分析引用未收录公司: '{text}'")
     
     # 策略3：检测中文公司名（含行业后缀）
-    for match in re.finditer(r'[\u4e00-\u9fff]{2,8}(?:公司|集团|科技|生物|医药|医疗|健康|制药|资本)', analysis_text):
+    for match in COMPANY_NAME_PATTERN.finditer(analysis_text):
         text = match.group(0)
-        if text in CHINESE_WHITELIST:
-            continue
-        if any(noise in text for noise in ("的", "融资", "显示", "平台", "合成生物")):
+        if not is_probable_chinese_company_name(text):
             continue
         if text.lower() in facts:
             verified.append(text)
@@ -247,12 +288,6 @@ CHINESE_WHITELIST = {
 
 def main():
     import argparse
-    import io
-    import sys
-
-    if sys.platform == 'win32':
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
     parser = argparse.ArgumentParser(description="AI分析防幻觉验证 v3")
     parser.add_argument("--report", type=str, required=True, help="报告文件路径")

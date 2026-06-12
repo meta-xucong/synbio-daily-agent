@@ -15,6 +15,7 @@ from email.mime.text import MIMEText
 
 try:
     from .settings import CONFIG_DIR, DATA_DIR
+    from .console_utils import ensure_utf8_console
     from . import pre_check as pre_check_module
     from . import post_check as post_check_module
     from .pre_check import pre_check
@@ -24,6 +25,7 @@ try:
     from .html_safety import validate_html_safety
 except ImportError:
     from settings import CONFIG_DIR, DATA_DIR
+    from console_utils import ensure_utf8_console
     import pre_check as pre_check_module
     import post_check as post_check_module
     from pre_check import pre_check
@@ -31,6 +33,8 @@ except ImportError:
     import report_pipeline as report_pipeline_module
     from report_pipeline import extract_http_urls, run_full_validation, validate_email_mime_type, validate_urls_against_approved
     from html_safety import validate_html_safety
+
+ensure_utf8_console()
 
 
 def load_email_config() -> Dict[str, Any]:
@@ -106,6 +110,38 @@ def build_email_message(
     msg.attach(md_attachment)
 
     return msg
+
+
+def build_simple_fallback_message(date_str: str, sender: str, receiver: str, email_body: str) -> MIMEText:
+    """Build an explicit no-attachment fallback email body."""
+    msg = MIMEText(email_body, "html", "utf-8")
+    msg["Subject"] = f"合成生物行业日报 - {date_str}"
+    msg["From"] = sender
+    msg["To"] = receiver
+    return msg
+
+
+def print_smtp_diagnostics(exc: smtplib.SMTPResponseException) -> None:
+    """Print actionable diagnostics for SMTP response failures."""
+    print(f"SMTP发送失败: code={exc.smtp_code}, error={exc.smtp_error!r}")
+    if exc.smtp_code == 500:
+        print("诊断建议：")
+        print("  1. 检查 smtp_server/smtp_port 是否为邮箱服务商要求的地址和端口")
+        print("  2. 检查发件人账号是否和登录账号一致")
+        print("  3. 检查邮件头 Subject/From/To 是否为空或包含非法换行")
+        print("  4. 检查附件文件名和 MIME 结构是否被服务商拒绝")
+        print("  5. 当前发送方式使用 SMTP_SSL.send_message(); 如仍失败，请保留完整 code/error 继续排查")
+
+
+def send_message_via_smtp(config: Dict[str, Any], msg) -> None:
+    """Send a prepared email message through SMTP_SSL."""
+    with smtplib.SMTP_SSL(config["smtp_server"], config["smtp_port"], timeout=30) as server:
+        server.login(config["sender_email"], config["sender_password"])
+        server.send_message(
+            msg,
+            from_addr=config["sender_email"],
+            to_addrs=[config["receiver_email"]],
+        )
 
 
 def load_approved_data(date_str: str) -> list[dict[str, Any]]:
@@ -239,25 +275,31 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_ru
         return True
 
     try:
-        server = smtplib.SMTP_SSL(config["smtp_server"], config["smtp_port"])
-        server.login(config["sender_email"], config["sender_password"])
-        server.sendmail(config["sender_email"], [config["receiver_email"]], msg.as_string())
-        server.quit()
+        send_message_via_smtp(config, msg)
         print(f"邮件发送成功: {date_str}")
         return True
+    except smtplib.SMTPResponseException as exc:
+        print_smtp_diagnostics(exc)
+        if exc.smtp_code == 500 and config.get("allow_simple_fallback", False):
+            try:
+                fallback_msg = build_simple_fallback_message(
+                    date_str=date_str,
+                    sender=config["sender_email"],
+                    receiver=config["receiver_email"],
+                    email_body=files["email_body"],
+                )
+                send_message_via_smtp(config, fallback_msg)
+                print("邮件已降级发送：仅HTML正文，无附件。请检查SMTP MIME兼容性。")
+                return True
+            except Exception as fallback_exc:
+                print(f"邮件降级发送失败: {fallback_exc}")
+        return False
     except Exception as e:
         print(f"邮件发送失败: {e}")
         return False
 
 
 def main() -> int:
-    import io
-    import sys
-
-    if sys.platform == 'win32':
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
-
     parser = argparse.ArgumentParser(description="Send synbio daily report after validation gate")
     parser.add_argument("date")
     parser.add_argument("md_path")

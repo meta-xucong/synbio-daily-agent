@@ -1,4 +1,5 @@
 import json
+import smtplib
 import sys
 from pathlib import Path
 
@@ -43,6 +44,13 @@ def _write_runtime_tree(tmp_path: Path, report_name: str = "valid_report.md"):
     html = tmp_path / "reports" / "2026-06-10.html"
     html.write_text((ROOT / "tests" / "fixtures" / "valid_report.html").read_text(encoding="utf-8"), encoding="utf-8")
     return md, html
+
+
+def _set_allow_simple_fallback(tmp_path: Path, enabled: bool) -> None:
+    config_path = tmp_path / "config" / "email_config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["allow_simple_fallback"] = enabled
+    config_path.write_text(json.dumps(config), encoding="utf-8")
 
 
 def test_send_gate_failure_does_not_call_smtp(tmp_path, monkeypatch):
@@ -118,3 +126,42 @@ def test_send_gate_blocks_unapproved_h5_src_url(tmp_path, monkeypatch):
 
     assert not result["passed"]
     assert "https://tracker.example.com/pixel.png" in result["details"]["h5_url_consistency"]["missing_urls"]
+
+
+def test_smtp_500_returns_false_without_default_fallback(tmp_path, monkeypatch, capsys):
+    md, html = _write_runtime_tree(tmp_path)
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+
+    def fail_send(config, msg):
+        raise smtplib.SMTPResponseException(500, b"bad syntax")
+
+    monkeypatch.setattr(send_email, "send_message_via_smtp", fail_send)
+
+    assert send_email.send_daily_report("2026-06-10", md, html) is False
+    output = capsys.readouterr().out
+    assert "SMTP发送失败: code=500" in output
+    assert "诊断建议" in output
+    assert "降级发送" not in output
+
+
+def test_smtp_500_simple_fallback_requires_config_flag(tmp_path, monkeypatch, capsys):
+    md, html = _write_runtime_tree(tmp_path)
+    _set_allow_simple_fallback(tmp_path, True)
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+    sent_messages = []
+
+    def fail_then_record(config, msg):
+        if not sent_messages:
+            sent_messages.append(msg)
+            raise smtplib.SMTPResponseException(500, b"bad syntax")
+        sent_messages.append(msg)
+
+    monkeypatch.setattr(send_email, "send_message_via_smtp", fail_then_record)
+
+    assert send_email.send_daily_report("2026-06-10", md, html) is True
+    output = capsys.readouterr().out
+    assert "邮件已降级发送：仅HTML正文，无附件" in output
+    assert len(sent_messages) == 2
+    assert sent_messages[1].get_content_type() == "text/html"

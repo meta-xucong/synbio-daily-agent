@@ -94,6 +94,8 @@ python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\2026-06-11
 
 `--dry-run` 不要求存在真实 `config/email_config.json`；真实发送仍必须配置邮箱。
 
+`allow_simple_fallback=false` 为默认推荐。只有在 SMTP 服务商持续拒绝 multipart 附件邮件，并且可接受“仅 HTML 正文、无附件”的降级发送时，才应在 `config/email_config.json` 中显式设为 `true`。
+
 ## 本地测试
 
 ```powershell
