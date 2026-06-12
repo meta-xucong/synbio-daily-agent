@@ -18,18 +18,18 @@ python -m compileall scripts
 python scripts\report_pipeline.py --process tests\fixtures\raw_full.json --type news --output $env:TEMP\news_processed.json
 python scripts\report_pipeline.py --validate tests\fixtures\invalid_ai_report.md --output $env:TEMP\invalid_ai_validation.json
 python scripts\ai_analysis_check.py --report tests\fixtures\invalid_ai_report.md
-python scripts\render_html.py --approved tests\fixtures\approved_render.json --date 2026-06-10 --output $env:TEMP\rendered.html
+python scripts\generate_from_template.py --date 2026-06-10 --approved tests\fixtures\approved_render.json --markdown tests\fixtures\valid_report.md --html-output $env:TEMP\synbio_daily_2026-06-10.html --email-output $env:TEMP\email_2026-06-10.html
 ```
 
 The validation and AI analysis commands above are expected to fail for the invalid fixture.
-`render_html.py` is a safe minimal renderer for validation and fallback output; production H5 styling remains based on `templates/daily_report_template_v2.html`.
+`generate_from_template.py` is the production renderer for `templates/daily_report_template_v2.html`. `render_html.py` and `render_email.py` are safe minimal fallback/test-fixture renderers only.
 
 ## Send Gate
 
 Use dry-run before real SMTP:
 
 ```powershell
-python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\YYYY-MM-DD.html reports\YYYY-MM-DD_email.html --dry-run
+python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\synbio_daily_YYYY-MM-DD.html reports\email_YYYY-MM-DD.html --dry-run
 ```
 
 The gate must pass before SMTP is opened. Gate failures return non-zero and do not call SMTP.

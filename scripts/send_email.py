@@ -156,6 +156,24 @@ def load_approved_data(date_str: str) -> list[dict[str, Any]]:
     return data
 
 
+def validate_template_signature(html: str, label: str) -> Dict[str, Any]:
+    """Ensure generated HTML looks like the production template output."""
+    required_any = ('class="card"', 'class="data-table"')
+    required_all = ('class="summary-section"', 'class="content-section"', 'class="section-title"')
+    errors: list[str] = []
+    for marker in required_all:
+        if marker not in html:
+            errors.append(f"{label}缺少定稿模板标记: {marker}")
+    if not any(marker in html for marker in required_any):
+        errors.append(f"{label}缺少定稿模板内容标记: card/data-table")
+    if 'class="analysis-block"' not in html and 'class="risk-box"' not in html:
+        errors.append(f"{label}缺少定稿模板AI分析标记: analysis-block/risk-box")
+    return {
+        "is_valid": len(errors) == 0,
+        "errors": errors,
+    }
+
+
 def validate_send_gate(
     date_str: str,
     md_path: str | Path,
@@ -191,12 +209,20 @@ def validate_send_gate(
     files = read_report_files(md_path, html_path, email_html_path)
     html_safety = validate_html_safety(files["html_content"])
     email_safety = validate_html_safety(files["email_body"])
+    html_template = validate_template_signature(files["html_content"], "H5附件")
+    email_template = validate_template_signature(files["email_body"], "邮件HTML")
     details["html_safety"] = html_safety
     details["email_safety"] = email_safety
+    details["html_template"] = html_template
+    details["email_template"] = email_template
     if not html_safety["is_safe"]:
         errors.extend([f"[HTML安全] {e}" for e in html_safety["errors"]])
     if not email_safety["is_safe"]:
         errors.extend([f"[邮件HTML安全] {e}" for e in email_safety["errors"]])
+    if not html_template["is_valid"]:
+        errors.extend([f"[模板样式] {e}; 请使用 scripts/generate_from_template.py 生成正式H5" for e in html_template["errors"]])
+    if not email_template["is_valid"]:
+        errors.extend([f"[模板样式] {e}; 请使用 scripts/generate_from_template.py 生成正式邮件HTML" for e in email_template["errors"]])
 
     h5_url_consistency = validate_urls_against_approved(
         extract_http_urls(files["html_content"]),

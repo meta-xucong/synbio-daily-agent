@@ -24,9 +24,9 @@ Step 1: 读取配置（数据源 + 去重规则 + 脚本指南）
 Step 2: 多维度搜索（重点网站优先，五轮搜索法）
 Step 3: 脚本强制过滤与去重（严禁跳过）
 Step 4: 生成Markdown报告
-Step 5: 生成H5 HTML报告（使用定稿模板）
+Step 5: 生成H5 HTML报告（必须使用 generate_from_template.py 和定稿模板）
 Step 6: 合规复检（迭代修正，最多3次）
-Step 7: 生成邮件正文（与H5严格一致）
+Step 7: 生成邮件正文（必须使用 generate_from_template.py，与H5严格一致）
 Step 8: 邮件推送（send gate通过后才发送）
 Step 9: 更新政策库
 ```
@@ -268,6 +268,14 @@ with open(approved_path, 'w', encoding='utf-8') as f:
 
 ## Step 5: 生成H5 HTML报告（定稿模板）
 
+**正式日报必须调用生产渲染器，严禁用 `render_html.py` / `render_email.py` 作为正式输出：**
+
+```powershell
+python scripts\generate_from_template.py --date YYYY-MM-DD --approved data\approved_YYYY-MM-DD.json --markdown reports\YYYY-MM-DD.md --html-output reports\synbio_daily_YYYY-MM-DD.html --email-output reports\email_YYYY-MM-DD.html
+```
+
+`generate_from_template.py` 会读取定稿模板、填充所有占位符，并在写出前执行 HTML safety 与 approved URL 一致性检查。
+
 ### 5.1 读取定稿模板
 **必须读取** `templates/daily_report_template_v2.html`
 
@@ -385,7 +393,7 @@ with open(approved_path, 'w', encoding='utf-8') as f:
 - 保留板块标题，内部标注 `<p style="color:#888;font-size:14px;">经五轮检索，本周期暂无相关新信息收录。</p>`
 
 ### 5.6 保存H5报告
-保存到 `reports/YYYY-MM-DD.html`
+保存到 `reports/synbio_daily_YYYY-MM-DD.html`
 
 ---
 
@@ -515,7 +523,7 @@ IF 3次迭代后仍不通过:
 **必须使用以下方法生成邮件正文，严禁自由创作：**
 
 1. 读取 `data/approved_YYYY-MM-DD.json` 获取所有 approved 信息
-2. 读取 `reports/YYYY-MM-DD.html` 获取 H5 报告内容
+2. 读取 `reports/synbio_daily_YYYY-MM-DD.html` 获取 H5 报告内容
 3. 从 approved 数据中按板块分类，每个板块取价值分数最高的 1-2 条
 4. 从 H5 的 AI 分析板块提取 3 个核心结论
 5. 使用定稿 CSS 样式组装邮件正文 HTML
@@ -538,7 +546,7 @@ approved_path = rf"data/approved_{date_str}.json"
 with open(approved_path, 'r', encoding='utf-8') as f:
     approved_data = json.load(f)
 
-email_path = rf"reports/{date_str}_email.html"
+email_path = rf"reports/email_{date_str}.html"
 with open(email_path, 'r', encoding='utf-8') as f:
     email_body = f.read()
 
@@ -578,8 +586,8 @@ if not result['is_consistent']:
 ### 8.3 发送邮件
 
 ```powershell
-python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\YYYY-MM-DD.html reports\YYYY-MM-DD_email.html --dry-run
-python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\YYYY-MM-DD.html reports\YYYY-MM-DD_email.html
+python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\synbio_daily_YYYY-MM-DD.html reports\email_YYYY-MM-DD.html --dry-run
+python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\synbio_daily_YYYY-MM-DD.html reports\email_YYYY-MM-DD.html
 ```
 
 **MIME类型规则（严禁违反）**：

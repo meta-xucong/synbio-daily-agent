@@ -36,8 +36,11 @@ synbio-daily-agent/
 ├── scripts/
 │   ├── settings.py                    # 路径、时区和环境变量配置
 │   ├── report_pipeline.py             # 核心过滤/去重/验证脚本
+│   ├── generate_from_template.py       # 生产级H5/邮件模板渲染器
 │   ├── send_email.py                  # 邮件发送脚本
 │   ├── render_utils.py                # HTML安全转义和URL校验
+│   ├── render_html.py                  # 安全最小fallback/测试夹具
+│   ├── render_email.py                 # 安全最小fallback/测试夹具
 │   ├── pre_check.py                   # 预检查脚本（生成报告前强制检查）
 │   ├── post_check.py                  # 报告后检查脚本（确保只含approved信息）
 │   └── ai_analysis_check.py          # AI分析防幻觉验证脚本
@@ -58,8 +61,8 @@ Step 3: 保存原始数据为JSON → data/raw_YYYY-MM-DD.json
 Step 4: 调用 report_pipeline.py 处理（去重+过滤+排序）
 Step 5: 基于 approved 列表生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
-Step 7: 生成H5 HTML报告
-Step 8: 生成邮件正文（与H5严格一致）
+Step 7: 调用 generate_from_template.py 生成定稿H5 HTML报告
+Step 8: 调用 generate_from_template.py 生成定稿邮件正文
 Step 9: 邮件推送（send gate通过后才发送）
 ```
 
@@ -133,10 +136,12 @@ Step 9: 邮件推送（send gate通过后才发送）
 
 ```powershell
 python -m pytest -q
-python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\2026-06-11.html reports\2026-06-11_email.html --dry-run
+python scripts\generate_from_template.py --date 2026-06-11 --approved data\approved_2026-06-11.json --markdown reports\2026-06-11.md --html-output reports\synbio_daily_2026-06-11.html --email-output reports\email_2026-06-11.html
+python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_daily_2026-06-11.html reports\email_2026-06-11.html --dry-run
 ```
 
 邮件发送必须通过 `send_email.py` 的 gate；gate 失败时不会连接 SMTP。
+正式 H5/邮件正文必须由 `generate_from_template.py` 生成；`render_html.py` / `render_email.py` 仅用于 emergency fallback 或测试夹具。
 
 `config/email_config.json` 中的 `allow_simple_fallback` 默认应保持 `false`。只有在 SMTP 服务商持续拒绝带附件的 multipart 邮件，并且可接受“仅 HTML 正文、无附件”的降级发送时，才显式设为 `true`。
 

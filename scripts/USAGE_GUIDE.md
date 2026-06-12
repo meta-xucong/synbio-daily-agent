@@ -52,7 +52,7 @@ python scripts\report_pipeline.py --validate reports\2026-06-11.md --output data
 如需同时验证邮件正文与 approved 数据：
 
 ```powershell
-python scripts\report_pipeline.py --full-validate reports\2026-06-11.md --email reports\2026-06-11_email.html --approved data\approved_2026-06-11.json --output data\full_validation_2026-06-11.json
+python scripts\report_pipeline.py --full-validate reports\2026-06-11.md --email reports\email_2026-06-11.html --approved data\approved_2026-06-11.json --output data\full_validation_2026-06-11.json
 ```
 
 必须满足：
@@ -64,21 +64,22 @@ python scripts\report_pipeline.py --full-validate reports\2026-06-11.md --email 
 
 ## 邮件 Gate 与 Dry Run
 
-## 安全渲染
+## 生产 H5 与邮件正文
 
-从 approved JSON 生成 HTML/邮件正文时，可以使用安全渲染脚本做最小安全版本或测试夹具：
+正式日报必须使用定稿模板渲染入口：
 
 ```powershell
-python scripts\render_html.py --approved data\approved_2026-06-11.json --date 2026-06-11 --output reports\2026-06-11.html
-python scripts\render_email.py --approved data\approved_2026-06-11.json --date 2026-06-11 --output reports\2026-06-11_email.html
+python scripts\generate_from_template.py --date 2026-06-11 --approved data\approved_2026-06-11.json --markdown reports\2026-06-11.md --html-output reports\synbio_daily_2026-06-11.html --email-output reports\email_2026-06-11.html
 ```
 
-渲染器会对外部文本执行 HTML escape，对 URL 执行 http/https allowlist，并给新窗口链接加 `rel="noopener noreferrer"`。`render_html.py` 是安全最小渲染器；正式 H5 视觉仍以 `templates/daily_report_template_v2.html` 为准。
+`generate_from_template.py` 会读取 `templates/daily_report_template_v2.html`，保留定稿 CSS/类名，并在输出前执行 HTML safety 与 approved URL 一致性检查。
+
+`render_html.py` / `render_email.py` 仅用于 emergency fallback 或测试夹具，不得作为正式日报输出。
 
 推荐发送前先 dry-run：
 
 ```powershell
-python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\2026-06-11.html reports\2026-06-11_email.html --dry-run
+python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_daily_2026-06-11.html reports\email_2026-06-11.html --dry-run
 ```
 
 `send_email.py` 会强制执行：
@@ -113,5 +114,5 @@ rg -n -F 'D:\AI\合成生物行业报告' .
 - approved：`data/approved_YYYY-MM-DD.json`
 - rejected：`data/rejected_YYYY-MM-DD.json`
 - Markdown：`reports/YYYY-MM-DD.md`
-- H5：`reports/YYYY-MM-DD.html`
-- 邮件 HTML：`reports/YYYY-MM-DD_email.html`
+- H5：`reports/synbio_daily_YYYY-MM-DD.html`
+- 邮件 HTML：`reports/email_YYYY-MM-DD.html`
