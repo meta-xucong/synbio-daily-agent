@@ -946,26 +946,20 @@ def validate_email_consistency(email_body: str, approved_data: List[Dict[str, An
     warnings = []
     
     # 提取邮件正文中的所有URL
-    email_urls = [unescape(u) for u in re.findall(r'href=["\'](https?://[^"\']+)["\']', email_body)]
-    email_urls = list(set(email_urls))
+    email_urls = extract_http_urls(email_body)
     
     # 提取approved数据中的所有URL
-    approved_urls = []
+    approved_urls = collect_approved_urls(approved_data)
     approved_titles = []
     for item in approved_data:
-        url = item.get("url", "")
-        if url:
-            approved_urls.append(url)
-        approved_urls.extend([u for u in item.get("urls", []) if u])
         title = item.get("title", "")
         if title:
             approved_titles.append(title)
-    approved_urls = list(set(approved_urls))
     
     # 检查邮件URL是否都在approved中
-    missing_urls = [u for u in email_urls if u not in approved_urls]
-    if missing_urls:
-        errors.append(f"邮件正文包含{len(missing_urls)}个H5/approved数据中不存在的URL: {missing_urls[:3]}")
+    url_check = validate_urls_against_approved(email_urls, approved_data, label="邮件正文")
+    errors.extend(url_check["errors"])
+    missing_urls = url_check["missing_urls"]
     
     # 提取邮件正文中的信息标题（通过粗体或卡片标题）
     email_titles = []
@@ -1019,6 +1013,39 @@ def validate_email_consistency(email_body: str, approved_data: List[Dict[str, An
         "missing_urls": missing_urls,
         "email_titles": email_titles,
         "missing_titles": missing_titles,
+    }
+
+
+def extract_http_urls(html: str) -> List[str]:
+    """Extract unique HTTP(S) href values from HTML, decoding HTML entities."""
+    urls = [unescape(u) for u in re.findall(r'href=["\'](https?://[^"\']+)["\']', html)]
+    return list(dict.fromkeys(urls))
+
+
+def collect_approved_urls(approved_data: List[Dict[str, Any]]) -> List[str]:
+    """Collect unique primary and aggregated approved URLs."""
+    approved_urls: list[str] = []
+    for item in approved_data:
+        url = item.get("url", "")
+        if url:
+            approved_urls.append(url)
+        approved_urls.extend([u for u in item.get("urls", []) if u])
+    return list(dict.fromkeys(approved_urls))
+
+
+def validate_urls_against_approved(urls: List[str], approved_data: List[Dict[str, Any]], label: str = "HTML") -> Dict[str, Any]:
+    """Ensure every extracted URL is present in approved data."""
+    approved_urls = collect_approved_urls(approved_data)
+    missing_urls = [u for u in urls if u not in approved_urls]
+    errors = []
+    if missing_urls:
+        errors.append(f"{label}包含{len(missing_urls)}个approved数据中不存在的URL: {missing_urls[:3]}")
+    return {
+        "is_consistent": len(errors) == 0,
+        "errors": errors,
+        "urls": urls,
+        "approved_urls": approved_urls,
+        "missing_urls": missing_urls,
     }
 
 

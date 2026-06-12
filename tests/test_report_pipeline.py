@@ -255,6 +255,21 @@ def test_validate_email_consistency_unescapes_href_entities():
     assert result["is_consistent"]
 
 
+def test_validate_urls_against_approved_checks_url_only():
+    approved = [{
+        "title": "已批准标题",
+        "url": "https://example.com/article?id=1&utm_source=x",
+    }]
+    urls = report_pipeline.extract_http_urls(
+        '<h2>不同的 H5 标题结构</h2>'
+        '<a href="https://example.com/article?id=1&amp;utm_source=x">查看</a>'
+    )
+
+    result = report_pipeline.validate_urls_against_approved(urls, approved, label="H5附件")
+
+    assert result["is_consistent"]
+
+
 def test_run_compliance_check_includes_ai_grounding_errors():
     result = report_pipeline.run_compliance_check(str(ROOT / "tests" / "fixtures" / "invalid_ai_report.md"))
 

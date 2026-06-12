@@ -41,3 +41,11 @@ def test_validate_html_safety_rejects_decoded_url_attributes():
     ]:
         result = html_safety.validate_html_safety(html)
         assert not result["is_safe"], html
+
+
+def test_production_h5_template_passes_html_safety():
+    template = (ROOT / "templates" / "daily_report_template_v2.html").read_text(encoding="utf-8")
+
+    result = html_safety.validate_html_safety(template)
+
+    assert result["is_safe"], result["errors"]

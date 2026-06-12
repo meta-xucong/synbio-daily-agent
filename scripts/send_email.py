@@ -20,7 +20,7 @@ try:
     from .pre_check import pre_check
     from .post_check import post_check
     from . import report_pipeline as report_pipeline_module
-    from .report_pipeline import run_full_validation, validate_email_mime_type
+    from .report_pipeline import extract_http_urls, run_full_validation, validate_email_mime_type, validate_urls_against_approved
     from .html_safety import validate_html_safety
 except ImportError:
     from settings import CONFIG_DIR, DATA_DIR
@@ -29,7 +29,7 @@ except ImportError:
     from pre_check import pre_check
     from post_check import post_check
     import report_pipeline as report_pipeline_module
-    from report_pipeline import run_full_validation, validate_email_mime_type
+    from report_pipeline import extract_http_urls, run_full_validation, validate_email_mime_type, validate_urls_against_approved
     from html_safety import validate_html_safety
 
 
@@ -161,6 +161,15 @@ def validate_send_gate(
         errors.extend([f"[HTML安全] {e}" for e in html_safety["errors"]])
     if not email_safety["is_safe"]:
         errors.extend([f"[邮件HTML安全] {e}" for e in email_safety["errors"]])
+
+    h5_url_consistency = validate_urls_against_approved(
+        extract_http_urls(files["html_content"]),
+        approved_data,
+        label="H5附件",
+    )
+    details["h5_url_consistency"] = h5_url_consistency
+    if not h5_url_consistency["is_consistent"]:
+        errors.extend(h5_url_consistency["errors"])
 
     validation = run_full_validation(str(md_path), files["email_body"], approved_data)
     details["full_validation"] = validation
