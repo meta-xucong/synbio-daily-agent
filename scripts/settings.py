@@ -7,7 +7,11 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 
 
 PROJECT_ROOT = Path(
@@ -18,8 +22,23 @@ DATA_DIR = PROJECT_ROOT / "data"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 
-APP_TIMEZONE = os.getenv("SYNBIO_DAILY_TZ", "Asia/Shanghai")
-TZ = ZoneInfo(APP_TIMEZONE)
+
+def _get_tz():
+    tz_name = os.getenv("SYNBIO_DAILY_TZ", "Asia/Shanghai")
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        # Fallback for Windows without tzdata package
+        try:
+            import pytz
+            return pytz.timezone(tz_name)
+        except ImportError:
+            # Ultimate fallback: use UTC
+            from datetime import timezone
+            return timezone.utc
+
+
+TZ = _get_tz()
 
 
 def now_local() -> datetime:
