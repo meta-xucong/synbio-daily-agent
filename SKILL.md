@@ -231,10 +231,10 @@ with open(approved_path, 'w', encoding='utf-8') as f:
 **板块规则**：
 - 如果某板块有approved信息，**必须体现**该板块
 - 如果某板块无approved信息，**必须保留板块标题**，并标注"经五轮检索，本周期暂无相关新信息收录。"
-- 执行摘要和AI深度分析**必须保留**
+- 执行摘要和AI深度分析**必须保留**（执行摘要按AI评分从高到低取前5条，再按日期降序排列）
 
 **日期排序规则（强制要求）**：
-- **执行摘要**：所有条目按日期降序排列（最新→最旧），每条末尾标注 `（YYYY-MM-DD）`
+- **执行摘要**：按AI评分从高到低取前5条，再按日期降序排列（最新→最旧），每条末尾标注 `（YYYY-MM-DD）`
 - **行业热点新闻**：表格行按日期降序排列（最新→最旧）
 - **最新研究成果**：表格行按日期降序排列（最新→最旧）
 - **融资与投资动态**：表格行按日期降序排列（最新→最旧）
@@ -244,7 +244,7 @@ with open(approved_path, 'w', encoding='utf-8') as f:
 
 **执行摘要格式（强制要求）**：
 ```
-1. **标题**：摘要内容...（YYYY-MM-DD）
+1. **标题**：摘要内容...（YYYY-MM-DD） — *按AI评分从高到低取前5条*
 2. **标题**：摘要内容...（YYYY-MM-DD）
 ```
 - 每条末尾必须标注日期 `（YYYY-MM-DD）`
@@ -252,7 +252,7 @@ with open(approved_path, 'w', encoding='utf-8') as f:
 - 精选5-8条最有价值的信息（优先选日期最近、价值分数最高的）
 
 标准板块：
-1. 📌 执行摘要（5-8条最有价值的信息，必须保留，按日期降序排列，每条带日期标注）
+1. 📌 执行摘要（以AI评分从高到低取前5条，必须保留，按日期降序排列，每条带日期标注）
 2. 📰 行业热点新闻（有信息时必须体现，按日期降序排列）
 3. 🔬 最新研究成果（有信息时必须体现，按日期降序排列）
 4. 💰 融资与投资动态（有信息时必须体现，按日期降序排列）
@@ -289,7 +289,7 @@ python scripts\generate_from_template.py --date YYYY-MM-DD --approved data\appro
 - `{{WEEKDAY}}` → 星期几
 - `{{GEN_TIME}}` → 生成时间
 - `{{GEN_TIME_FULL}}` → 完整生成时间
-- `{{SUMMARY_ITEMS}}` → 执行摘要5条
+- `{{SUMMARY_ITEMS}}` → 执行摘要（按AI评分从高到低取前5条）
 - `{{NEWS_SECTION}}` → 行业热点新闻板块
 - `{{RESEARCH_SECTION}}` → 最新研究成果板块
 - `{{FUNDING_SECTION}}` → 融资与投资动态板块
@@ -303,7 +303,7 @@ python scripts\generate_from_template.py --date YYYY-MM-DD --approved data\appro
 **执行摘要格式**：
 ```html
 <div class="summary-section">
-    <div class="section-title">📌 执行摘要</div>
+    <div class="section-title">📌 执行摘要（以AI评分，从高到低，列出前五项）</div>
     <ul class="summary-list">
         <li><span class="num">1</span><span class="text"><strong>标题：</strong>摘要内容...（YYYY-MM-DD）</span></li>
     </ul>
@@ -498,7 +498,7 @@ IF 3次迭代后仍不通过:
 ### 7.2 邮件正文板块结构（与 H5 一一对应）
 
 ```
-📌 执行摘要（5条）
+📌 执行摘要（以AI评分，从高到低，列出前五项）
     → 与 H5 完全一致，顺序不变
     → 每条标题可点击链接到原始文章
 
