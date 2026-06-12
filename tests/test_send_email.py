@@ -101,3 +101,20 @@ def test_send_gate_blocks_unapproved_h5_attachment_url(tmp_path, monkeypatch):
     assert not result["passed"]
     assert any("H5附件" in error and "approved" in error for error in result["errors"])
     assert "https://unapproved.example.com/news" in result["details"]["h5_url_consistency"]["missing_urls"]
+
+
+def test_send_gate_blocks_unapproved_h5_src_url(tmp_path, monkeypatch):
+    md, html = _write_runtime_tree(tmp_path)
+    html.write_text(
+        '<div class="card-title">星河生物完成数千万元 pre-A 轮融资</div>'
+        '<A HREF=https://example.com/news/xinghe>已批准</A>'
+        '<img SRC="https://tracker.example.com/pixel.png">',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+
+    result = send_email.validate_send_gate("2026-06-10", md, html)
+
+    assert not result["passed"]
+    assert "https://tracker.example.com/pixel.png" in result["details"]["h5_url_consistency"]["missing_urls"]

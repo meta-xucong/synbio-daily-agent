@@ -20,6 +20,7 @@ import os
 import re
 import hashlib
 from html import unescape
+from html.parser import HTMLParser
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -48,6 +49,7 @@ TIME_WINDOWS = {
 
 REQUIRED_RAW_FIELDS = {"title", "source", "date", "summary", "url"}
 VALID_ITEM_TYPES = {"news", "research", "funding", "policy", "events"}
+HTML_URL_ATTRS = {"href", "src", "action", "formaction", "poster"}
 TITLE_SIMILARITY_THRESHOLD = 0.80
 HISTORY_DEDUP_DAYS = 30
 MAX_RAW_SCORE = 30
@@ -1016,10 +1018,27 @@ def validate_email_consistency(email_body: str, approved_data: List[Dict[str, An
     }
 
 
+class HTMLURLExtractor(HTMLParser):
+    """Extract HTTP(S) URL attributes from HTML using browser-like parsing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        for name, value in attrs:
+            if not value or name.lower() not in HTML_URL_ATTRS:
+                continue
+            decoded = unescape(value)
+            if decoded.lower().startswith(("http://", "https://")):
+                self.urls.append(decoded)
+
+
 def extract_http_urls(html: str) -> List[str]:
-    """Extract unique HTTP(S) href values from HTML, decoding HTML entities."""
-    urls = [unescape(u) for u in re.findall(r'href=["\'](https?://[^"\']+)["\']', html)]
-    return list(dict.fromkeys(urls))
+    """Extract unique HTTP(S) URL attribute values from HTML."""
+    parser = HTMLURLExtractor()
+    parser.feed(html)
+    return list(dict.fromkeys(parser.urls))
 
 
 def collect_approved_urls(approved_data: List[Dict[str, Any]]) -> List[str]:

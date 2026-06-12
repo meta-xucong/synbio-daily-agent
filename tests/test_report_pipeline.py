@@ -270,6 +270,28 @@ def test_validate_urls_against_approved_checks_url_only():
     assert result["is_consistent"]
 
 
+def test_extract_http_urls_handles_html_url_attributes():
+    html = (
+        '<A HREF=https://unapproved.example.com/upper>x</A>'
+        '<a href="https://example.com/article?id=1&amp;utm_source=x">查看</a>'
+        '<img SRC="https://tracker.example.com/pixel.png">'
+        '<form action="https://forms.example.com/post"></form>'
+        '<button formaction="https://forms.example.com/button">go</button>'
+        '<video poster="https://cdn.example.com/poster.png"></video>'
+        '<a href="/relative/path">relative</a>'
+        '<a href="mailto:team@example.com">mail</a>'
+    )
+
+    assert report_pipeline.extract_http_urls(html) == [
+        "https://unapproved.example.com/upper",
+        "https://example.com/article?id=1&utm_source=x",
+        "https://tracker.example.com/pixel.png",
+        "https://forms.example.com/post",
+        "https://forms.example.com/button",
+        "https://cdn.example.com/poster.png",
+    ]
+
+
 def test_run_compliance_check_includes_ai_grounding_errors():
     result = report_pipeline.run_compliance_check(str(ROOT / "tests" / "fixtures" / "invalid_ai_report.md"))
 
