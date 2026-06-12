@@ -10,6 +10,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import send_email
+import generate_from_template
 
 
 def _write_runtime_tree(tmp_path: Path, report_name: str = "valid_report.md"):
@@ -42,7 +43,17 @@ def _write_runtime_tree(tmp_path: Path, report_name: str = "valid_report.md"):
     md = tmp_path / "reports" / "2026-06-10.md"
     md.write_text((ROOT / "tests" / "fixtures" / report_name).read_text(encoding="utf-8"), encoding="utf-8")
     html = tmp_path / "reports" / "2026-06-10.html"
-    html.write_text((ROOT / "tests" / "fixtures" / "valid_report.html").read_text(encoding="utf-8"), encoding="utf-8")
+    email = tmp_path / "reports" / "2026-06-10_email.html"
+    if report_name == "valid_report.md":
+        generate_from_template.generate(
+            report_date="2026-06-10",
+            approved_path=tmp_path / "data" / "approved_2026-06-10.json",
+            markdown_path=md,
+            html_output=html,
+            email_output=email,
+        )
+    else:
+        html.write_text((ROOT / "tests" / "fixtures" / "valid_report.html").read_text(encoding="utf-8"), encoding="utf-8")
     return md, html
 
 
@@ -91,6 +102,18 @@ def test_send_gate_blocks_unsafe_html(tmp_path, monkeypatch):
 
     assert not result["passed"]
     assert any("HTML安全" in error for error in result["errors"])
+
+
+def test_send_gate_blocks_minimal_fallback_html(tmp_path, monkeypatch):
+    md, html = _write_runtime_tree(tmp_path)
+    html.write_text((ROOT / "tests" / "fixtures" / "valid_report.html").read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+
+    result = send_email.validate_send_gate("2026-06-10", md, html)
+
+    assert not result["passed"]
+    assert any("模板样式" in error for error in result["errors"])
 
 
 def test_send_gate_blocks_unapproved_h5_attachment_url(tmp_path, monkeypatch):
