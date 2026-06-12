@@ -29,12 +29,16 @@ import glob
 
 try:
     from .settings import CONFIG_DIR, DATA_DIR, REPORTS_DIR, TEMPLATES_DIR, now_local
+    from .console_utils import ensure_utf8_console
     from .ai_analysis_check import validate_ai_analysis
     from .render_utils import safe_url
 except ImportError:
     from settings import CONFIG_DIR, DATA_DIR, REPORTS_DIR, TEMPLATES_DIR, now_local
+    from console_utils import ensure_utf8_console
     from ai_analysis_check import validate_ai_analysis
     from render_utils import safe_url
+
+ensure_utf8_console()
 
 # ==================== 配置常量 ====================
 
@@ -1234,13 +1238,7 @@ def save_rejection_log(rejected: List[Dict[str, Any]], report_date: str):
 def main():
     """命令行入口，用于测试"""
     import argparse
-    import io
     import sys
-    
-    # Fix Windows console encoding
-    if sys.platform == 'win32':
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
     
     parser = argparse.ArgumentParser(description="AS hub NEWs agent - Report Pipeline")
     parser.add_argument("--validate", type=str, help="验证报告文件路径")
