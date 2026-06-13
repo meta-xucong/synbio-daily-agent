@@ -53,6 +53,11 @@ def is_probable_chinese_company_name(text: str) -> bool:
         return False
     if any(term in text for term in FALSE_COMPANY_INFIXES):
         return False
+
+    # 包含常见动词/介词（如"的"、"在"、"涉及"）的组合不太可能是公司名
+    if any(p in text for p in {"的", "在", "涉及", "驱动", "应用"}):
+        return False
+
     return bool(re.fullmatch(rf"[\u4e00-\u9fff]{{2,6}}(?:{'|'.join(COMPANY_SUFFIXES)})", text))
 
 
