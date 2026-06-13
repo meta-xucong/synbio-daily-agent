@@ -7,6 +7,8 @@ AS hub NEWs agent - 报告后检查脚本
 
 import json
 import re
+from pathlib import Path
+
 try:
     from .settings import DATA_DIR, REPORTS_DIR, date_str as current_date_str
     from .console_utils import ensure_utf8_console
