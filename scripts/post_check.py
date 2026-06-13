@@ -17,12 +17,21 @@ except ImportError:
 ensure_utf8_console()
 
 
-def post_check(date_str: str) -> dict:
-    """报告生成后的强制检查"""
+def post_check(date_str: str, report_path: str = None) -> dict:
+    """报告生成后的强制检查
+    
+    Args:
+        date_str: 日期字符串
+        report_path: 报告文件路径（可选，默认使用 REPORTS_DIR/{date_str}.md）
+    """
     errors = []
     warnings = []
     
-    report_path = REPORTS_DIR / f"{date_str}.md"
+    if report_path is None:
+        report_path = REPORTS_DIR / f"{date_str}.md"
+    else:
+        report_path = Path(report_path)
+    
     approved_path = DATA_DIR / f"approved_{date_str}.json"
     
     if not report_path.exists():

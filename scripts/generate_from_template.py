@@ -293,7 +293,7 @@ def render_template(
     grouped = group_items(approved)
     display_dt = parse_date(report_date)
     now = now_local()
-    section_limit = 2 if email else None
+    section_limit = None
     appendix_limit = 5 if email else None
 
     replacements = {

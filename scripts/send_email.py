@@ -238,7 +238,7 @@ def validate_send_gate(
     if not validation.get("can_send_email"):
         errors.extend(validation.get("fix_instructions", []))
 
-    post_result = post_check(date_str)
+    post_result = post_check(date_str, str(md_path))
     details["post_check"] = post_result
     errors.extend(post_result.get("errors", []))
     warnings.extend(post_result.get("warnings", []))
