@@ -578,10 +578,11 @@ if not result['is_consistent']:
 ## Step 8: 邮件推送（send gate通过后才发送）
 
 ### 8.1 检查验证结果
-必须通过 `scripts/send_email.py` 的发送门禁。门禁会执行 pre-check、报告验证、AI防幻觉、post-check 和 MIME 检查；任一失败不得连接 SMTP。
+必须通过 `scripts/send_email.py` 的发送门禁。门禁会执行 pre-check、报告验证、AI防幻觉、approved 链接健康检查、post-check 和 MIME 检查；任一失败不得连接 SMTP。
 
 ### 8.2 邮件配置
 读取 `config/email_config.json`
+`check_url_health` 默认保持 `true`，除离线测试外不得关闭；`allow_simple_fallback` 默认保持 `false`。
 
 ### 8.3 发送邮件
 

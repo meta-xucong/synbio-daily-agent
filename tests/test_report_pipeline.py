@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from urllib.error import HTTPError
 from pathlib import Path
 
 
@@ -67,6 +68,32 @@ def test_process_raw_data_rejects_url_attribute_injection(monkeypatch):
 
     assert result["stats"]["approved"] == 0
     assert result["stats"]["schema_rejected"] == 1
+
+
+def test_category_filter_allows_article_paths_and_blocks_aggregate_pages():
+    assert not report_pipeline._is_category_or_aggregate_url("https://example.com/news/yeast-platform")
+    assert not report_pipeline._is_category_or_aggregate_url("https://example.com/events/synbio-forum-2026")
+    assert report_pipeline._is_category_or_aggregate_url("https://example.com/news")
+    assert report_pipeline._is_category_or_aggregate_url("https://example.com/category/synthetic-biology")
+    assert report_pipeline._is_category_or_aggregate_url("https://conferences.nature.com/synthetic-biology")
+
+
+def test_process_raw_data_rejects_history_index_duplicates(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [{
+        "url": "https://example.com/news/yeast-platform",
+        "title": "Novel yeast platform improves fermentation",
+        "fingerprint": report_pipeline._make_fingerprint(_item()),
+        "first_sent_date": "2026-06-09",
+    }])
+
+    result = report_pipeline.process_raw_data([
+        _item(url="https://example.com/news/yeast-platform?utm_source=newsletter"),
+    ], "news")
+
+    assert result["stats"]["approved"] == 0
+    assert result["stats"]["duplicate_rejected"] == 1
+    assert "[历史索引去重]" in result["rejected"][0]["reason"]
 
 
 def test_process_raw_data_deduplicates_current_batch(monkeypatch):
@@ -290,6 +317,50 @@ def test_extract_http_urls_handles_html_url_attributes():
         "https://forms.example.com/button",
         "https://cdn.example.com/poster.png",
     ]
+
+
+class _FakeHeaders(dict):
+    def get_content_charset(self):
+        return "utf-8"
+
+
+class _FakeResponse:
+    status = 200
+    code = 200
+    url = "https://example.com/news/xinghe"
+    headers = _FakeHeaders({"Content-Type": "text/html; charset=utf-8"})
+
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, size=-1):
+        return self.body[:size]
+
+
+def test_check_url_health_detects_deleted_content_without_network():
+    def opener(request, timeout=10):
+        return _FakeResponse("该文章已被删除".encode("utf-8"))
+
+    result = report_pipeline.check_url_health("https://example.com/news/xinghe", opener=opener)
+
+    assert not result["ok"]
+    assert "页面疑似失效" in result["reason"]
+
+
+def test_check_url_health_detects_http_error_without_network():
+    def opener(request, timeout=10):
+        raise HTTPError(request.full_url, 404, "not found", {}, None)
+
+    result = report_pipeline.check_url_health("https://example.com/news/missing", opener=opener)
+
+    assert not result["ok"]
+    assert result["status"] == 404
 
 
 def test_run_compliance_check_includes_ai_grounding_errors():

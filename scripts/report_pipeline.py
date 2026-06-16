@@ -19,6 +19,7 @@ import json
 import os
 import re
 import hashlib
+import socket
 from html import unescape
 from html.parser import HTMLParser
 from difflib import SequenceMatcher
@@ -26,6 +27,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 import glob
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
 try:
     from .settings import CONFIG_DIR, DATA_DIR, REPORTS_DIR, TEMPLATES_DIR, now_local
@@ -57,26 +61,58 @@ HTML_URL_ATTRS = {"href", "src", "action", "formaction", "poster"}
 TITLE_SIMILARITY_THRESHOLD = 0.80
 HISTORY_DEDUP_DAYS = 30
 MAX_RAW_SCORE = 30
+URL_HEALTH_TIMEOUT_SECONDS = 10
+URL_HEALTH_MAX_BYTES = 250_000
+TRACKING_QUERY_PREFIXES = ("utm_",)
+TRACKING_QUERY_KEYS = {
+    "fbclid", "gclid", "mc_cid", "mc_eid", "igshid", "spm", "from", "ref",
+}
+DELETED_CONTENT_PATTERNS = [
+    "文章已删除",
+    "内容已删除",
+    "该内容已被发布者删除",
+    "该文章已被删除",
+    "该文章不存在",
+    "内容不存在",
+    "页面不存在",
+    "账号已删除",
+    "帐号已删除",
+    "账号已注销",
+    "帐号已注销",
+    "该账号已被封禁",
+    "该帐号已被封禁",
+    "此内容因违规无法查看",
+    "已被删除或不可见",
+    "404 not found",
+    "page not found",
+    "this article is no longer available",
+    "this page is no longer available",
+    "post not found",
+]
 
-# 分类/聚合页面 URL 路径黑名单（精确匹配路径片段）
-URL_CATEGORY_BLACKLIST = [
-    "/category/", "/categories/",
-    "/news", "/news/", "/newsfeed", "/newsroom",
+# 分类/聚合页面 URL 路径黑名单。
+# 只拦真正的栏目/索引页；/news/article-slug 这类文章页必须允许。
+URL_AGGREGATE_EXACT_PATHS = {
+    "/", "/index", "/index.php", "/index.html",
+    "/news", "/news/", "/newsfeed", "/newsfeed/", "/newsroom", "/newsroom/",
     "/read", "/read/",
-    "/index/", "/index.php", "/index.html",
+    "/blogs", "/blogs/", "/blogs/news", "/blogs/news/",
+    "/events", "/events/", "/event", "/event/",
+    "/conference", "/conference/", "/conferences", "/conferences/",
+    "/session", "/session/", "/sessions", "/sessions/",
+    "/journal", "/journal/", "/journals", "/journals/",
+    "/product", "/product/", "/products", "/products/",
+    "/service", "/service/", "/services", "/services/",
+    "/search", "/search/",
+}
+URL_AGGREGATE_PREFIXES = (
+    "/category/", "/categories/",
     "/type/", "/types/",
     "/list/", "/lists/",
     "/tag/", "/tags/",
     "/topic/", "/topics/",
-    "/search/", "/search?",
-    "/blogs/news/", "/blogs/",
-    "/events/", "/event/",
-    "/conference/", "/conferences/",
-    "/session/", "/sessions/",
-    "/journals/", "/journal/",
-    "/products/", "/product/",
-    "/services/", "/service/",
-]
+    "/search/",
+)
 
 # 需要排除的域名片段（内容聚合站）
 DOMAIN_BLACKLIST = [
@@ -212,22 +248,62 @@ def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, 
     return True, "", normalized
 
 
+def canonicalize_url(url: str) -> str:
+    """Return a stable URL for equality checks while preserving article identity."""
+    parts = urlsplit(str(url or "").strip())
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc.lower()
+    path = parts.path or "/"
+    query_pairs = []
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        key_lower = key.lower()
+        if key_lower in TRACKING_QUERY_KEYS or key_lower.startswith(TRACKING_QUERY_PREFIXES):
+            continue
+        query_pairs.append((key, value))
+    query = urlencode(query_pairs, doseq=True)
+    return urlunsplit((scheme, netloc, path, query, ""))
+
+
+def _hostname_matches(hostname: str, domain: str) -> bool:
+    hostname = hostname.lower().strip(".")
+    domain = domain.lower().strip(".")
+    return hostname == domain or hostname.endswith(f".{domain}")
+
+
 def _is_category_or_aggregate_url(url: str) -> bool:
-    """判断 URL 是否为分类页、聚合页或列表页"""
+    """判断 URL 是否为分类页、聚合页或列表页。"""
     if not url:
         return True
-    url_lower = url.lower()
-    # 域名黑名单
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return True
+
+    hostname = (parts.hostname or "").lower()
+    if not hostname:
+        return True
+
     for domain in DOMAIN_BLACKLIST:
-        if domain in url_lower:
+        if _hostname_matches(hostname, domain):
             return True
-    # 分离路径和查询参数
-    parsed = url_lower.split("/")
-    path_part = "/" + "/".join(parsed[3:]) if len(parsed) > 3 else "/"
-    # 路径黑名单精确匹配
-    for bad_path in URL_CATEGORY_BLACKLIST:
-        if bad_path in path_part:
-            return True
+
+    path = parts.path or "/"
+    normalized_path = re.sub(r"/{2,}", "/", path).lower()
+    if normalized_path != "/" and normalized_path.endswith("/"):
+        slashless_path = normalized_path.rstrip("/")
+    else:
+        slashless_path = normalized_path
+
+    if normalized_path in URL_AGGREGATE_EXACT_PATHS or slashless_path in URL_AGGREGATE_EXACT_PATHS:
+        return True
+
+    if any(normalized_path.startswith(prefix) for prefix in URL_AGGREGATE_PREFIXES):
+        return True
+
+    if slashless_path == "/search":
+        return True
+
     return False
 
 
@@ -245,13 +321,26 @@ def _load_history_index():
     return []
 
 
+def _normalize_history_text(text: str) -> str:
+    text = str(text or "").lower()
+    text = re.sub(r"[^\u4e00-\u9fff\w\s]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _history_tokens(text: str) -> set[str]:
+    normalized = _normalize_history_text(text)
+    tokens = {token for token in re.findall(r"[a-z0-9]{4,}", normalized)}
+    chinese_text = "".join(re.findall(r"[\u4e00-\u9fff]+", normalized))
+    for size in (2, 3, 4):
+        for index in range(0, max(len(chinese_text) - size + 1, 0)):
+            tokens.add(chinese_text[index:index + size])
+    return tokens
+
+
 def _make_fingerprint(item):
-    """生成基于内容关键词的指纹，用于跨天去重"""
-    text = (item.get("title", "") + " " + item.get("summary", "")).lower()
-    text = re.sub(r'[^\u4e00-\u9fff\w\s]', '', text)
-    words = text.split()
-    keywords = [w for w in words if len(w) > 3]
-    return " ".join(sorted(set(keywords))[:20])
+    """生成基于中英文内容关键词的指纹，用于跨天去重。"""
+    tokens = _history_tokens(f"{item.get('title', '')} {item.get('summary', '')}")
+    return " ".join(sorted(tokens)[:80])
 
 
 def _is_historical_duplicate(item, history_entries):
@@ -261,23 +350,116 @@ def _is_historical_duplicate(item, history_entries):
     """
     if not history_entries:
         return False
-    item_url = item.get("url", "").strip()
+    item_url = canonicalize_url(item.get("url", ""))
     item_title = item.get("title", "").strip()
+    item_title_norm = normalize_title(item_title)
     item_fp = _make_fingerprint(item)
+    item_tokens = set(item_fp.split())
     for entry in history_entries:
         # URL 完全匹配
-        if item_url and item_url == entry.get("url", ""):
+        entry_url = entry.get("canonical_url") or canonicalize_url(entry.get("url", ""))
+        if item_url and item_url == entry_url:
             return True
         # 标题完全匹配
-        if item_title and item_title == entry.get("title", ""):
+        entry_title = entry.get("title", "")
+        if item_title_norm and item_title_norm == normalize_title(entry_title):
             return True
         # 内容指纹相似度
         hist_fp = entry.get("fingerprint", "")
         if item_fp and hist_fp:
-            sim = SequenceMatcher(None, item_fp, hist_fp).ratio()
-            if sim > 0.75:
+            hist_tokens = set(str(hist_fp).split())
+            overlap = len(item_tokens & hist_tokens) / max(len(item_tokens | hist_tokens), 1)
+            sim = max(overlap, SequenceMatcher(None, item_fp, hist_fp).ratio())
+            if sim >= 0.75:
                 return True
     return False
+
+
+def check_url_health(url: str, timeout: int = URL_HEALTH_TIMEOUT_SECONDS, opener=urlopen) -> Dict[str, Any]:
+    """Check whether a URL opens and does not look like a deleted/invalid article."""
+    try:
+        safe_url(url)
+    except ValueError as exc:
+        return {"ok": False, "url": url, "reason": f"URL不安全: {exc}"}
+
+    request = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/126.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    try:
+        with opener(request, timeout=timeout) as response:
+            status = getattr(response, "status", getattr(response, "code", 200))
+            final_url = getattr(response, "url", url)
+            headers = getattr(response, "headers", {}) or {}
+            content_type = ""
+            if hasattr(headers, "get"):
+                content_type = headers.get("Content-Type", "") or headers.get("content-type", "")
+
+            if status >= 400:
+                return {"ok": False, "url": url, "status": status, "reason": f"HTTP状态异常: {status}"}
+
+            if any(kind in content_type.lower() for kind in ("text/", "html", "xml", "json", "")):
+                body = response.read(URL_HEALTH_MAX_BYTES)
+                charset = "utf-8"
+                if hasattr(headers, "get_content_charset"):
+                    charset = headers.get_content_charset() or charset
+                text = body.decode(charset, errors="replace")
+                text_lower = text.lower()
+                for pattern in DELETED_CONTENT_PATTERNS:
+                    if pattern.lower() in text_lower:
+                        return {
+                            "ok": False,
+                            "url": url,
+                            "status": status,
+                            "reason": f"页面疑似失效/删除: {pattern}",
+                        }
+
+            return {"ok": True, "url": url, "status": status, "final_url": final_url}
+    except HTTPError as exc:
+        return {"ok": False, "url": url, "status": exc.code, "reason": f"HTTP状态异常: {exc.code}"}
+    except (URLError, TimeoutError, socket.timeout) as exc:
+        return {"ok": False, "url": url, "reason": f"URL无法打开: {exc}"}
+    except Exception as exc:
+        return {"ok": False, "url": url, "reason": f"URL检查失败: {exc}"}
+
+
+def validate_approved_url_health(
+    approved_data: List[Dict[str, Any]],
+    label: str = "approved",
+    check_func=check_url_health,
+) -> Dict[str, Any]:
+    """Ensure every approved URL is reachable and not a known deleted-content page."""
+    return validate_url_health(collect_approved_urls(approved_data), label=label, check_func=check_func)
+
+
+def validate_url_health(
+    urls: List[str],
+    label: str = "URL",
+    check_func=check_url_health,
+) -> Dict[str, Any]:
+    """Ensure each outbound URL is reachable and not a known deleted-content page."""
+    urls = list(dict.fromkeys(urls))
+    errors = []
+    checked = []
+    for url in urls:
+        result = check_func(url)
+        checked.append(result)
+        if not result.get("ok"):
+            errors.append(f"{label}链接不可用: {url} - {result.get('reason', '未知错误')}")
+
+    return {
+        "is_valid": len(errors) == 0,
+        "errors": errors,
+        "checked_urls": checked,
+        "total_checked": len(checked),
+    }
 
 
 def normalize_title(title: str) -> str:
@@ -492,7 +674,7 @@ def check_timeliness(item: Dict[str, Any], item_type: str, now: Optional[datetim
     current_time = (now or now_local()).replace(tzinfo=None)
     
     if not item_date:
-        return True, "无法解析日期，保留待人工审核"
+        return False, f"无法解析日期 ({date_str})"
     
     window_days = TIME_WINDOWS.get(item_type, 7)
     cutoff = current_time - timedelta(days=window_days)
@@ -623,6 +805,7 @@ def process_raw_data(raw_data: List[Dict[str, Any]], item_type: str) -> Dict[str
     """
     fingerprint_db = load_historical_events(days=HISTORY_DEDUP_DAYS)
     policy_db = load_policy_database()
+    history_entries = _load_history_index()
     
     approved = []
     rejected = []
@@ -648,7 +831,6 @@ def process_raw_data(raw_data: List[Dict[str, Any]], item_type: str) -> Dict[str
             continue
         
         # 0.5 跨天历史索引去重（基于 history_index.json 的持久化去重）
-        history_entries = _load_history_index()
         if _is_historical_duplicate(item, history_entries):
             rejected.append({
                 "item": item,
@@ -1160,6 +1342,14 @@ def extract_http_urls(html: str) -> List[str]:
     return list(dict.fromkeys(parser.urls))
 
 
+def extract_plain_http_urls(text: str) -> List[str]:
+    """Extract unique plain HTTP(S) URLs from Markdown or text."""
+    urls = []
+    for match in re.finditer(r"https?://[^\s<>\]\)\"']+", text or ""):
+        urls.append(match.group(0).rstrip(".,;，。；）)]"))
+    return list(dict.fromkeys(urls))
+
+
 def collect_approved_urls(approved_data: List[Dict[str, Any]]) -> List[str]:
     """Collect unique primary and aggregated approved URLs."""
     approved_urls: list[str] = []
@@ -1174,7 +1364,8 @@ def collect_approved_urls(approved_data: List[Dict[str, Any]]) -> List[str]:
 def validate_urls_against_approved(urls: List[str], approved_data: List[Dict[str, Any]], label: str = "HTML") -> Dict[str, Any]:
     """Ensure every extracted URL is present in approved data."""
     approved_urls = collect_approved_urls(approved_data)
-    missing_urls = [u for u in urls if u not in approved_urls]
+    approved_canonical_urls = {canonicalize_url(u) for u in approved_urls}
+    missing_urls = [u for u in urls if canonicalize_url(u) not in approved_canonical_urls]
     errors = []
     if missing_urls:
         errors.append(f"{label}包含{len(missing_urls)}个approved数据中不存在的URL: {missing_urls[:3]}")

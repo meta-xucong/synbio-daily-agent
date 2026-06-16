@@ -22,3 +22,4 @@ def test_timeliness_windows_by_type():
     assert report_pipeline.check_timeliness({"date": "2026-06-11"}, "events", now=now)[0]
     assert not report_pipeline.check_timeliness({"date": "2026-06-10"}, "events", now=now)[0]
     assert not report_pipeline.check_timeliness({"date": "2026-09-11"}, "events", now=now)[0]
+    assert not report_pipeline.check_timeliness({"date": "recently"}, "news", now=now)[0]

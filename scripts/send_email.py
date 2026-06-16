@@ -7,7 +7,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import smtplib
 from pathlib import Path
 from typing import Any, Dict
@@ -22,7 +21,14 @@ try:
     from .pre_check import pre_check
     from .post_check import post_check
     from . import report_pipeline as report_pipeline_module
-    from .report_pipeline import extract_http_urls, run_full_validation, validate_email_mime_type, validate_urls_against_approved
+    from .report_pipeline import (
+        extract_http_urls,
+        extract_plain_http_urls,
+        run_full_validation,
+        validate_email_mime_type,
+        validate_url_health,
+        validate_urls_against_approved,
+    )
     from .html_safety import validate_html_safety
 except ImportError:
     from settings import CONFIG_DIR, DATA_DIR
@@ -32,7 +38,14 @@ except ImportError:
     from pre_check import pre_check
     from post_check import post_check
     import report_pipeline as report_pipeline_module
-    from report_pipeline import extract_http_urls, run_full_validation, validate_email_mime_type, validate_urls_against_approved
+    from report_pipeline import (
+        extract_http_urls,
+        extract_plain_http_urls,
+        run_full_validation,
+        validate_email_mime_type,
+        validate_url_health,
+        validate_urls_against_approved,
+    )
     from html_safety import validate_html_safety
 
 ensure_utf8_console()
@@ -61,6 +74,7 @@ def dry_run_email_config() -> Dict[str, Any]:
         "sender_email": "dry-run@example.invalid",
         "sender_password": "",
         "receiver_email": "dry-run@example.invalid",
+        "check_url_health": False,
     }
 
 
@@ -168,26 +182,34 @@ def _update_history_index(date_str: str, approved_items: list[dict[str, Any]]) -
         except Exception:
             pass
 
-    existing_urls = {e.get("url", "") for e in history.get("entries", [])}
+    existing_urls = {
+        e.get("canonical_url") or report_pipeline_module.canonicalize_url(e.get("url", ""))
+        for e in history.get("entries", [])
+    }
 
     for item in approved_items:
-        url = item.get("url", "")
         title = item.get("title", "")
-        if not url or not title or url in existing_urls:
+        item_urls = [item.get("url", "")]
+        item_urls.extend(item.get("urls", []) or [])
+        item_urls = [url for url in dict.fromkeys(item_urls) if url]
+        new_urls = [
+            url for url in item_urls
+            if report_pipeline_module.canonicalize_url(url) not in existing_urls
+        ]
+        if not title or not new_urls:
             continue
-        text = (title + " " + item.get("summary", "")).lower()
-        text = re.sub(r'[^\u4e00-\u9fff\w\s]', '', text)
-        words = text.split()
-        keywords = [w for w in words if len(w) > 3]
-        fingerprint = " ".join(sorted(set(keywords))[:20])
-        history["entries"].append({
-            "url": url,
-            "title": title[:120],
-            "fingerprint": fingerprint,
-            "date": item.get("date", ""),
-            "first_sent_date": date_str,
-        })
-        existing_urls.add(url)
+        fingerprint = report_pipeline_module._make_fingerprint(item)
+        for url in new_urls:
+            canonical_url = report_pipeline_module.canonicalize_url(url)
+            history["entries"].append({
+                "url": url,
+                "canonical_url": canonical_url,
+                "title": title[:120],
+                "fingerprint": fingerprint,
+                "date": item.get("date", ""),
+                "first_sent_date": date_str,
+            })
+            existing_urls.add(canonical_url)
 
     with open(history_path, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
@@ -218,6 +240,7 @@ def validate_send_gate(
     html_path: str | Path,
     email_html_path: str | Path | None = None,
     msg: MIMEMultipart | None = None,
+    check_url_health: bool = True,
 ) -> Dict[str, Any]:
     """Run all checks required before any SMTP connection is opened."""
     errors: list[str] = []
@@ -270,6 +293,25 @@ def validate_send_gate(
     details["h5_url_consistency"] = h5_url_consistency
     if not h5_url_consistency["is_consistent"]:
         errors.extend(h5_url_consistency["errors"])
+
+    outbound_urls = list(dict.fromkeys(
+        extract_http_urls(files["html_content"])
+        + extract_http_urls(files["email_body"])
+        + extract_plain_http_urls(files["md_content"])
+    ))
+    if check_url_health and outbound_urls:
+        url_health = validate_url_health(outbound_urls, label="发送内容")
+        details["url_health"] = url_health
+        if not url_health["is_valid"]:
+            errors.extend(url_health["errors"])
+    else:
+        details["url_health"] = {
+            "is_valid": True,
+            "errors": [],
+            "checked_urls": [],
+            "total_checked": 0,
+            "skipped": True,
+        }
 
     validation = run_full_validation(str(md_path), files["email_body"], approved_data)
     details["full_validation"] = validation
@@ -327,7 +369,14 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_ru
         email_body=files["email_body"],
     )
 
-    gate = validate_send_gate(date_str, md_path, html_path, email_html_path, msg=msg)
+    gate = validate_send_gate(
+        date_str,
+        md_path,
+        html_path,
+        email_html_path,
+        msg=msg,
+        check_url_health=config.get("check_url_health", True),
+    )
     if not gate["passed"]:
         print(f"邮件发送门禁未通过: {len(gate['errors'])} 个错误")
         for error in gate["errors"][:10]:
@@ -360,6 +409,11 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_ru
                 )
                 send_message_via_smtp(config, fallback_msg)
                 print("邮件已降级发送：仅HTML正文，无附件。请检查SMTP MIME兼容性。")
+                try:
+                    approved_data = load_approved_data(date_str)
+                    _update_history_index(date_str, approved_data)
+                except Exception as e:
+                    print(f"历史索引更新失败（非阻断）: {e}")
                 return True
             except Exception as fallback_exc:
                 print(f"邮件降级发送失败: {fallback_exc}")
