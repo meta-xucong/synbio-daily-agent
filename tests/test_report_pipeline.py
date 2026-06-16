@@ -60,6 +60,30 @@ def test_process_raw_data_rejects_type_category_mismatch(monkeypatch):
     assert "type mismatch" in result["rejected"][0]["reason"]
 
 
+def test_process_raw_data_rejects_policy_bucket_non_policy_content(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    result = report_pipeline.process_raw_data([
+        _item(
+            title="SynBioBeta: 2025 Investment Report",
+            summary="2024年全年合成生物学融资122亿美元，Q4融资43亿美元。",
+            url="https://www.synbiobeta.com/reports/2024-investment-report",
+            source="政府公告/政策文件",
+            type="policy",
+        ),
+        _item(
+            title="北京市科委：征集2026年度合成生物制造领域储备课题",
+            summary="支持方向包括合成生物学元件智能设计，申报截止6月22日。",
+            url="https://kw.beijing.gov.cn/zwgk/zcwj/202606/t20260601_4680315.html",
+            source="北京市科委",
+            type="policy",
+        ),
+    ], "policy")
+
+    assert result["stats"]["approved"] == 1
+    assert result["stats"]["schema_rejected"] == 1
+    assert "type content mismatch" in result["rejected"][0]["reason"]
+
+
 def test_process_raw_data_rejects_url_attribute_injection(monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     result = report_pipeline.process_raw_data([
@@ -72,9 +96,11 @@ def test_process_raw_data_rejects_url_attribute_injection(monkeypatch):
 
 def test_category_filter_allows_article_paths_and_blocks_aggregate_pages():
     assert not report_pipeline._is_category_or_aggregate_url("https://example.com/news/yeast-platform")
+    assert not report_pipeline._is_category_or_aggregate_url("https://example.com/news-and-features/yeast-platform")
     assert not report_pipeline._is_category_or_aggregate_url("https://example.com/events/synbio-forum-2026")
     assert report_pipeline._is_category_or_aggregate_url("https://example.com/news")
     assert report_pipeline._is_category_or_aggregate_url("https://example.com/category/synthetic-biology")
+    assert report_pipeline._is_category_or_aggregate_url("https://example.com/topic-hub/synthetic-biology/news-and-features")
     assert report_pipeline._is_category_or_aggregate_url("https://conferences.nature.com/synthetic-biology")
 
 
@@ -89,6 +115,40 @@ def test_process_raw_data_rejects_history_index_duplicates(monkeypatch):
 
     result = report_pipeline.process_raw_data([
         _item(url="https://example.com/news/yeast-platform?utm_source=newsletter"),
+    ], "news")
+
+    assert result["stats"]["approved"] == 0
+    assert result["stats"]["duplicate_rejected"] == 1
+    assert "[历史索引去重]" in result["rejected"][0]["reason"]
+
+
+def test_collect_approved_urls_accepts_string_urls_field():
+    urls = report_pipeline.collect_approved_urls([{
+        "url": "https://example.com/news/primary",
+        "urls": "https://example.com/news/secondary",
+    }])
+
+    assert urls == [
+        "https://example.com/news/primary",
+        "https://example.com/news/secondary",
+    ]
+
+
+def test_history_index_duplicate_checks_secondary_urls(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [{
+        "url": "https://example.com/news/primary",
+        "urls": ["https://example.com/news/secondary"],
+        "title": "Different visible title",
+        "fingerprint": "unrelated",
+        "first_sent_date": "2026-06-09",
+    }])
+
+    result = report_pipeline.process_raw_data([
+        _item(
+            title="Fresh rewrite around the same sourced story",
+            url="https://example.com/news/secondary?utm_source=newsletter",
+        ),
     ], "news")
 
     assert result["stats"]["approved"] == 0
@@ -170,9 +230,13 @@ def _write_full_validate_inputs(tmp_path, report_name="valid_report.md", email_n
     approved = tmp_path / "approved.json"
     approved.write_text(json.dumps([{
         "title": "星河生物完成数千万元 pre-A 轮融资",
+        "source": "SynBioBeta",
         "url": "https://example.com/news/xinghe",
+        "summary": "星河生物完成数千万元 pre-A 轮融资，用于合成生物制造平台扩产。",
         "type": "news",
         "date": approved_date,
+        "raw_score": 18,
+        "value_score": 6.0,
     }], ensure_ascii=False), encoding="utf-8")
     email = tmp_path / email_name
     email.write_text(
@@ -243,15 +307,188 @@ def test_run_full_validation_blocks_approved_type_timeliness():
     email = '<span class="num">1</span><span class="num">2</span><span class="num">3</span><span class="num">4</span><span class="num">5</span><div class="card-title">星河生物完成数千万元 pre-A 轮融资</div><a href="https://example.com/news/xinghe">查看</a>'
     approved = [{
         "title": "星河生物完成数千万元 pre-A 轮融资",
+        "source": "SynBioBeta",
         "url": "https://example.com/news/xinghe",
+        "summary": "星河生物完成数千万元 pre-A 轮融资，用于合成生物制造平台扩产。",
         "type": "news",
         "date": "2026-05-01",
+        "raw_score": 18,
+        "value_score": 6.0,
     }]
 
     result = report_pipeline.run_full_validation(report, email, approved)
 
     assert not result["can_send_email"]
     assert result["approved_timeliness_check"]["has_errors"]
+
+
+def test_validate_approved_schema_blocks_bad_urls_and_type_mismatch():
+    approved = [
+        {
+            "title": "Technology Networks synthetic biology news hub",
+            "source": "Technology Networks",
+            "date": "2026-06-10",
+            "summary": "Synthetic biology news listing page.",
+            "url": "https://www.technologynetworks.com/tn/topic-hub/synthetic-biology/news-and-features",
+            "type": "news",
+            "raw_score": 10,
+            "value_score": 3.3,
+        },
+        {
+            "title": "EMBL Synthetic Biology Courses",
+            "source": "EMBL",
+            "date": "2026-06-10",
+            "summary": "Synthetic biology course catalogue.",
+            "url": "https://ecampus.embl.de/course/index.php?categoryid=43",
+            "type": "policy",
+            "raw_score": 10,
+            "value_score": 3.3,
+        },
+        {
+            "title": "Different title on same URL",
+            "source": "Nature",
+            "date": "2026-06-10",
+            "summary": "Another story using the same URL.",
+            "url": "https://www.technologynetworks.com/tn/topic-hub/synthetic-biology/news-and-features",
+            "type": "news",
+            "raw_score": 10,
+            "value_score": 3.3,
+        },
+    ]
+
+    result = report_pipeline.validate_approved_schema(approved)
+
+    assert not result["is_valid"]
+    assert any("聚合页" in error for error in result["errors"])
+    assert any("类别错配" in error for error in result["errors"])
+    assert any("URL重复" in error for error in result["errors"])
+
+
+def test_report_pipeline_cli_build_approved_generates_outputs(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "report_pipeline.py"),
+            "--build-approved",
+            str(ROOT / "tests" / "fixtures" / "raw_full.json"),
+            "--date",
+            "2026-06-10",
+            "--output",
+            str(tmp_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    approved = json.loads((tmp_path / "approved_2026-06-10.json").read_text(encoding="utf-8"))
+    rejected = json.loads((tmp_path / "rejected_2026-06-10.json").read_text(encoding="utf-8"))
+    assert approved
+    assert rejected
+    assert (tmp_path / "processed_news_2026-06-10.json").exists()
+
+
+def test_build_approved_drops_conflicting_same_url_titles(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    raw = {
+        "news": [
+            _item(
+                title="Nature reports engineered legumes",
+                summary="A Nature paper reports engineered legumes for nitrogen fixation.",
+                url="https://example.com/news/shared",
+                date="2026-06-10",
+            ),
+            _item(
+                title="AlphaFold revolutionizes protein design",
+                summary="A different story incorrectly reuses the same Nature URL.",
+                url="https://example.com/news/shared?utm_source=x",
+                date="2026-06-10",
+            ),
+        ],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    result = report_pipeline.build_approved_from_raw(raw, "2026-06-10", output_dir=tmp_path)
+
+    assert len(result["approved"]) == 1
+    assert any("[approved冲突]" in item["reason"] for item in result["rejected"])
+    assert result["approved_schema"]["is_valid"]
+
+
+def test_build_approved_can_drop_unhealthy_primary_urls(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    raw = {
+        "news": [
+            _item(title="Healthy article", url="https://example.com/news/healthy"),
+            _item(title="Missing article", url="https://example.com/news/missing"),
+        ],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def fake_check(url):
+        if "missing" in url:
+            return {"ok": False, "reason": "HTTP状态异常: 404"}
+        return {"ok": True, "status": 200}
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        check_url_health_enabled=True,
+        url_check_func=fake_check,
+    )
+
+    assert [item["title"] for item in result["approved"]] == ["Healthy article"]
+    assert any("[链接健康]" in item["reason"] for item in result["rejected"])
+
+
+def test_report_pipeline_cli_render_md_generates_approved_only_report(tmp_path):
+    approved_path = tmp_path / "approved.json"
+    approved_path.write_text(json.dumps([{
+        "title": "星河生物完成数千万元 pre-A 轮融资",
+        "source": "SynBioBeta",
+        "date": "2026-06-10",
+        "summary": "星河生物完成数千万元 pre-A 轮融资，用于合成生物制造平台扩产。",
+        "url": "https://example.com/news/xinghe",
+        "type": "news",
+        "raw_score": 18,
+        "value_score": 6.0,
+    }], ensure_ascii=False), encoding="utf-8")
+    output = tmp_path / "2026-06-10.md"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "report_pipeline.py"),
+            "--render-md",
+            str(approved_path),
+            "--date",
+            "2026-06-10",
+            "--output",
+            str(output),
+        ],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    report = output.read_text(encoding="utf-8")
+    assert "https://example.com/news/xinghe" in report
+    assert "approved=1" in report
+    validation = report_pipeline.run_compliance_check(str(output))
+    assert validation["passed"], validation["fix_instructions"]
 
 
 def test_validate_email_consistency_accepts_aggregated_urls():

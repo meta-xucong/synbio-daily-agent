@@ -181,42 +181,28 @@ with open(raw_path, 'w', encoding='utf-8') as f:
 
 ### 3.2 调用脚本处理（强制步骤）
 
-```python
-import sys
-sys.path.insert(0, r"scripts")
-from report_pipeline import process_raw_data
-import json
-from settings import date_str
+生产运行必须使用一次性 CLI 入口处理完整 raw dict，不得手工拼接 approved：
 
-date_str = date_str()
-raw_path = rf"data/raw_{date_str}.json"
-
-with open(raw_path, 'r', encoding='utf-8') as f:
-    raw_data = json.load(f)
-
-processed_results = {}
-all_approved = []
-for category in ["news", "research", "funding", "policy", "events"]:
-    items = raw_data.get(category, [])
-    result = process_raw_data(items, category)
-    processed_results[category] = result
-    all_approved.extend(result.get("approved", []))
-    
-    output_path = rf"data/processed_{category}_{date_str}.json"
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
-    
-    print(f"{category}: 输入{result['stats']['total_input']}条, 通过{result['stats']['approved']}条, 拒绝{result['stats']['rejected']}条")
-
-# 保存所有approved数据
-approved_path = rf"data/approved_{date_str}.json"
-with open(approved_path, 'w', encoding='utf-8') as f:
-    json.dump(all_approved, f, ensure_ascii=False, indent=2)
+```powershell
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health
 ```
+
+该命令会同时生成：
+
+- `data/processed_news_YYYY-MM-DD.json`
+- `data/processed_research_YYYY-MM-DD.json`
+- `data/processed_funding_YYYY-MM-DD.json`
+- `data/processed_policy_YYYY-MM-DD.json`
+- `data/processed_events_YYYY-MM-DD.json`
+- `data/approved_YYYY-MM-DD.json`
+- `data/rejected_YYYY-MM-DD.json`
+
+`--build-approved` 会统一执行 schema、URL聚合页过滤、跨天历史去重、当前批次去重、同URL不同标题冲突剔除、时效性、价值评分和 approved schema 校验。`--check-url-health` 会在 approved 写出前剔除打不开、HTTP 4xx/5xx、超时、证书失败或疑似“文章已删除/账号已注销/页面不存在”的信息。
 
 **重要**：
 - **必须使用脚本处理后的 `approved` 列表中的信息**
 - **严禁使用 `rejected` 列表中的信息**
+- **必须保留 `data/history_index.json`，真实发送成功后会写入，后续跨天去重会检查主链接和 `urls` 备用链接**
 - 如果所有信息都被拒绝，生成"本周期暂无相关新信息"的报告
 
 ---
@@ -262,7 +248,14 @@ with open(approved_path, 'w', encoding='utf-8') as f:
 8. 📎 附录：完整链接列表（必须保留，按日期降序排列）
 
 ### 4.3 保存报告
-保存到 `reports/YYYY-MM-DD.md`
+
+推荐使用确定性 Markdown 生成入口，避免人工链接或旧内容混入：
+
+```powershell
+python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --output reports\YYYY-MM-DD.md
+```
+
+保存到 `reports/YYYY-MM-DD.md` 后继续执行验证。
 
 ---
 

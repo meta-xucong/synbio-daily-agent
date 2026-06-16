@@ -10,6 +10,7 @@ reports/*.md
 # 配置文件（包含敏感信息）
 config/email_config.json
 config/feishu_config.json
+scripts/config/
 
 # Python
 __pycache__/
@@ -20,6 +21,7 @@ __pycache__/
 
 # Codex local long-running task state
 .codex-longrun/
+runtime_codex_*/
 
 # IDE
 .vscode/

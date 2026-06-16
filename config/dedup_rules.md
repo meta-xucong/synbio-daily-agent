@@ -19,10 +19,29 @@
 ### 去重检查范围
 - 检查过去 30 天内已收录的信息
 - 检查当前批次内部重复
+- 真实发送成功后写入 `data/history_index.json`
+- 后续处理会用 `history_index.json` 中的标题、内容指纹、主链接和 `urls` 备用链接做跨天持久化去重
+- URL 去重会忽略常见追踪参数，如 `utm_*`、`fbclid`、`gclid`、`ref`
 
 ### 特殊处理
 - 同一事件的不同报道（如融资新闻的不同来源）保留价值评分最高的一条
 - 同一研究的预印本和正式发表视为重复，保留正式发表版本
+- 同一 canonical URL 如果对应不同标题，默认视为数据冲突，只保留排序更高的一条，其余进入 `rejected`
+
+## 链接健康规则
+
+正式生成 approved 时建议使用：
+
+```powershell
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health
+```
+
+发送 gate 默认也会检查 H5、邮件正文和 Markdown 附件中的实际外链。以下情况会阻断发送或进入 rejected：
+
+- HTTP 4xx/5xx
+- 超时、DNS、TLS/证书等无法打开
+- 页面文本包含“文章已删除”“账号已注销”“页面不存在”等软失效提示
+- 站点首页、分类页、搜索页、聚合页或黑名单域名
 
 ## 价值评分标准
 

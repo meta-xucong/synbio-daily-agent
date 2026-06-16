@@ -26,6 +26,7 @@ try:
         extract_plain_http_urls,
         run_full_validation,
         validate_email_mime_type,
+        validate_approved_schema,
         validate_url_health,
         validate_urls_against_approved,
     )
@@ -43,6 +44,7 @@ except ImportError:
         extract_plain_http_urls,
         run_full_validation,
         validate_email_mime_type,
+        validate_approved_schema,
         validate_url_health,
         validate_urls_against_approved,
     )
@@ -74,7 +76,7 @@ def dry_run_email_config() -> Dict[str, Any]:
         "sender_email": "dry-run@example.invalid",
         "sender_password": "",
         "receiver_email": "dry-run@example.invalid",
-        "check_url_health": False,
+        "check_url_health": True,
     }
 
 
@@ -182,16 +184,19 @@ def _update_history_index(date_str: str, approved_items: list[dict[str, Any]]) -
         except Exception:
             pass
 
-    existing_urls = {
-        e.get("canonical_url") or report_pipeline_module.canonicalize_url(e.get("url", ""))
-        for e in history.get("entries", [])
-    }
+    existing_urls = set()
+    for entry in history.get("entries", []):
+        entry_urls = report_pipeline_module._item_candidate_urls(entry)
+        entry_urls.append(entry.get("canonical_url", ""))
+        existing_urls.update(
+            report_pipeline_module.canonicalize_url(url)
+            for url in entry_urls
+            if url
+        )
 
     for item in approved_items:
         title = item.get("title", "")
-        item_urls = [item.get("url", "")]
-        item_urls.extend(item.get("urls", []) or [])
-        item_urls = [url for url in dict.fromkeys(item_urls) if url]
+        item_urls = report_pipeline_module._item_candidate_urls(item)
         new_urls = [
             url for url in item_urls
             if report_pipeline_module.canonicalize_url(url) not in existing_urls
@@ -204,6 +209,7 @@ def _update_history_index(date_str: str, approved_items: list[dict[str, Any]]) -
             history["entries"].append({
                 "url": url,
                 "canonical_url": canonical_url,
+                "urls": item_urls,
                 "title": title[:120],
                 "fingerprint": fingerprint,
                 "date": item.get("date", ""),
@@ -267,6 +273,17 @@ def validate_send_gate(
         approved_data = []
         errors.append(str(exc))
 
+    approved_schema = validate_approved_schema(approved_data) if approved_data else {
+        "is_valid": True,
+        "errors": [],
+        "warnings": [],
+        "total_checked": 0,
+    }
+    details["approved_schema"] = approved_schema
+    if not approved_schema["is_valid"]:
+        errors.extend([f"[approved schema] {error}" for error in approved_schema["errors"]])
+    warnings.extend(approved_schema.get("warnings", []))
+
     files = read_report_files(md_path, html_path, email_html_path)
     html_safety = validate_html_safety(files["html_content"])
     email_safety = validate_html_safety(files["email_body"])
@@ -316,7 +333,11 @@ def validate_send_gate(
     validation = run_full_validation(str(md_path), files["email_body"], approved_data)
     details["full_validation"] = validation
     if not validation.get("can_send_email"):
-        errors.extend(validation.get("fix_instructions", []))
+        schema_errors = set(approved_schema.get("errors", []))
+        errors.extend(
+            instruction for instruction in validation.get("fix_instructions", [])
+            if instruction not in schema_errors
+        )
 
     post_result = post_check(date_str, str(md_path))
     details["post_check"] = post_result

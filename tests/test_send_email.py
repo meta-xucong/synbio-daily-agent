@@ -35,6 +35,7 @@ def _write_runtime_tree(tmp_path: Path, report_name: str = "valid_report.md"):
             "summary": "星河生物完成数千万元 pre-A 轮融资，用于合成生物制造平台扩产。",
             "url": "https://example.com/news/xinghe",
             "type": "news",
+            "raw_score": 24,
             "value_score": 8,
         }
     ]
@@ -89,8 +90,16 @@ def test_send_dry_run_does_not_require_email_config(tmp_path, monkeypatch):
     monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
     monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(send_email, "smtplib", type("SMTPModule", (), {"SMTP_SSL": lambda *a, **k: (_ for _ in ()).throw(AssertionError("SMTP called"))}))
+    checked_urls = []
+
+    def healthy(urls, label="URL"):
+        checked_urls.extend(urls)
+        return {"is_valid": True, "errors": [], "checked_urls": [], "total_checked": len(urls)}
+
+    monkeypatch.setattr(send_email, "validate_url_health", healthy)
 
     assert send_email.send_daily_report("2026-06-10", md, html, dry_run=True) is True
+    assert "https://example.com/news/xinghe" in checked_urls
 
 
 def test_send_gate_blocks_unsafe_html(tmp_path, monkeypatch):
@@ -246,3 +255,32 @@ def test_smtp_500_simple_fallback_requires_config_flag(tmp_path, monkeypatch, ca
         "https://example.com/news/xinghe",
         "https://example.com/news/xinghe-secondary",
     }
+    assert all("https://example.com/news/xinghe-secondary?utm_source=newsletter" in entry["urls"] for entry in history["entries"])
+
+
+def test_history_index_update_deduplicates_existing_secondary_urls(tmp_path, monkeypatch):
+    (tmp_path / "data").mkdir()
+    history_path = tmp_path / "data" / "history_index.json"
+    history_path.write_text(json.dumps({
+        "version": 1,
+        "entries": [{
+            "url": "https://example.com/news/primary",
+            "canonical_url": "https://example.com/news/primary",
+            "urls": ["https://example.com/news/secondary?utm_source=old"],
+            "title": "Previously sent",
+            "fingerprint": "old",
+            "date": "2026-06-09",
+            "first_sent_date": "2026-06-09",
+        }],
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+
+    send_email._update_history_index("2026-06-10", [{
+        "title": "Same story from secondary URL",
+        "summary": "Same story",
+        "date": "2026-06-10",
+        "url": "https://example.com/news/secondary",
+    }])
+
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert len(history["entries"]) == 1
