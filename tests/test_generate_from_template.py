@@ -155,6 +155,16 @@ def test_send_email_dry_run_passes_generated_template_output(tmp_path, monkeypat
 
     monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
     monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(
+        send_email,
+        "validate_url_health",
+        lambda urls, label="URL": {
+            "is_valid": True,
+            "errors": [],
+            "checked_urls": [],
+            "total_checked": len(urls),
+        },
+    )
     (tmp_path / "config").mkdir()
 
     assert send_email.send_daily_report("2026-06-10", md_path, html_path, email_path, dry_run=True)

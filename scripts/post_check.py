@@ -19,6 +19,23 @@ except ImportError:
 ensure_utf8_console()
 
 
+def _coerce_url_list(value):
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(url or "") for url in value if url]
+    return []
+
+
+def _extract_report_links(report: str) -> set[str]:
+    links = []
+    for match in re.finditer(r"https?://[^\s<>\]\)\"']+", report or ""):
+        links.append(match.group(0).rstrip(".,;，。；）)]"))
+    return set(links)
+
+
 def post_check(date_str: str, report_path: str = None) -> dict:
     """报告生成后的强制检查
     
@@ -51,11 +68,11 @@ def post_check(date_str: str, report_path: str = None) -> dict:
         approved = json.load(f)
     
     # 检查1: 报告中的每个链接都在approved中
-    report_links = set(re.findall(r'https?://[^\s\)]+', report))
+    report_links = _extract_report_links(report)
     approved_links = set()
     for item in approved:
         approved_links.add(item.get("url", ""))
-        approved_links.update(item.get("urls", []))
+        approved_links.update(_coerce_url_list(item.get("urls", [])))
     
     extra_links = report_links - approved_links
     # 排除占位链接和常见非信息链接

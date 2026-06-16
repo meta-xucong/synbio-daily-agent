@@ -15,7 +15,23 @@ $env:SYNBIO_DAILY_TZ = "Asia/Shanghai"
 
 ## 处理原始数据
 
-`--process` 支持完整 raw dict，也支持单类别 list。
+生产运行应使用一次性入口，从完整 raw dict 生成 processed/approved/rejected，并在写出 approved 前剔除打不开或疑似删除的链接：
+
+```powershell
+python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health
+```
+
+该命令会写出：
+
+- `data/processed_news_YYYY-MM-DD.json`
+- `data/processed_research_YYYY-MM-DD.json`
+- `data/processed_funding_YYYY-MM-DD.json`
+- `data/processed_policy_YYYY-MM-DD.json`
+- `data/processed_events_YYYY-MM-DD.json`
+- `data/approved_YYYY-MM-DD.json`
+- `data/rejected_YYYY-MM-DD.json`
+
+`--process` 仍支持完整 raw dict 或单类别 list，但主要用于调试单个类别：
 
 ```powershell
 python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news --output data\processed_news_2026-06-11.json
@@ -38,8 +54,18 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 - 必填字段：`title/source/date/summary/url`
 - 缺少 `type` 时自动补为 `--type`
 - 如果 item 自带 `type` 且与 `--type` 不一致，将作为 schema 错误拒绝
-- 不合规 URL、缺字段、过期信息、重复信息写入 `rejected`
+- 不合规 URL、缺字段、过期信息、重复信息、历史索引命中、同URL不同标题冲突、死链写入 `rejected`
+- `data/history_index.json` 会在真实发送成功后更新；后续处理会用主链接和 `urls` 备用链接一起做跨天持久化去重
 - `value_score` 为 0-10，`raw_score` 保留原始分
+- approved schema 必须包含 `title/source/date/summary/url/type/raw_score/value_score`，日期、类别、URL和分数范围都会在发送前再次校验
+
+## 生成 Markdown 报告
+
+推荐从 approved 确定性生成 Markdown，避免旧报告或人工链接混入：
+
+```powershell
+python scripts\report_pipeline.py --render-md data\approved_2026-06-11.json --date 2026-06-11 --output reports\2026-06-11.md
+```
 
 ## 验证报告
 
@@ -96,7 +122,7 @@ python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_dai
 `--dry-run` 不要求存在真实 `config/email_config.json`；真实发送仍必须配置邮箱。
 
 `allow_simple_fallback=false` 为默认推荐。只有在 SMTP 服务商持续拒绝 multipart 附件邮件，并且可接受“仅 HTML 正文、无附件”的降级发送时，才应在 `config/email_config.json` 中显式设为 `true`。
-`check_url_health=true` 为默认推荐。发送 gate 会在连接 SMTP 前检查 approved 链接是否可打开，并拦截 4xx/5xx、超时以及“文章已删除/账号已注销/页面不存在”等软失效页面。
+`check_url_health=true` 为默认推荐。发送 gate 会在连接 SMTP 前检查 H5、邮件正文和 Markdown 附件里的实际外链是否可打开，并拦截 4xx/5xx、超时以及“文章已删除/账号已注销/页面不存在”等软失效页面。缺少真实邮箱配置时的 `--dry-run` 也默认执行链接健康检查；测试中需要跳过网络时应显式 mock 或在配置中临时设为 `false`。
 
 ## 本地测试
 

@@ -58,8 +58,8 @@ synbio-daily-agent/
 Step 1: 读取配置（anti_deviation_rules.md + 数据源 + 去重规则）
 Step 2: 多维度搜索（五轮搜索法）
 Step 3: 保存原始数据为JSON → data/raw_YYYY-MM-DD.json
-Step 4: 调用 report_pipeline.py 处理（去重+过滤+排序）
-Step 5: 基于 approved 列表生成Markdown报告
+Step 4: 调用 report_pipeline.py --build-approved --check-url-health 处理（去重+过滤+死链剔除+排序）
+Step 5: 调用 report_pipeline.py --render-md 基于 approved 生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 调用 generate_from_template.py 生成定稿H5 HTML报告
 Step 8: 调用 generate_from_template.py 生成定稿邮件正文
@@ -87,15 +87,26 @@ Step 9: 邮件推送（send gate通过后才发送）
 **输入**: `data/raw_YYYY-MM-DD.json`  
 **输出**: `data/approved_YYYY-MM-DD.json` + `data/rejected_YYYY-MM-DD.json`
 
+推荐生产命令:
+
+```powershell
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health
+python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --output reports\YYYY-MM-DD.md
+```
+
 处理流程:
-1. **时效性过滤**: 新闻7天、研究14天、融资7天、政策30天、活动90天
-2. **去重检查**: 
+1. **URL过滤**: 拒绝站点首页、分类/聚合页、黑名单域名和不安全URL
+2. **时效性过滤**: 新闻7天、研究14天、融资7天、政策30天、活动90天；日期无法解析直接拒绝
+3. **去重检查**:
    - 指纹匹配（MD5哈希，基于 company+type+完整title）
    - 公司重复（同一公司+同一类型视为重复）
    - 标题相似度（SequenceMatcher ≥80% 视为重复）
-   - 历史窗口30天，并检查当前批次内部重复
-3. **价值评分**: 保留 `raw_score`，`value_score` 归一化为0-10
-4. **聚合多源报道**: 同一事件的多源报道合并
+   - 最近30天历史报告 + `data/history_index.json` 持久化索引
+   - 主链接和 `urls` 备用链接都会参与跨天去重
+   - 当前批次内部重复与同URL不同标题冲突会被拒绝
+4. **链接健康检查**: `--check-url-health` 会剔除 4xx/5xx、超时、证书失败以及“文章已删除/账号已注销/页面不存在”等软失效页面
+5. **价值评分**: 保留 `raw_score`，`value_score` 归一化为0-10
+6. **approved schema**: 发送前要求 `title/source/date/summary/url/type/raw_score/value_score`，并检查类别一致性、日期、URL和分数范围
 
 ### 3. 报告格式验证
 
@@ -136,6 +147,8 @@ Step 9: 邮件推送（send gate通过后才发送）
 
 ```powershell
 python -m pytest -q
+python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health
+python scripts\report_pipeline.py --render-md data\approved_2026-06-11.json --date 2026-06-11 --output reports\2026-06-11.md
 python scripts\generate_from_template.py --date 2026-06-11 --approved data\approved_2026-06-11.json --markdown reports\2026-06-11.md --html-output reports\synbio_daily_2026-06-11.html --email-output reports\email_2026-06-11.html
 python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_daily_2026-06-11.html reports\email_2026-06-11.html --dry-run
 ```
@@ -144,7 +157,7 @@ python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_dai
 正式 H5/邮件正文必须由 `generate_from_template.py` 生成；`render_html.py` / `render_email.py` 仅用于 emergency fallback 或测试夹具。
 
 `config/email_config.json` 中的 `allow_simple_fallback` 默认应保持 `false`。只有在 SMTP 服务商持续拒绝带附件的 multipart 邮件，并且可接受“仅 HTML 正文、无附件”的降级发送时，才显式设为 `true`。
-`check_url_health` 默认应保持 `true`；发送前会检查 approved 链接可打开，且页面不含“文章已删除/账号已注销/页面不存在”等失效提示。
+`check_url_health` 默认应保持 `true`；`--dry-run` 即使没有真实邮箱配置也会默认检查实际发送内容中的外链，拦截打不开或疑似删除的链接。
 
 ---
 

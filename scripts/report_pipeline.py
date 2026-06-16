@@ -89,6 +89,24 @@ DELETED_CONTENT_PATTERNS = [
     "this page is no longer available",
     "post not found",
 ]
+APPROVED_REQUIRED_FIELDS = {
+    "title", "source", "date", "summary", "url", "type", "raw_score", "value_score",
+}
+TYPE_TITLE_KEYWORDS = {
+    "policy": ("政策", "法规", "监管", "规划", "指南", "征集", "通知", "公告", "课题", "专项", "申报", "标准", "grant", "call", "program", "programme", "proposal", "award", "regulation", "guidance"),
+    "events": ("大会", "会议", "论坛", "研讨会", "峰会", "活动", "课程", "培训", "webinar", "conference", "symposium", "forum", "course", "summit", "workshop", "meeting", "webcast"),
+    "funding": ("融资", "投资", "轮融资", "募资", "并购", "收购", "上市", "ipo", "series", "funding", "raised", "raises", "raise", "seed", "pre-a", "pre a", "round", "venture", "capital", "backs", "secures", "investment"),
+    "research": ("研究", "论文", "nature", "science", "cell", "pnas", "acs", "发现", "突破", "engineer", "research", "journal", "study", "paper", "published", "publication", "biotechnology", "bioengineering"),
+}
+TYPE_NEGATIVE_KEYWORDS = {
+    "policy": ("investment report", "forum", "conference", "course", "webinar", "融资", "投资报告"),
+    "funding": ("forum", "conference", "course", "policy", "regulation", "guidance", "研究", "论文"),
+    "events": ("investment report", "融资", "获投", "raised", "raises", "funding"),
+}
+POLICY_AUTHORITY_HINTS = (
+    "gov", "政府", "科委", "发改委", "工信", "科技部", "市监", "监管", "部门", "委员会",
+    "ministry", "agency", "commission", "authority", "government", "programme", "program",
+)
 
 # 分类/聚合页面 URL 路径黑名单。
 # 只拦真正的栏目/索引页；/news/article-slug 这类文章页必须允许。
@@ -111,7 +129,11 @@ URL_AGGREGATE_PREFIXES = (
     "/list/", "/lists/",
     "/tag/", "/tags/",
     "/topic/", "/topics/",
+    "/topic-hub/",
     "/search/",
+)
+URL_AGGREGATE_SUFFIXES = (
+    "/news-and-features",
 )
 
 # 需要排除的域名片段（内容聚合站）
@@ -245,6 +267,9 @@ def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, 
         url = str(normalized.get("url", ""))
         return False, f"[schema] invalid url: {url}", normalized
 
+    if not _looks_like_type(normalized, item_type):
+        return False, f"[schema] type content mismatch: item does not look like {item_type}", normalized
+
     return True, "", normalized
 
 
@@ -301,6 +326,9 @@ def _is_category_or_aggregate_url(url: str) -> bool:
     if any(normalized_path.startswith(prefix) for prefix in URL_AGGREGATE_PREFIXES):
         return True
 
+    if any(slashless_path.endswith(suffix) for suffix in URL_AGGREGATE_SUFFIXES):
+        return True
+
     if slashless_path == "/search":
         return True
 
@@ -343,6 +371,23 @@ def _make_fingerprint(item):
     return " ".join(sorted(tokens)[:80])
 
 
+def _coerce_url_list(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(url or "") for url in value if url]
+    return []
+
+
+def _item_candidate_urls(item) -> list[str]:
+    """Return all primary and secondary URLs for duplicate/link checks."""
+    urls = [item.get("url", "")]
+    urls.extend(_coerce_url_list(item.get("urls", [])))
+    return [url for url in dict.fromkeys(str(url or "") for url in urls) if url]
+
+
 def _is_historical_duplicate(item, history_entries):
     """
     检查 item 是否与历史索引中的条目重复。
@@ -350,15 +395,17 @@ def _is_historical_duplicate(item, history_entries):
     """
     if not history_entries:
         return False
-    item_url = canonicalize_url(item.get("url", ""))
+    item_urls = {canonicalize_url(url) for url in _item_candidate_urls(item)}
     item_title = item.get("title", "").strip()
     item_title_norm = normalize_title(item_title)
     item_fp = _make_fingerprint(item)
     item_tokens = set(item_fp.split())
     for entry in history_entries:
         # URL 完全匹配
-        entry_url = entry.get("canonical_url") or canonicalize_url(entry.get("url", ""))
-        if item_url and item_url == entry_url:
+        entry_urls = [entry.get("canonical_url") or canonicalize_url(entry.get("url", ""))]
+        entry_urls.extend(canonicalize_url(url) for url in _coerce_url_list(entry.get("urls", [])))
+        entry_urls = {url for url in entry_urls if url}
+        if item_urls and item_urls & entry_urls:
             return True
         # 标题完全匹配
         entry_title = entry.get("title", "")
@@ -1300,10 +1347,10 @@ def validate_email_consistency(email_body: str, approved_data: List[Dict[str, An
         errors.append(f"邮件正文包含{len(missing_titles)}条H5/approved数据中不存在的信息: {missing_titles[:3]}")
     
     # 检查邮件是否遗漏了执行摘要的关键信息
-    # 执行摘要应该有5条，检查是否有5个数字标记
+    expected_summary_count = min(5, len(approved_data))
     summary_items = re.findall(r'<span class="num">(\d+)</span>', email_body)
-    if len(summary_items) < 5:
-        warnings.append(f"邮件正文执行摘要可能不完整: 找到{len(summary_items)}条，期望5条")
+    if len(summary_items) < expected_summary_count:
+        warnings.append(f"邮件正文执行摘要可能不完整: 找到{len(summary_items)}条，期望{expected_summary_count}条")
     
     is_consistent = len(errors) == 0
     
@@ -1357,7 +1404,7 @@ def collect_approved_urls(approved_data: List[Dict[str, Any]]) -> List[str]:
         url = item.get("url", "")
         if url:
             approved_urls.append(url)
-        approved_urls.extend([u for u in item.get("urls", []) if u])
+        approved_urls.extend([u for u in _coerce_url_list(item.get("urls", [])) if u])
     return list(dict.fromkeys(approved_urls))
 
 
@@ -1441,6 +1488,87 @@ def validate_email_mime_type(email_msg) -> Dict[str, Any]:
     }
 
 
+def _looks_like_type(item: Dict[str, Any], item_type: str) -> bool:
+    title_summary_url = f"{item.get('title', '')} {item.get('summary', '')} {item.get('url', '')}".lower()
+    text = f"{title_summary_url} {item.get('source', '')}".lower()
+    if item_type == "news":
+        return True
+    if any(keyword in title_summary_url for keyword in TYPE_NEGATIVE_KEYWORDS.get(item_type, ())):
+        return False
+    if item_type == "policy":
+        has_policy_keyword = any(keyword.lower() in title_summary_url for keyword in TYPE_TITLE_KEYWORDS["policy"])
+        has_authority = any(hint.lower() in text for hint in POLICY_AUTHORITY_HINTS)
+        return has_policy_keyword and has_authority
+    keywords = TYPE_TITLE_KEYWORDS.get(item_type, ())
+    return any(keyword.lower() in text for keyword in keywords)
+
+
+def validate_approved_schema(approved_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Validate approved JSON before report/email generation or sending."""
+    errors = []
+    warnings = []
+    seen_urls: dict[str, str] = {}
+    total_checked = 0
+
+    for index, item in enumerate(approved_data, 1):
+        total_checked += 1
+        if not isinstance(item, dict):
+            errors.append(f"approved第{index}项不是对象")
+            continue
+
+        title = str(item.get("title", "") or "").strip()
+        missing = sorted(
+            field for field in APPROVED_REQUIRED_FIELDS
+            if field not in item or item.get(field) in (None, "")
+        )
+        if missing:
+            errors.append(f"approved第{index}项缺少必填字段: {', '.join(missing)}")
+
+        item_type = str(item.get("type") or "").lower()
+        if item_type not in VALID_ITEM_TYPES:
+            errors.append(f"approved第{index}项type无效: {item.get('type')}")
+        elif not _looks_like_type(item, item_type):
+            errors.append(f"approved第{index}项疑似类别错配: {title} ({item_type})")
+
+        if not parse_date(str(item.get("date", "") or "")):
+            errors.append(f"approved第{index}项日期无法解析: {item.get('date')}")
+
+        for score_field in ("raw_score", "value_score"):
+            try:
+                score = float(item.get(score_field))
+            except (TypeError, ValueError):
+                errors.append(f"approved第{index}项{score_field}不是数字: {item.get(score_field)}")
+                continue
+            if score_field == "value_score" and not 0 <= score <= 10:
+                errors.append(f"approved第{index}项value_score超出0-10: {score}")
+            if score_field == "raw_score" and score < 0:
+                errors.append(f"approved第{index}项raw_score不能为负: {score}")
+
+        urls = _item_candidate_urls(item)
+        for url in [u for u in dict.fromkeys(urls) if u]:
+            try:
+                safe_url(str(url))
+            except ValueError as exc:
+                errors.append(f"approved第{index}项URL不安全: {url} ({exc})")
+                continue
+            if _is_category_or_aggregate_url(str(url)):
+                errors.append(f"approved第{index}项URL疑似聚合页/黑名单域名: {url}")
+            canonical = canonicalize_url(str(url))
+            if canonical in seen_urls and seen_urls[canonical] != title:
+                errors.append(
+                    f"approved URL重复但标题不同: {url} -> '{seen_urls[canonical]}' / '{title}'"
+                )
+            else:
+                seen_urls[canonical] = title
+
+    return {
+        "is_valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "total_checked": total_checked,
+    }
+
+
 def validate_approved_timeliness(approved_data: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Validate approved items against their type-specific business windows."""
     errors = []
@@ -1480,6 +1608,7 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
     
     # 2. 验证邮件一致性
     email_result = validate_email_consistency(email_body, approved_data)
+    approved_schema = validate_approved_schema(approved_data)
     approved_timeliness = validate_approved_timeliness(approved_data)
     ai_result = report_result.get("ai_check", {"has_errors": False, "errors": [], "warnings": []})
     
@@ -1489,12 +1618,17 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
     if not email_result["is_consistent"]:
         fix_instructions.extend(email_result["errors"])
 
+    if not approved_schema["is_valid"]:
+        fix_instructions.extend(approved_schema["errors"])
+
     if approved_timeliness["has_errors"]:
         fix_instructions.extend(approved_timeliness["errors"])
     
     # 邮件一致性警告建议修复
     if email_result["warnings"]:
         fix_instructions.extend([f"[邮件一致性建议] {w}" for w in email_result["warnings"]])
+    if approved_schema["warnings"]:
+        fix_instructions.extend([f"[approved schema建议] {w}" for w in approved_schema["warnings"]])
     if approved_timeliness["warnings"]:
         fix_instructions.extend([f"[approved时效性建议] {w}" for w in approved_timeliness["warnings"]])
     
@@ -1504,6 +1638,10 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
         score -= len(email_result["errors"]) * 15
     if email_result["warnings"]:
         score -= len(email_result["warnings"]) * 3
+    if not approved_schema["is_valid"]:
+        score -= len(approved_schema["errors"]) * 15
+    if approved_schema["warnings"]:
+        score -= len(approved_schema["warnings"]) * 3
     if approved_timeliness["has_errors"]:
         score -= len(approved_timeliness["errors"]) * 15
     if approved_timeliness["warnings"]:
@@ -1513,13 +1651,15 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
     report_passed = report_result["passed"]
     email_consistent = email_result["is_consistent"]
     ai_passed = not ai_result["has_errors"]
+    approved_schema_ok = approved_schema["is_valid"]
     approved_timely = not approved_timeliness["has_errors"]
-    can_send = report_passed and email_consistent and ai_passed and approved_timely and score >= 80
+    can_send = report_passed and email_consistent and ai_passed and approved_schema_ok and approved_timely and score >= 80
     
     return {
         "report_passed": report_passed,
         "email_consistent": email_consistent,
         "ai_passed": ai_passed,
+        "approved_schema_ok": approved_schema_ok,
         "approved_timely": approved_timely,
         "can_send_email": can_send,
         "overall_score": score,
@@ -1527,6 +1667,7 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
         "report_check": report_result,
         "email_check": email_result,
         "ai_check": ai_result,
+        "approved_schema_check": approved_schema,
         "approved_timeliness_check": approved_timeliness,
     }
 
@@ -1537,6 +1678,349 @@ def save_rejection_log(rejected: List[Dict[str, Any]], report_date: str):
     
     with open(log_file, 'w', encoding='utf-8') as f:
         json.dump(rejected, f, ensure_ascii=False, indent=2)
+
+
+def build_approved_from_raw(
+    raw_obj: Any,
+    report_date: str,
+    output_dir: Path | None = None,
+    check_url_health_enabled: bool = False,
+    url_check_func=check_url_health,
+) -> Dict[str, Any]:
+    """Process every category from a full raw dict and persist approved/rejected outputs."""
+    if not isinstance(raw_obj, dict):
+        raise ValueError("--build-approved requires a full raw category dict")
+
+    output_dir = output_dir or DATA_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+    all_approved: list[dict[str, Any]] = []
+    all_rejected: list[dict[str, Any]] = []
+    processed: dict[str, Any] = {}
+
+    for item_type in sorted(VALID_ITEM_TYPES):
+        raw_items = normalize_raw_input(raw_obj, item_type)
+        result = process_raw_data(raw_items, item_type)
+        processed[item_type] = result
+        all_approved.extend(result.get("approved", []))
+        for rejected in result.get("rejected", []):
+            rejected = dict(rejected)
+            rejected["category"] = item_type
+            all_rejected.append(rejected)
+        with open(output_dir / f"processed_{item_type}_{report_date}.json", "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+    all_approved, conflict_rejected = remove_conflicting_url_items(all_approved)
+    all_rejected.extend(conflict_rejected)
+    if check_url_health_enabled:
+        all_approved, health_rejected = remove_unhealthy_url_items(all_approved, url_check_func=url_check_func)
+        all_rejected.extend(health_rejected)
+    all_approved = sort_approved_items(all_approved)
+    approved_check = validate_approved_schema(all_approved)
+    approved_path = output_dir / f"approved_{report_date}.json"
+    rejected_path = output_dir / f"rejected_{report_date}.json"
+    with open(approved_path, "w", encoding="utf-8") as f:
+        json.dump(all_approved, f, ensure_ascii=False, indent=2)
+    with open(rejected_path, "w", encoding="utf-8") as f:
+        json.dump(all_rejected, f, ensure_ascii=False, indent=2)
+
+    stats = {
+        item_type: processed[item_type]["stats"]
+        for item_type in sorted(processed)
+    }
+    return {
+        "approved_path": str(approved_path),
+        "rejected_path": str(rejected_path),
+        "approved": all_approved,
+        "rejected": all_rejected,
+        "stats": stats,
+        "approved_schema": approved_check,
+    }
+
+
+def sort_approved_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sort final approved items by date and value for stable report generation."""
+    return sorted(
+        items,
+        key=lambda item: (
+            parse_date(str(item.get("date", "") or "")) or datetime.min,
+            float(item.get("value_score") or 0),
+        ),
+        reverse=True,
+    )
+
+
+def remove_conflicting_url_items(items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Drop lower-ranked items when the same URL is attached to different titles."""
+    kept: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    seen: dict[str, str] = {}
+
+    for item in sort_approved_items(items):
+        title = str(item.get("title", "") or "")
+        urls = _item_candidate_urls(item)
+        canonical_urls = [canonicalize_url(str(url)) for url in urls if url]
+        conflicts = [
+            url for url in canonical_urls
+            if url in seen and normalize_title(seen[url]) != normalize_title(title)
+        ]
+        if conflicts:
+            rejected.append({
+                "item": item,
+                "reason": f"[approved冲突] URL已用于不同标题: {conflicts[:3]}",
+                "action": "排除",
+            })
+            continue
+        for url in canonical_urls:
+            seen[url] = title
+        kept.append(item)
+
+    return kept, rejected
+
+
+def remove_unhealthy_url_items(
+    items: List[Dict[str, Any]],
+    url_check_func=check_url_health,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Drop items whose primary outbound URL cannot pass the link health gate."""
+    kept: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+
+    for item in items:
+        primary_url = str(item.get("url") or "")
+        result = url_check_func(primary_url)
+        if not result.get("ok"):
+            rejected.append({
+                "item": item,
+                "reason": f"[链接健康] 主链接不可用: {primary_url} - {result.get('reason', '未知错误')}",
+                "action": "排除",
+            })
+            continue
+
+        healthy_urls = []
+        for url in _coerce_url_list(item.get("urls", [])):
+            url = str(url or "")
+            if not url:
+                continue
+            if canonicalize_url(url) == canonicalize_url(primary_url):
+                healthy_urls.append(url)
+                continue
+            extra_result = url_check_func(url)
+            if extra_result.get("ok"):
+                healthy_urls.append(url)
+            else:
+                rejected.append({
+                    "item": item,
+                    "reason": f"[链接健康] 备用链接不可用并已移除: {url} - {extra_result.get('reason', '未知错误')}",
+                    "action": "移除备用链接",
+                })
+        if healthy_urls:
+            item["urls"] = list(dict.fromkeys(healthy_urls))
+        kept.append(item)
+
+    return kept, rejected
+
+
+def markdown_cell(value: object) -> str:
+    return str(value or "").replace("|", "\\|").replace("\n", " ").strip()
+
+
+def markdown_link(url: str) -> str:
+    safe_url(str(url or ""))
+    return str(url)
+
+
+def group_approved_by_type(items: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    grouped = {item_type: [] for item_type in sorted(VALID_ITEM_TYPES)}
+    for item in sort_approved_items(items):
+        item_type = str(item.get("type") or "news").lower()
+        grouped.setdefault(item_type, []).append(item)
+    return grouped
+
+
+def render_markdown_report(
+    approved_data: List[Dict[str, Any]],
+    report_date: str,
+    raw_count: int | None = None,
+) -> str:
+    """Render a deterministic Markdown report using only approved data."""
+    approved = sort_approved_items(approved_data)
+    grouped = group_approved_by_type(approved)
+    raw_total = len(approved) if raw_count is None else raw_count
+
+    lines = [
+        f"# 合成生物行业日报 — {report_date}",
+        "",
+        f"> 报告生成时间：{now_local().strftime('%Y-%m-%d %H:%M:%S')}  ",
+        "> 信息来源：公开网络检索  ",
+        "> 覆盖维度：新闻动态、研究成果、融资投资、政策监管、行业活动",
+        f"> **流水线追踪**：原始数据={raw_total}条 → 脚本处理 → approved={len(approved)}条 → 验证=待发送门禁",
+        "",
+        "---",
+        "",
+        "## 📌 执行摘要",
+        "",
+    ]
+
+    summary_items = approved[:5]
+    if summary_items:
+        for index, item in enumerate(summary_items, 1):
+            lines.append(
+                f"{index}. **{markdown_cell(item.get('title', '未命名信息'))}**："
+                f"{markdown_cell(item.get('summary', ''))}（{markdown_cell(item.get('date', report_date))}）"
+            )
+    else:
+        lines.append(f"1. 经五轮检索，本周期暂无可发送信息收录。（{report_date}）")
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 📰 行业热点新闻",
+        "",
+        "| 标题 | 来源 | 时间 | 摘要 | 链接 |",
+        "|------|------|------|------|------|",
+    ])
+    append_item_rows(lines, grouped.get("news", []), ["title", "source", "date", "summary", "url"])
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 🔬 最新研究成果",
+        "",
+        "| 标题 | 期刊/机构 | 核心发现 | 链接 |",
+        "|------|----------|----------|------|",
+    ])
+    append_item_rows(lines, grouped.get("research", []), ["title", "source", "summary", "url"])
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 💰 融资与投资动态",
+        "",
+        "| 公司 | 轮次 | 金额 | 投资方 | 时间 | 链接 |",
+        "|------|------|------|--------|------|------|",
+    ])
+    append_funding_rows(lines, grouped.get("funding", []))
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 🏛️ 政策与监管",
+        "",
+        "### 国内政策",
+        "",
+        "| 政策/法规 | 发布机构 | 时间 | 核心内容 | 链接 |",
+        "|-----------|----------|------|----------|------|",
+    ])
+    append_item_rows(lines, grouped.get("policy", []), ["title", "source", "date", "summary", "url"])
+    lines.extend([
+        "",
+        "### 国际监管动态",
+        "",
+        "经五轮检索，本周期暂无相关新信息收录。",
+        "",
+        "---",
+        "",
+        "## 📅 行业活动预告",
+        "",
+        "| 活动名称 | 时间 | 地点 | 亮点 | 链接 |",
+        "|----------|------|------|------|------|",
+    ])
+    append_event_rows(lines, grouped.get("events", []))
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 🤖 AI 深度分析",
+        "",
+        "### 趋势研判",
+        "",
+    ])
+    if approved:
+        title_list = "；".join(
+            f"{markdown_cell(item.get('title', ''))}（{markdown_cell(item.get('date', report_date))}）"
+            for item in approved[:5]
+        )
+        lines.append(f"本周期可发送信息主要包括：{title_list}。这些信息已通过时效性、分类一致性和去重门禁。")
+    else:
+        lines.append("本周期没有可发送信息，建议继续监控公开来源。")
+    lines.extend([
+        "",
+        "### 竞争格局变化",
+        "",
+        "本周期仅基于正文已收录信息进行归纳，不引入外部实体。",
+        "",
+        "### 风险提示",
+        "",
+        "1. 链接可访问性、信息时效性和来源一致性仍需在发送门禁中持续验证。",
+        "",
+        "---",
+        "",
+        "## 📎 附录：完整链接列表",
+        "",
+    ])
+    if approved:
+        for index, item in enumerate(approved, 1):
+            lines.append(f"{index}. {markdown_link(str(item.get('url', '')))}")
+    else:
+        lines.append("1. 经五轮检索，本周期暂无可列示的外部链接。")
+    lines.extend([
+        "",
+        "---",
+        "",
+        "> 免责声明：本报告信息来源于公开网络检索，仅供参考，不构成投资建议。",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def append_item_rows(lines: List[str], items: List[Dict[str, Any]], fields: List[str]) -> None:
+    if not items:
+        lines.append("| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — | — |" if len(fields) == 5 else "| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — |")
+        return
+    for item in items:
+        cells = []
+        for field in fields:
+            if field == "url":
+                cells.append(markdown_link(str(item.get("url", ""))))
+            else:
+                cells.append(markdown_cell(item.get(field, "")))
+        lines.append("| " + " | ".join(cells) + " |")
+
+
+def append_funding_rows(lines: List[str], items: List[Dict[str, Any]]) -> None:
+    if not items:
+        lines.append("| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — | — | — |")
+        return
+    for item in items:
+        cells = [
+            markdown_cell(item.get("company") or item.get("title", "")),
+            markdown_cell(item.get("round", "")),
+            markdown_cell(item.get("amount", "")),
+            markdown_cell(item.get("investor", "")),
+            markdown_cell(item.get("date", "")),
+            markdown_link(str(item.get("url", ""))),
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+
+
+def append_event_rows(lines: List[str], items: List[Dict[str, Any]]) -> None:
+    if not items:
+        lines.append("| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — | — |")
+        return
+    for item in items:
+        cells = [
+            markdown_cell(item.get("title", "")),
+            markdown_cell(item.get("date", "")),
+            markdown_cell(item.get("location", "")),
+            markdown_cell(item.get("summary", "")),
+            markdown_link(str(item.get("url", ""))),
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
 
 
 # ==================== CLI 入口 ====================
@@ -1552,6 +2036,10 @@ def main():
     parser.add_argument("--email", type=str, help="完整验证使用的邮件HTML路径")
     parser.add_argument("--approved", type=str, help="完整验证使用的approved JSON路径")
     parser.add_argument("--process", type=str, help="处理原始数据JSON文件")
+    parser.add_argument("--build-approved", type=str, help="从完整raw dict一次性生成processed/approved/rejected")
+    parser.add_argument("--check-url-health", action="store_true", help="build-approved时剔除打不开或疑似删除的主链接")
+    parser.add_argument("--render-md", type=str, help="从approved JSON生成确定性Markdown报告")
+    parser.add_argument("--date", type=str, help="--build-approved 输出使用的日期 YYYY-MM-DD")
     parser.add_argument("--type", type=str, default="news", help="数据类型")
     parser.add_argument("--output", type=str, help="输出文件路径")
     
@@ -1594,6 +2082,40 @@ def main():
                 print(f"  {i}. {instr}")
         sys.exit(0 if result["can_send_email"] else 1)
     
+    elif args.render_md:
+        if not args.date:
+            parser.error("--render-md requires --date")
+        if not args.output:
+            parser.error("--render-md requires --output")
+        with open(args.render_md, 'r', encoding='utf-8') as f:
+            approved_data = json.load(f)
+        markdown = render_markdown_report(approved_data, args.date)
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(markdown, encoding="utf-8")
+        print(f"Markdown报告已生成: {output_path}")
+        sys.exit(0)
+
+    elif args.build_approved:
+        if not args.date:
+            parser.error("--build-approved requires --date")
+        with open(args.build_approved, 'r', encoding='utf-8') as f:
+            raw_obj = json.load(f)
+        output_dir = Path(args.output) if args.output else DATA_DIR
+        result = build_approved_from_raw(
+            raw_obj,
+            args.date,
+            output_dir=output_dir,
+            check_url_health_enabled=args.check_url_health,
+        )
+        print(f"approved已生成: {result['approved_path']} ({len(result['approved'])}条)")
+        print(f"rejected已生成: {result['rejected_path']} ({len(result['rejected'])}条)")
+        if not result["approved_schema"]["is_valid"]:
+            print(f"approved schema错误: {len(result['approved_schema']['errors'])}个")
+            for error in result["approved_schema"]["errors"][:10]:
+                print(f"  - {error}")
+        sys.exit(0 if result["approved_schema"]["is_valid"] else 1)
+
     elif args.process:
         with open(args.process, 'r', encoding='utf-8') as f:
             raw_obj = json.load(f)

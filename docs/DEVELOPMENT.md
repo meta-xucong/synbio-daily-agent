@@ -16,6 +16,8 @@ $env:SYNBIO_DAILY_TZ = "Asia/Shanghai"
 python -m pytest -q
 python -m compileall scripts
 python scripts\report_pipeline.py --process tests\fixtures\raw_full.json --type news --output $env:TEMP\news_processed.json
+python scripts\report_pipeline.py --build-approved tests\fixtures\raw_full.json --date 2026-06-10 --output $env:TEMP\synbio-data
+python scripts\report_pipeline.py --render-md $env:TEMP\synbio-data\approved_2026-06-10.json --date 2026-06-10 --output $env:TEMP\2026-06-10.md
 python scripts\report_pipeline.py --validate tests\fixtures\invalid_ai_report.md --output $env:TEMP\invalid_ai_validation.json
 python scripts\ai_analysis_check.py --report tests\fixtures\invalid_ai_report.md
 python scripts\generate_from_template.py --date 2026-06-10 --approved tests\fixtures\approved_render.json --markdown tests\fixtures\valid_report.md --html-output $env:TEMP\synbio_daily_2026-06-10.html --email-output $env:TEMP\email_2026-06-10.html
@@ -34,6 +36,20 @@ python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\synbio_dai
 
 The gate must pass before SMTP is opened. Gate failures return non-zero and do not call SMTP.
 Dry-run can run without a real `config/email_config.json`; real SMTP sends still require it.
+When no email config exists, dry-run still defaults to URL health checking. Mock `send_email.validate_url_health` in tests that use placeholder domains.
+
+## Production Runtime Chain
+
+Use this chain for local end-to-end execution from real search data:
+
+```powershell
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health
+python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --output reports\YYYY-MM-DD.md
+python scripts\generate_from_template.py --date YYYY-MM-DD --approved data\approved_YYYY-MM-DD.json --markdown reports\YYYY-MM-DD.md --html-output reports\synbio_daily_YYYY-MM-DD.html --email-output reports\email_YYYY-MM-DD.html
+python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\synbio_daily_YYYY-MM-DD.html reports\email_YYYY-MM-DD.html --dry-run
+```
+
+`--build-approved --check-url-health` is intentionally slower because it touches outbound links before report generation. It prevents stale/deleted articles from entering approved data and keeps the later send gate from failing on links that could have been filtered earlier.
 
 ## Runtime Artifacts
 
