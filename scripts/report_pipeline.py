@@ -58,6 +58,33 @@ TITLE_SIMILARITY_THRESHOLD = 0.80
 HISTORY_DEDUP_DAYS = 30
 MAX_RAW_SCORE = 30
 
+# 分类/聚合页面 URL 路径黑名单（精确匹配路径片段）
+URL_CATEGORY_BLACKLIST = [
+    "/category/", "/categories/",
+    "/news", "/news/", "/newsfeed", "/newsroom",
+    "/read", "/read/",
+    "/index/", "/index.php", "/index.html",
+    "/type/", "/types/",
+    "/list/", "/lists/",
+    "/tag/", "/tags/",
+    "/topic/", "/topics/",
+    "/search/", "/search?",
+    "/blogs/news/", "/blogs/",
+    "/events/", "/event/",
+    "/conference/", "/conferences/",
+    "/session/", "/sessions/",
+    "/journals/", "/journal/",
+    "/products/", "/product/",
+    "/services/", "/service/",
+]
+
+# 需要排除的域名片段（内容聚合站）
+DOMAIN_BLACKLIST = [
+    "newmarketpitch.com",  # 聚合多篇文章的市场报告站
+    "conferences.nature.com",  # Nature 会议列表首页
+    "synbioconference.org",  # SEED 会议列表首页
+]
+
 # 板块名称映射
 SECTION_MAP = {
     "执行摘要": "summary",
@@ -183,6 +210,74 @@ def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, 
         return False, f"[schema] invalid url: {url}", normalized
 
     return True, "", normalized
+
+
+def _is_category_or_aggregate_url(url: str) -> bool:
+    """判断 URL 是否为分类页、聚合页或列表页"""
+    if not url:
+        return True
+    url_lower = url.lower()
+    # 域名黑名单
+    for domain in DOMAIN_BLACKLIST:
+        if domain in url_lower:
+            return True
+    # 分离路径和查询参数
+    parsed = url_lower.split("/")
+    path_part = "/" + "/".join(parsed[3:]) if len(parsed) > 3 else "/"
+    # 路径黑名单精确匹配
+    for bad_path in URL_CATEGORY_BLACKLIST:
+        if bad_path in path_part:
+            return True
+    return False
+
+
+def _load_history_index():
+    """加载 history_index.json 用于跨天持久化去重"""
+    data_dir = Path(DATA_DIR) if 'DATA_DIR' in globals() else Path(__file__).resolve().parents[1] / "data"
+    history_path = data_dir / "history_index.json"
+    if history_path.exists():
+        try:
+            with open(history_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("entries", [])
+        except Exception:
+            pass
+    return []
+
+
+def _make_fingerprint(item):
+    """生成基于内容关键词的指纹，用于跨天去重"""
+    text = (item.get("title", "") + " " + item.get("summary", "")).lower()
+    text = re.sub(r'[^\u4e00-\u9fff\w\s]', '', text)
+    words = text.split()
+    keywords = [w for w in words if len(w) > 3]
+    return " ".join(sorted(set(keywords))[:20])
+
+
+def _is_historical_duplicate(item, history_entries):
+    """
+    检查 item 是否与历史索引中的条目重复。
+    检查维度：URL 完全匹配、标题完全匹配、内容指纹相似度 > 75%。
+    """
+    if not history_entries:
+        return False
+    item_url = item.get("url", "").strip()
+    item_title = item.get("title", "").strip()
+    item_fp = _make_fingerprint(item)
+    for entry in history_entries:
+        # URL 完全匹配
+        if item_url and item_url == entry.get("url", ""):
+            return True
+        # 标题完全匹配
+        if item_title and item_title == entry.get("title", ""):
+            return True
+        # 内容指纹相似度
+        hist_fp = entry.get("fingerprint", "")
+        if item_fp and hist_fp:
+            sim = SequenceMatcher(None, item_fp, hist_fp).ratio()
+            if sim > 0.75:
+                return True
+    return False
 
 
 def normalize_title(title: str) -> str:
@@ -538,6 +633,26 @@ def process_raw_data(raw_data: List[Dict[str, Any]], item_type: str) -> Dict[str
             rejected.append({
                 "item": item,
                 "reason": schema_reason,
+                "action": "排除",
+            })
+            continue
+        
+        # 0. URL 过滤：排除分类/聚合页面和黑名单域名
+        url = item.get("url", "")
+        if _is_category_or_aggregate_url(url):
+            rejected.append({
+                "item": item,
+                "reason": f"[URL过滤] 聚合页/黑名单域名: {url}",
+                "action": "排除",
+            })
+            continue
+        
+        # 0.5 跨天历史索引去重（基于 history_index.json 的持久化去重）
+        history_entries = _load_history_index()
+        if _is_historical_duplicate(item, history_entries):
+            rejected.append({
+                "item": item,
+                "reason": "[历史索引去重] 与已发送历史记录重复",
                 "action": "排除",
             })
             continue

@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import smtplib
 from pathlib import Path
 from typing import Any, Dict
@@ -156,6 +157,43 @@ def load_approved_data(date_str: str) -> list[dict[str, Any]]:
     return data
 
 
+def _update_history_index(date_str: str, approved_items: list[dict[str, Any]]) -> None:
+    """发送成功后，将 approved 条目追加到 history_index.json 以实现跨天持久化去重。"""
+    history_path = DATA_DIR / "history_index.json"
+    history = {"version": 1, "entries": []}
+    if history_path.exists():
+        try:
+            with open(history_path, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception:
+            pass
+
+    existing_urls = {e.get("url", "") for e in history.get("entries", [])}
+
+    for item in approved_items:
+        url = item.get("url", "")
+        title = item.get("title", "")
+        if not url or not title or url in existing_urls:
+            continue
+        text = (title + " " + item.get("summary", "")).lower()
+        text = re.sub(r'[^\u4e00-\u9fff\w\s]', '', text)
+        words = text.split()
+        keywords = [w for w in words if len(w) > 3]
+        fingerprint = " ".join(sorted(set(keywords))[:20])
+        history["entries"].append({
+            "url": url,
+            "title": title[:120],
+            "fingerprint": fingerprint,
+            "date": item.get("date", ""),
+            "first_sent_date": date_str,
+        })
+        existing_urls.add(url)
+
+    with open(history_path, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+    print(f"历史索引已更新: {len(history['entries'])} 条")
+
+
 def validate_template_signature(html: str, label: str) -> Dict[str, Any]:
     """Ensure generated HTML looks like the production template output."""
     required_any = ('class="card"', 'class="data-table"')
@@ -303,6 +341,12 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_ru
     try:
         send_message_via_smtp(config, msg)
         print(f"邮件发送成功: {date_str}")
+        # 发送成功后更新跨天历史索引
+        try:
+            approved_data = load_approved_data(date_str)
+            _update_history_index(date_str, approved_data)
+        except Exception as e:
+            print(f"历史索引更新失败（非阻断）: {e}")
         return True
     except smtplib.SMTPResponseException as exc:
         print_smtp_diagnostics(exc)
