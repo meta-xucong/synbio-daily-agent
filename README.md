@@ -144,6 +144,7 @@ python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_dai
 正式 H5/邮件正文必须由 `generate_from_template.py` 生成；`render_html.py` / `render_email.py` 仅用于 emergency fallback 或测试夹具。
 
 `config/email_config.json` 中的 `allow_simple_fallback` 默认应保持 `false`。只有在 SMTP 服务商持续拒绝带附件的 multipart 邮件，并且可接受“仅 HTML 正文、无附件”的降级发送时，才显式设为 `true`。
+`check_url_health` 默认应保持 `true`；发送前会检查 approved 链接可打开，且页面不含“文章已删除/账号已注销/页面不存在”等失效提示。
 
 ---
 

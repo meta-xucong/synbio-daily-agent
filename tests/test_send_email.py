@@ -24,6 +24,7 @@ def _write_runtime_tree(tmp_path: Path, report_name: str = "valid_report.md"):
         "sender_email": "sender@example.com",
         "sender_password": "not-real",
         "receiver_email": "receiver@example.com",
+        "check_url_health": False,
     }
     (tmp_path / "config" / "email_config.json").write_text(json.dumps(config), encoding="utf-8")
     approved = [
@@ -98,7 +99,7 @@ def test_send_gate_blocks_unsafe_html(tmp_path, monkeypatch):
     monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
     monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
 
-    result = send_email.validate_send_gate("2026-06-10", md, html)
+    result = send_email.validate_send_gate("2026-06-10", md, html, check_url_health=False)
 
     assert not result["passed"]
     assert any("HTML安全" in error for error in result["errors"])
@@ -110,7 +111,7 @@ def test_send_gate_blocks_minimal_fallback_html(tmp_path, monkeypatch):
     monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
     monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
 
-    result = send_email.validate_send_gate("2026-06-10", md, html)
+    result = send_email.validate_send_gate("2026-06-10", md, html, check_url_health=False)
 
     assert not result["passed"]
     assert any("模板样式" in error for error in result["errors"])
@@ -127,7 +128,7 @@ def test_send_gate_blocks_unapproved_h5_attachment_url(tmp_path, monkeypatch):
     monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
     monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
 
-    result = send_email.validate_send_gate("2026-06-10", md, html)
+    result = send_email.validate_send_gate("2026-06-10", md, html, check_url_health=False)
 
     assert not result["passed"]
     assert any("H5附件" in error and "approved" in error for error in result["errors"])
@@ -145,10 +146,53 @@ def test_send_gate_blocks_unapproved_h5_src_url(tmp_path, monkeypatch):
     monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
     monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
 
-    result = send_email.validate_send_gate("2026-06-10", md, html)
+    result = send_email.validate_send_gate("2026-06-10", md, html, check_url_health=False)
 
     assert not result["passed"]
     assert "https://tracker.example.com/pixel.png" in result["details"]["h5_url_consistency"]["missing_urls"]
+
+
+def test_send_gate_blocks_dead_approved_url(tmp_path, monkeypatch):
+    md, html = _write_runtime_tree(tmp_path)
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+
+    def dead_link_check(urls, label="URL"):
+        assert "https://example.com/news/xinghe" in urls
+        return {
+            "is_valid": False,
+            "errors": ["approved链接不可用: https://example.com/news/xinghe - HTTP状态异常: 404"],
+            "checked_urls": [{"ok": False, "url": "https://example.com/news/xinghe"}],
+            "total_checked": 1,
+        }
+
+    monkeypatch.setattr(send_email, "validate_url_health", dead_link_check)
+
+    result = send_email.validate_send_gate("2026-06-10", md, html, check_url_health=True)
+
+    assert not result["passed"]
+    assert any("链接不可用" in error for error in result["errors"])
+
+
+def test_send_gate_health_check_includes_markdown_plain_urls(tmp_path, monkeypatch):
+    md, html = _write_runtime_tree(tmp_path)
+    md.write_text(
+        md.read_text(encoding="utf-8") + "\n\n附加链接: https://example.com/news/from-markdown\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+    seen_urls = []
+
+    def healthy(urls, label="URL"):
+        seen_urls.extend(urls)
+        return {"is_valid": True, "errors": [], "checked_urls": [], "total_checked": len(urls)}
+
+    monkeypatch.setattr(send_email, "validate_url_health", healthy)
+
+    send_email.validate_send_gate("2026-06-10", md, html, check_url_health=True)
+
+    assert "https://example.com/news/from-markdown" in seen_urls
 
 
 def test_smtp_500_returns_false_without_default_fallback(tmp_path, monkeypatch, capsys):
@@ -170,6 +214,13 @@ def test_smtp_500_returns_false_without_default_fallback(tmp_path, monkeypatch, 
 
 def test_smtp_500_simple_fallback_requires_config_flag(tmp_path, monkeypatch, capsys):
     md, html = _write_runtime_tree(tmp_path)
+    approved_path = tmp_path / "data" / "approved_2026-06-10.json"
+    approved = json.loads(approved_path.read_text(encoding="utf-8"))
+    approved[0]["urls"] = [
+        "https://example.com/news/xinghe",
+        "https://example.com/news/xinghe-secondary?utm_source=newsletter",
+    ]
+    approved_path.write_text(json.dumps(approved, ensure_ascii=False), encoding="utf-8")
     _set_allow_simple_fallback(tmp_path, True)
     monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
     monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
@@ -188,3 +239,10 @@ def test_smtp_500_simple_fallback_requires_config_flag(tmp_path, monkeypatch, ca
     assert "邮件已降级发送：仅HTML正文，无附件" in output
     assert len(sent_messages) == 2
     assert sent_messages[1].get_content_type() == "text/html"
+    history = json.loads((tmp_path / "data" / "history_index.json").read_text(encoding="utf-8"))
+    assert history["entries"][0]["url"] == "https://example.com/news/xinghe"
+    assert history["entries"][0]["canonical_url"] == "https://example.com/news/xinghe"
+    assert {entry["canonical_url"] for entry in history["entries"]} == {
+        "https://example.com/news/xinghe",
+        "https://example.com/news/xinghe-secondary",
+    }

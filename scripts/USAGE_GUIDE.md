@@ -96,6 +96,7 @@ python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_dai
 `--dry-run` 不要求存在真实 `config/email_config.json`；真实发送仍必须配置邮箱。
 
 `allow_simple_fallback=false` 为默认推荐。只有在 SMTP 服务商持续拒绝 multipart 附件邮件，并且可接受“仅 HTML 正文、无附件”的降级发送时，才应在 `config/email_config.json` 中显式设为 `true`。
+`check_url_health=true` 为默认推荐。发送 gate 会在连接 SMTP 前检查 approved 链接是否可打开，并拦截 4xx/5xx、超时以及“文章已删除/账号已注销/页面不存在”等软失效页面。
 
 ## 本地测试
 
