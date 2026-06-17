@@ -37,6 +37,8 @@ python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\synbio_dai
 The gate must pass before SMTP is opened. Gate failures return non-zero and do not call SMTP.
 Dry-run can run without a real `config/email_config.json`; real SMTP sends still require it.
 When no email config exists, dry-run still defaults to URL health checking. Mock `send_email.validate_url_health` in tests that use placeholder domains.
+Real sends are single-send by default for each report date. Use `--force-send --send-mode manual` only for explicit manual resends; all other gates still run, and `data/send_log.json` records the attempt.
+Set `url_health_mode` to `soft` only for restricted network environments where SSL/certificate handshakes fail locally; soft mode still blocks HTTP errors and deleted-content pages.
 
 ## Production Runtime Chain
 
