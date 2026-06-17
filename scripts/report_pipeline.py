@@ -344,6 +344,20 @@ def _is_category_or_aggregate_url(url: str) -> bool:
     if any(slashless_path.endswith(suffix) for suffix in URL_AGGREGATE_SUFFIXES):
         return True
 
+    # 检查查询参数是否为搜索/分页类聚合参数
+    query_params = parse_qsl(parts.query)
+    query_keys = {k.lower() for k, _ in query_params}
+    listing_paths = ("/search", "/list", "/lists", "/category", "/tag", "/tags", "/topic")
+    if query_keys & {"searchkey", "search", "q", "keyword", "keywords", "query", "s"} and any(
+        normalized_path.startswith(path) for path in listing_paths
+    ):
+        return True
+    # 带有分页参数的文章页可能是列表页（如 /news?page=1）
+    if "page" in query_keys and slashless_path in {"/news", "/blogs", "/article", "/read", "/list", "/lists"}:
+        return True
+    if "categoryid" in query_keys:
+        return True
+
     if slashless_path == "/search":
         return True
 
