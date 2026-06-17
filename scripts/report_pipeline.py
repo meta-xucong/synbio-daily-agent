@@ -95,7 +95,7 @@ APPROVED_REQUIRED_FIELDS = {
     "title", "source", "date", "summary", "url", "type", "raw_score", "value_score",
 }
 TYPE_TITLE_KEYWORDS = {
-    "policy": ("政策", "法规", "监管", "规划", "计划", "报告", "项目", "指南", "征集", "通知", "公告", "课题", "专项", "申报", "标准", "开放共享", "grant", "call", "program", "programme", "proposal", "award", "regulation", "guidance"),
+    "policy": ("政策", "法规", "监管", "规划", "计划", "报告", "项目", "措施", "指南", "征集", "通知", "公告", "课题", "专项", "申报", "标准", "开放共享", "grant", "call", "program", "programme", "proposal", "award", "regulation", "guidance"),
     "events": ("大会", "会议", "论坛", "研讨会", "峰会", "活动", "课程", "培训", "webinar", "conference", "symposium", "forum", "course", "summit", "workshop", "meeting", "webcast"),
     "funding": ("融资", "投资", "轮融资", "募资", "并购", "收购", "上市", "ipo", "series", "funding", "raised", "raises", "raise", "seed", "pre-a", "pre a", "round", "venture", "capital", "backs", "secures", "investment"),
     "research": ("研究", "论文", "nature", "science", "cell", "pnas", "acs", "发现", "突破", "engineer", "research", "journal", "study", "paper", "published", "publication", "biotechnology", "bioengineering"),
@@ -1798,7 +1798,8 @@ def validate_search_log(search_log: Any, raw_obj: Any | None = None) -> Dict[str
                     missing_source_round += 1
         if missing_source_round:
             errors.append(f"raw数据有{missing_source_round}条缺少source_round，无法追溯搜索轮次")
-        if not raw_rounds:
+        total_raw_items = count_raw_items(raw_obj)
+        if not raw_rounds and total_raw_items > 0:
             errors.append("raw数据缺少source_round，无法追溯搜索轮次")
         elif not raw_rounds <= rounds_seen:
             errors.append(f"raw数据包含search_log未记录的source_round: {sorted(raw_rounds - rounds_seen)}")
