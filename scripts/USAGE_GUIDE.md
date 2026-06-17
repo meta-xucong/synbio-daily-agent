@@ -18,7 +18,7 @@ $env:SYNBIO_DAILY_TZ = "Asia/Shanghai"
 生产运行应使用一次性入口，从完整 raw dict 生成 processed/approved/rejected，并在写出 approved 前剔除打不开或疑似删除的链接：
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health --search-log data\search_log_2026-06-11.json
+python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health --check-title-match --search-log data\search_log_2026-06-11.json
 ```
 
 该命令会写出：
@@ -66,6 +66,7 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 - `data/history_index.json` 会在真实发送成功后更新；后续处理会用主链接和 `urls` 备用链接一起做跨天持久化去重
 - `value_score` 为 0-10，`raw_score` 保留原始分
 - approved schema 必须包含 `title/source/date/summary/url/type/raw_score/value_score`，日期、类别、URL和分数范围都会在发送前再次校验
+- `--check-title-match` 会读取页面 `<title>` / `og:title` / `h1`，剔除标题与 URL 页面明显不符的信息；网络或解析失败仅记录 warning，不阻断
 
 ## 生成 Markdown 报告
 

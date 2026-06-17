@@ -65,6 +65,9 @@ MAX_RAW_SCORE = 30
 REQUIRED_SEARCH_ROUNDS = {"r1", "r2", "r3", "r4", "r5"}
 URL_HEALTH_TIMEOUT_SECONDS = 10
 URL_HEALTH_MAX_BYTES = 250_000
+TITLE_MATCH_TIMEOUT_SECONDS = 10
+TITLE_MATCH_MAX_BYTES = 300_000
+TITLE_MATCH_MIN_SCORE = 0.30
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_KEYS = {
     "fbclid", "gclid", "mc_cid", "mc_eid", "igshid", "spm", "from", "ref",
@@ -567,6 +570,171 @@ def validate_url_health(
         "checked_urls": checked,
         "total_checked": len(checked),
     }
+
+
+def _strip_html_tags(text: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", text or "")
+    return re.sub(r"\s+", " ", unescape(text)).strip()
+
+
+class HTMLTitleSignalExtractor(HTMLParser):
+    """Extract page title signals while respecting normal HTML parsing rules."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.signals: list[str] = []
+        self._capture_tag: str | None = None
+        self._capture_chunks: list[str] = []
+        self._captured_tags: set[str] = set()
+
+    def _add_signal(self, value: str) -> None:
+        signal = _strip_html_tags(value)
+        if signal and signal not in self.signals:
+            self.signals.append(signal)
+
+    def handle_starttag(self, tag, attrs):
+        tag_name = str(tag or "").lower()
+        attr_map = {str(name or "").lower(): value for name, value in attrs}
+        if tag_name == "meta":
+            title_kind = str(attr_map.get("property") or attr_map.get("name") or "").lower()
+            if title_kind in {"og:title", "twitter:title"} and attr_map.get("content"):
+                self._add_signal(str(attr_map["content"]))
+            return
+        if tag_name in {"title", "h1"} and tag_name not in self._captured_tags:
+            self._capture_tag = tag_name
+            self._capture_chunks = []
+
+    def handle_data(self, data):
+        if self._capture_tag:
+            self._capture_chunks.append(data)
+
+    def handle_endtag(self, tag):
+        tag_name = str(tag or "").lower()
+        if self._capture_tag == tag_name:
+            self._add_signal("".join(self._capture_chunks))
+            self._captured_tags.add(tag_name)
+            self._capture_tag = None
+            self._capture_chunks = []
+
+
+def extract_title_signals(html_text: str) -> List[str]:
+    """Extract page title candidates from common HTML title signals."""
+    parser = HTMLTitleSignalExtractor()
+    parser.feed(html_text or "")
+    parser.close()
+    return parser.signals
+
+
+def _title_tokens(text: str) -> set[str]:
+    raw = str(text or "").lower()
+    tokens = set(re.findall(r"[a-z0-9]{3,}", raw))
+    for chunk in re.findall(r"[\u4e00-\u9fff]{2,}", raw):
+        for size in (2, 3, 4):
+            if len(chunk) >= size:
+                tokens.update(chunk[index:index + size] for index in range(0, len(chunk) - size + 1))
+    return {token for token in tokens if token}
+
+
+def title_match_score(item_title: str, page_title: str) -> float:
+    """Return a conservative 0-1 score for item title vs page title."""
+    item_norm = normalize_title(item_title)
+    page_norm = normalize_title(page_title)
+    if not item_norm or not page_norm:
+        return 0.0
+    if item_norm in page_norm or page_norm in item_norm:
+        return 1.0
+    item_tokens = _title_tokens(item_title)
+    page_tokens = _title_tokens(page_title)
+    if not item_tokens or not page_tokens:
+        return SequenceMatcher(None, item_norm, page_norm).ratio()
+    overlap = len(item_tokens & page_tokens) / max(len(item_tokens), 1)
+    if re.search(r"[\u4e00-\u9fff]", item_title + page_title):
+        return overlap
+    return max(overlap, SequenceMatcher(None, item_norm, page_norm).ratio())
+
+
+def check_url_title_match(
+    item: Dict[str, Any],
+    timeout: int = TITLE_MATCH_TIMEOUT_SECONDS,
+    opener=urlopen,
+    min_score: float = TITLE_MATCH_MIN_SCORE,
+) -> Dict[str, Any]:
+    """Check whether a reachable page title matches the collected item title."""
+    url = str(item.get("url") or "")
+    item_title = str(item.get("title") or "")
+    if not url or not item_title:
+        return {"ok": True, "url": url, "warning": "缺少URL或标题，跳过标题匹配"}
+
+    try:
+        safe_url(url)
+    except ValueError as exc:
+        return {"ok": False, "url": url, "reason": f"URL不安全: {exc}"}
+
+    request = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/126.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    try:
+        with opener(request, timeout=timeout) as response:
+            status = getattr(response, "status", getattr(response, "code", 200))
+            if status >= 400:
+                return {"ok": True, "url": url, "warning": f"标题匹配跳过: HTTP {status}"}
+            headers = getattr(response, "headers", {}) or {}
+            charset = "utf-8"
+            if hasattr(headers, "get_content_charset"):
+                charset = headers.get_content_charset() or charset
+            body = response.read(TITLE_MATCH_MAX_BYTES)
+    except (HTTPError, URLError, TimeoutError, socket.timeout, ssl.SSLError) as exc:
+        return {"ok": True, "url": url, "warning": f"标题匹配跳过: URL无法读取 ({exc})"}
+    except Exception as exc:
+        return {"ok": True, "url": url, "warning": f"标题匹配跳过: {exc}"}
+
+    html_text = body.decode(charset, errors="replace")
+    signals = extract_title_signals(html_text)
+    if not signals:
+        return {"ok": True, "url": url, "warning": "标题匹配跳过: 页面无可解析标题信号"}
+
+    scored = [(signal, title_match_score(item_title, signal)) for signal in signals]
+    best_title, best_score = max(scored, key=lambda pair: pair[1])
+    if best_score < min_score:
+        return {
+            "ok": False,
+            "url": url,
+            "reason": f"标题与页面不匹配: item='{item_title}', page='{best_title}', score={best_score:.2f}",
+            "page_titles": signals,
+            "score": best_score,
+        }
+    return {"ok": True, "url": url, "page_titles": signals, "score": best_score}
+
+
+def remove_title_mismatch_items(
+    items: List[Dict[str, Any]],
+    title_check_func=check_url_title_match,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
+    """Drop items whose reachable page title clearly does not match the item title."""
+    kept: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for item in items:
+        result = title_check_func(item)
+        if not result.get("ok"):
+            rejected.append({
+                "item": item,
+                "reason": f"[标题匹配] {result.get('reason', '标题与URL页面不匹配')}",
+                "action": "排除",
+            })
+            continue
+        if result.get("warning"):
+            warnings.append(f"{item.get('title', '未命名信息')}: {result['warning']}")
+        kept.append(item)
+    return kept, rejected, warnings
 
 
 def normalize_title(title: str) -> str:
@@ -1835,7 +2003,9 @@ def build_approved_from_raw(
     report_date: str,
     output_dir: Path | None = None,
     check_url_health_enabled: bool = False,
+    check_title_match_enabled: bool = False,
     url_check_func=check_url_health,
+    title_check_func=check_url_title_match,
     search_log: Any | None = None,
 ) -> Dict[str, Any]:
     """Process every category from a full raw dict and persist approved/rejected outputs."""
@@ -1871,6 +2041,13 @@ def build_approved_from_raw(
     if check_url_health_enabled:
         all_approved, health_rejected = remove_unhealthy_url_items(all_approved, url_check_func=url_check_func)
         all_rejected.extend(health_rejected)
+    title_match_warnings: list[str] = []
+    if check_title_match_enabled:
+        all_approved, title_rejected, title_match_warnings = remove_title_mismatch_items(
+            all_approved,
+            title_check_func=title_check_func,
+        )
+        all_rejected.extend(title_rejected)
     all_approved = sort_approved_items(all_approved)
     approved_check = validate_approved_schema(all_approved)
     approved_path = output_dir / f"approved_{report_date}.json"
@@ -1892,6 +2069,7 @@ def build_approved_from_raw(
         "stats": stats,
         "approved_schema": approved_check,
         "search_log_check": search_log_check,
+        "title_match_warnings": title_match_warnings,
     }
 
 
@@ -2196,6 +2374,7 @@ def main():
     parser.add_argument("--process", type=str, help="处理原始数据JSON文件")
     parser.add_argument("--build-approved", type=str, help="从完整raw dict一次性生成processed/approved/rejected")
     parser.add_argument("--check-url-health", action="store_true", help="build-approved时剔除打不开或疑似删除的主链接")
+    parser.add_argument("--check-title-match", action="store_true", help="build-approved时验证页面标题与候选标题是否明显一致")
     parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验五轮搜索证据")
     parser.add_argument("--render-md", type=str, help="从approved JSON生成确定性Markdown报告")
     parser.add_argument("--raw", type=str, help="render-md使用的raw JSON路径，用于准确显示原始数据总数")
@@ -2278,6 +2457,7 @@ def main():
             args.date,
             output_dir=output_dir,
             check_url_health_enabled=args.check_url_health,
+            check_title_match_enabled=args.check_title_match,
             search_log=search_log,
         )
         print(f"approved已生成: {result['approved_path']} ({len(result['approved'])}条)")
@@ -2288,6 +2468,10 @@ def main():
                 f"{len(result['search_log_check']['rounds_seen'])}轮, "
                 f"{result['search_log_check']['total_queries']}个query"
             )
+        if result.get("title_match_warnings"):
+            print(f"标题匹配警告: {len(result['title_match_warnings'])}个")
+            for warning in result["title_match_warnings"][:10]:
+                print(f"  - {warning}")
         if not result["approved_schema"]["is_valid"]:
             print(f"approved schema错误: {len(result['approved_schema']['errors'])}个")
             for error in result["approved_schema"]["errors"][:10]:
