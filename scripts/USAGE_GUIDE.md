@@ -18,7 +18,7 @@ $env:SYNBIO_DAILY_TZ = "Asia/Shanghai"
 生产运行应使用一次性入口，从完整 raw dict 生成 processed/approved/rejected，并在写出 approved 前剔除打不开或疑似删除的链接：
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health
+python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health --search-log data\search_log_2026-06-11.json
 ```
 
 该命令会写出：
@@ -30,6 +30,8 @@ python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --da
 - `data/processed_events_YYYY-MM-DD.json`
 - `data/approved_YYYY-MM-DD.json`
 - `data/rejected_YYYY-MM-DD.json`
+
+生产数据还必须包含 `data/search_log_YYYY-MM-DD.json`，记录 `r1` 到 `r5` 五轮检索的 query 和候选证据。raw 中每条候选必须带 `source_round`，否则 `--search-log` 和发送前 `pre_check` 都会阻断。
 
 `--process` 仍支持完整 raw dict 或单类别 list，但主要用于调试单个类别：
 
@@ -49,6 +51,12 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 }
 ```
 
+推荐 raw item 至少包含：
+
+```json
+{"title": "...", "source": "...", "date": "2026-06-11", "summary": "...", "url": "https://example.com/a", "type": "news", "source_round": "r1"}
+```
+
 处理规则：
 
 - 必填字段：`title/source/date/summary/url`
@@ -64,7 +72,7 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 推荐从 approved 确定性生成 Markdown，避免旧报告或人工链接混入：
 
 ```powershell
-python scripts\report_pipeline.py --render-md data\approved_2026-06-11.json --date 2026-06-11 --output reports\2026-06-11.md
+python scripts\report_pipeline.py --render-md data\approved_2026-06-11.json --date 2026-06-11 --raw data\raw_2026-06-11.json --output reports\2026-06-11.md
 ```
 
 ## 验证报告
@@ -119,6 +127,8 @@ python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_dai
 
 任一 gate 失败，脚本返回非 0，且不会连接 SMTP。
 
+`pre_check(date)` 会要求 `raw_YYYY-MM-DD.json`、`approved_YYYY-MM-DD.json` 和 `search_log_YYYY-MM-DD.json` 同时存在，并校验搜索日志覆盖 `r1` 到 `r5`、每条 raw 候选都能通过 `source_round` 追溯到对应搜索轮次。
+
 `--dry-run` 不要求存在真实 `config/email_config.json`；真实发送仍必须配置邮箱。
 
 `allow_simple_fallback=false` 为默认推荐。只有在 SMTP 服务商持续拒绝 multipart 附件邮件，并且可接受“仅 HTML 正文、无附件”的降级发送时，才应在 `config/email_config.json` 中显式设为 `true`。
@@ -137,6 +147,7 @@ rg -n -F 'D:\AI\合成生物行业报告' .
 ## 文件命名规范
 
 - 原始数据：`data/raw_YYYY-MM-DD.json`
+- 搜索日志：`data/search_log_YYYY-MM-DD.json`
 - 处理结果：`data/processed_{category}_YYYY-MM-DD.json`
 - approved：`data/approved_YYYY-MM-DD.json`
 - rejected：`data/rejected_YYYY-MM-DD.json`

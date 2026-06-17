@@ -35,6 +35,7 @@ def _write_runtime_tree(tmp_path: Path, report_name: str = "valid_report.md"):
             "summary": "星河生物完成数千万元 pre-A 轮融资，用于合成生物制造平台扩产。",
             "url": "https://example.com/news/xinghe",
             "type": "news",
+            "source_round": "r1",
             "raw_score": 24,
             "value_score": 8,
         }
@@ -42,6 +43,17 @@ def _write_runtime_tree(tmp_path: Path, report_name: str = "valid_report.md"):
     (tmp_path / "data" / "approved_2026-06-10.json").write_text(json.dumps(approved, ensure_ascii=False), encoding="utf-8")
     raw = {"news": approved, "research": [], "funding": [], "policy": [], "events": []}
     (tmp_path / "data" / "raw_2026-06-10.json").write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    search_log = {
+        "date": "2026-06-10",
+        "rounds": [
+            {"round": "r1", "queries": ["synthetic biology funding 2026"], "candidates": ["https://example.com/news/xinghe"]},
+            {"round": "r2", "queries": ["synthetic biology research 2026"], "candidates": []},
+            {"round": "r3", "queries": ["synthetic biology policy 2026"], "candidates": []},
+            {"round": "r4", "queries": ["synthetic biology events 2026"], "candidates": []},
+            {"round": "r5", "queries": ["synthetic biology China 2026"], "candidates": []},
+        ],
+    }
+    (tmp_path / "data" / "search_log_2026-06-10.json").write_text(json.dumps(search_log, ensure_ascii=False), encoding="utf-8")
     md = tmp_path / "reports" / "2026-06-10.md"
     md.write_text((ROOT / "tests" / "fixtures" / report_name).read_text(encoding="utf-8"), encoding="utf-8")
     html = tmp_path / "reports" / "2026-06-10.html"
@@ -181,6 +193,18 @@ def test_send_gate_blocks_dead_approved_url(tmp_path, monkeypatch):
 
     assert not result["passed"]
     assert any("链接不可用" in error for error in result["errors"])
+
+
+def test_send_gate_blocks_missing_search_log(tmp_path, monkeypatch):
+    md, html = _write_runtime_tree(tmp_path)
+    (tmp_path / "data" / "search_log_2026-06-10.json").unlink()
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+
+    result = send_email.validate_send_gate("2026-06-10", md, html, check_url_health=False)
+
+    assert not result["passed"]
+    assert any("搜索日志不存在" in error for error in result["errors"])
 
 
 def test_send_gate_health_check_includes_markdown_plain_urls(tmp_path, monkeypatch):

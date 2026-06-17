@@ -57,16 +57,16 @@ synbio-daily-agent/
 ```
 Step 1: 读取配置（anti_deviation_rules.md + 数据源 + 去重规则）
 Step 2: 多维度搜索（五轮搜索法）
-Step 3: 保存原始数据为JSON → data/raw_YYYY-MM-DD.json
-Step 4: 调用 report_pipeline.py --build-approved --check-url-health 处理（去重+过滤+死链剔除+排序）
-Step 5: 调用 report_pipeline.py --render-md 基于 approved 生成Markdown报告
+Step 3: 保存原始数据和搜索日志 → data/raw_YYYY-MM-DD.json + data/search_log_YYYY-MM-DD.json
+Step 4: 调用 report_pipeline.py --build-approved --check-url-health --search-log 处理（去重+过滤+死链剔除+排序）
+Step 5: 调用 report_pipeline.py --render-md --raw 基于 approved 生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 调用 generate_from_template.py 生成定稿H5 HTML报告
 Step 8: 调用 generate_from_template.py 生成定稿邮件正文
 Step 9: 邮件推送（send gate通过后才发送）
 ```
 
-**任何情况下，Step 3→Step 4→Step 5→Step 6 必须连续执行，不得跳过。**
+**任何情况下，Step 3→Step 4→Step 5→Step 6 必须连续执行，不得跳过。发送 gate 会阻断缺少搜索日志或 raw 候选缺少 `source_round` 的报告。**
 
 ---
 
@@ -84,14 +84,29 @@ Step 9: 邮件推送（send gate通过后才发送）
 
 ### 2. 脚本处理（report_pipeline.py）
 
-**输入**: `data/raw_YYYY-MM-DD.json`  
+**输入**: `data/raw_YYYY-MM-DD.json` + `data/search_log_YYYY-MM-DD.json`
 **输出**: `data/approved_YYYY-MM-DD.json` + `data/rejected_YYYY-MM-DD.json`
 
 推荐生产命令:
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health
-python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --output reports\YYYY-MM-DD.md
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --search-log data\search_log_YYYY-MM-DD.json
+python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --raw data\raw_YYYY-MM-DD.json --output reports\YYYY-MM-DD.md
+```
+
+搜索日志必须记录五轮检索证据，raw 中每条候选必须带 `source_round`，例如：
+
+```json
+{
+  "date": "YYYY-MM-DD",
+  "rounds": [
+    {"round": "r1", "queries": ["合成生物 最新新闻 今日"], "candidates": ["https://example.com/article"]},
+    {"round": "r2", "queries": ["site:36kr.com 合成生物 融资"], "candidates": []},
+    {"round": "r3", "queries": ["synthetic biology breakthrough 2026"], "candidates": []},
+    {"round": "r4", "queries": ["合成生物 今日 最新"], "candidates": []},
+    {"round": "r5", "queries": ["site:gov.cn 合成生物 政策"], "candidates": []}
+  ]
+}
 ```
 
 处理流程:
@@ -147,8 +162,8 @@ python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --da
 
 ```powershell
 python -m pytest -q
-python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health
-python scripts\report_pipeline.py --render-md data\approved_2026-06-11.json --date 2026-06-11 --output reports\2026-06-11.md
+python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health --search-log data\search_log_2026-06-11.json
+python scripts\report_pipeline.py --render-md data\approved_2026-06-11.json --date 2026-06-11 --raw data\raw_2026-06-11.json --output reports\2026-06-11.md
 python scripts\generate_from_template.py --date 2026-06-11 --approved data\approved_2026-06-11.json --markdown reports\2026-06-11.md --html-output reports\synbio_daily_2026-06-11.html --email-output reports\email_2026-06-11.html
 python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_daily_2026-06-11.html reports\email_2026-06-11.html --dry-run
 ```

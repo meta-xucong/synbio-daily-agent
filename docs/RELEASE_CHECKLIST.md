@@ -3,6 +3,8 @@
 - [ ] `python -m pytest -q` passes.
 - [ ] `python -m compileall scripts` passes.
 - [ ] `report_pipeline.py --process` accepts a complete raw dict fixture.
+- [ ] Production raw items include `source_round`, and `search_log_YYYY-MM-DD.json` covers `r1` through `r5`.
+- [ ] `report_pipeline.py --render-md` uses `--raw` so the report trace shows the true raw candidate count.
 - [ ] `send_email.py --dry-run` passes for a known-good local report.
 - [ ] `send_email.py --dry-run` does not require real SMTP credentials.
 - [ ] AI invalid fixture fails and reports ungrounded entity/number.

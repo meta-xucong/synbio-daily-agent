@@ -22,6 +22,7 @@ def _approved(**overrides):
         "url": "https://example.com/news/xinghe",
         "type": "news",
         "company": "星河生物",
+        "source_round": "r1",
         "round": "pre-A",
         "amount": "数千万元",
         "investor": "经纬创投",
@@ -149,6 +150,17 @@ def test_send_email_dry_run_passes_generated_template_output(tmp_path, monkeypat
     approved, approved_path, md_path = _write_inputs(tmp_path, [_approved(type="news")])
     raw_path = tmp_path / "data" / "raw_2026-06-10.json"
     raw_path.write_text(json.dumps({"news": approved, "research": [], "funding": [], "policy": [], "events": []}, ensure_ascii=False), encoding="utf-8")
+    search_log = {
+        "date": "2026-06-10",
+        "rounds": [
+            {"round": "r1", "queries": ["synthetic biology funding 2026"], "candidates": ["https://example.com/news/xinghe"]},
+            {"round": "r2", "queries": ["synthetic biology research 2026"], "candidates": []},
+            {"round": "r3", "queries": ["synthetic biology policy 2026"], "candidates": []},
+            {"round": "r4", "queries": ["synthetic biology events 2026"], "candidates": []},
+            {"round": "r5", "queries": ["synthetic biology China 2026"], "candidates": []},
+        ],
+    }
+    (tmp_path / "data" / "search_log_2026-06-10.json").write_text(json.dumps(search_log, ensure_ascii=False), encoding="utf-8")
     html_path = tmp_path / "reports" / "synbio_daily_2026-06-10.html"
     email_path = tmp_path / "reports" / "email_2026-06-10.html"
     generate_from_template.generate("2026-06-10", approved_path, md_path, html_path, email_path)

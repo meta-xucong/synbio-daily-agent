@@ -33,8 +33,10 @@
 正式生成 approved 时建议使用：
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --search-log data\search_log_YYYY-MM-DD.json
 ```
+
+`search_log_YYYY-MM-DD.json` 必须覆盖 `r1` 到 `r5` 五轮检索；raw 中每条候选必须带 `source_round`，用于审计候选来源并防止遗漏轮次或补录旧信息。
 
 发送 gate 默认也会检查 H5、邮件正文和 Markdown 附件中的实际外链。以下情况会阻断发送或进入 rejected：
 
