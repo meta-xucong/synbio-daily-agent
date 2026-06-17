@@ -766,6 +766,69 @@ class _FakeResponse:
         return self.body[:size]
 
 
+def test_extract_title_signals_reads_og_title_title_and_h1():
+    html = (
+        '<html><head><meta property="og:title" content="OG 合成生物大会">'
+        '<meta content="Twitter 合成生物大会" name="twitter:title">'
+        "<title>页面标题</title></head><body><h1>正文标题</h1></body></html>"
+    )
+
+    assert report_pipeline.extract_title_signals(html) == [
+        "OG 合成生物大会",
+        "Twitter 合成生物大会",
+        "页面标题",
+        "正文标题",
+    ]
+
+
+def test_check_url_title_match_rejects_mismatched_reachable_page():
+    def opener(request, timeout=10):
+        return _FakeResponse("<title>全市服务业大会召开</title>".encode("utf-8"))
+
+    result = report_pipeline.check_url_title_match(
+        {
+            "title": "江苏合成生物大会召开",
+            "url": "https://www.zgjssw.gov.cn/news/example.html",
+        },
+        opener=opener,
+    )
+
+    assert not result["ok"]
+    assert "标题与页面不匹配" in result["reason"]
+
+
+def test_check_url_title_match_accepts_site_suffix_titles():
+    def opener(request, timeout=10):
+        return _FakeResponse("<title>江苏合成生物大会召开 - 江苏新闻网</title>".encode("utf-8"))
+
+    result = report_pipeline.check_url_title_match(
+        {
+            "title": "江苏合成生物大会召开",
+            "url": "https://www.zgjssw.gov.cn/news/example.html",
+        },
+        opener=opener,
+    )
+
+    assert result["ok"]
+    assert result["score"] == 1.0
+
+
+def test_check_url_title_match_keeps_network_errors_as_warning():
+    def opener(request, timeout=10):
+        raise URLError("temporary failure")
+
+    result = report_pipeline.check_url_title_match(
+        {
+            "title": "江苏合成生物大会召开",
+            "url": "https://www.zgjssw.gov.cn/news/example.html",
+        },
+        opener=opener,
+    )
+
+    assert result["ok"]
+    assert "标题匹配跳过" in result["warning"]
+
+
 def test_check_url_health_detects_deleted_content_without_network():
     def opener(request, timeout=10):
         return _FakeResponse("该文章已被删除".encode("utf-8"))
@@ -825,6 +888,39 @@ def test_validate_url_health_soft_mode_returns_ssl_warnings():
 
     assert result["is_valid"]
     assert result["warnings"]
+
+
+def test_build_approved_title_match_is_opt_in(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    raw = {
+        "news": [_item(title="江苏合成生物大会召开", url="https://example.com/news/service-conference")],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def reject_if_called(item):
+        return {"ok": False, "reason": "should only run when enabled"}
+
+    without_gate = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path / "without",
+        title_check_func=reject_if_called,
+    )
+    with_gate = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path / "with",
+        check_title_match_enabled=True,
+        title_check_func=reject_if_called,
+    )
+
+    assert len(without_gate["approved"]) == 1
+    assert len(with_gate["approved"]) == 0
+    assert any("[标题匹配]" in item["reason"] for item in with_gate["rejected"])
 
 
 def test_render_markdown_report_funding_defaults_missing_fields():

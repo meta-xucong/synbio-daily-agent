@@ -33,7 +33,7 @@
 正式生成 approved 时建议使用：
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --search-log data\search_log_YYYY-MM-DD.json
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --check-title-match --search-log data\search_log_YYYY-MM-DD.json
 ```
 
 `search_log_YYYY-MM-DD.json` 必须覆盖 `r1` 到 `r5` 五轮检索；raw 中每条候选必须带 `source_round`，用于审计候选来源并防止遗漏轮次或补录旧信息。
@@ -44,6 +44,7 @@ python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --da
 - 超时、DNS、TLS/证书等无法打开
 - 页面文本包含“文章已删除”“账号已注销”“页面不存在”等软失效提示
 - 站点首页、分类页、搜索页、聚合页或黑名单域名
+- URL 可访问但页面标题信号与候选标题明显不符（需启用 `--check-title-match`，网络读取失败只记录 warning）
 
 ## 价值评分标准
 

@@ -58,7 +58,7 @@ synbio-daily-agent/
 Step 1: 读取配置（anti_deviation_rules.md + 数据源 + 去重规则）
 Step 2: 多维度搜索（五轮搜索法）
 Step 3: 保存原始数据和搜索日志 → data/raw_YYYY-MM-DD.json + data/search_log_YYYY-MM-DD.json
-Step 4: 调用 report_pipeline.py --build-approved --check-url-health --search-log 处理（去重+过滤+死链剔除+排序）
+Step 4: 调用 report_pipeline.py --build-approved --check-url-health --check-title-match --search-log 处理（去重+过滤+死链剔除+标题匹配+排序）
 Step 5: 调用 report_pipeline.py --render-md --raw 基于 approved 生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 调用 generate_from_template.py 生成定稿H5 HTML报告
@@ -90,7 +90,7 @@ Step 9: 邮件推送（send gate通过后才发送）
 推荐生产命令:
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --search-log data\search_log_YYYY-MM-DD.json
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --check-title-match --search-log data\search_log_YYYY-MM-DD.json
 python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --raw data\raw_YYYY-MM-DD.json --output reports\YYYY-MM-DD.md
 ```
 
@@ -120,8 +120,9 @@ python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --da
    - 主链接和 `urls` 备用链接都会参与跨天去重
    - 当前批次内部重复与同URL不同标题冲突会被拒绝
 4. **链接健康检查**: `--check-url-health` 会剔除 4xx/5xx、超时、证书失败以及“文章已删除/账号已注销/页面不存在”等软失效页面
-5. **价值评分**: 保留 `raw_score`，`value_score` 归一化为0-10
-6. **approved schema**: 发送前要求 `title/source/date/summary/url/type/raw_score/value_score`，并检查类别一致性、日期、URL和分数范围
+5. **标题匹配检查**: `--check-title-match` 会读取页面标题信号，剔除 URL 可访问但标题明显张冠李戴的信息；网络错误只记录 warning
+6. **价值评分**: 保留 `raw_score`，`value_score` 归一化为0-10
+7. **approved schema**: 发送前要求 `title/source/date/summary/url/type/raw_score/value_score`，并检查类别一致性、日期、URL和分数范围
 
 ### 3. 报告格式验证
 
@@ -162,7 +163,7 @@ python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --da
 
 ```powershell
 python -m pytest -q
-python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health --search-log data\search_log_2026-06-11.json
+python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health --check-title-match --search-log data\search_log_2026-06-11.json
 python scripts\report_pipeline.py --render-md data\approved_2026-06-11.json --date 2026-06-11 --raw data\raw_2026-06-11.json --output reports\2026-06-11.md
 python scripts\generate_from_template.py --date 2026-06-11 --approved data\approved_2026-06-11.json --markdown reports\2026-06-11.md --html-output reports\synbio_daily_2026-06-11.html --email-output reports\email_2026-06-11.html
 python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_daily_2026-06-11.html reports\email_2026-06-11.html --dry-run
