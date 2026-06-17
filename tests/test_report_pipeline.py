@@ -37,6 +37,90 @@ def test_normalize_raw_input_accepts_single_category_list():
     assert report_pipeline.normalize_raw_input(items, "news") == items
 
 
+def test_count_raw_items_counts_full_category_dict():
+    raw = {
+        "news": [_item()],
+        "research": [_item()],
+        "funding": [],
+        "policy": [],
+        "events": [_item()],
+        "ignored": [_item()],
+    }
+
+    assert report_pipeline.count_raw_items(raw) == 3
+
+
+def _search_log():
+    return {
+        "date": "2026-06-10",
+        "rounds": [
+            {"round": "r1", "queries": ["synthetic biology funding"], "candidates": ["https://example.com/news/yeast-platform"]},
+            {"round": "r2", "queries": ["synthetic biology research"], "candidates": []},
+            {"round": "r3", "queries": ["synthetic biology policy"], "candidates": []},
+            {"round": "r4", "queries": ["synthetic biology events"], "candidates": []},
+            {"round": "r5", "queries": ["synthetic biology China"], "candidates": []},
+        ],
+    }
+
+
+def test_validate_search_log_requires_five_rounds_and_raw_traceability():
+    raw = {
+        "news": [_item(type="news", source_round="r1")],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    result = report_pipeline.validate_search_log(_search_log(), raw)
+
+    assert result["is_valid"], result["errors"]
+    assert result["rounds_seen"] == ["r1", "r2", "r3", "r4", "r5"]
+    assert result["total_queries"] == 5
+    assert result["warnings"]
+
+
+def test_validate_search_log_blocks_missing_round_and_untraced_raw_item():
+    log = _search_log()
+    log["rounds"] = log["rounds"][:4]
+    raw = {
+        "news": [
+            _item(type="news", source_round="r1"),
+            _item(type="news", url="https://example.com/news/untraced"),
+        ],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    result = report_pipeline.validate_search_log(log, raw)
+
+    assert not result["is_valid"]
+    assert any("缺少必要搜索轮次" in error for error in result["errors"])
+    assert any("缺少source_round" in error for error in result["errors"])
+
+
+def test_build_approved_blocks_invalid_search_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    raw = {
+        "news": [_item(type="news", source_round="r6")],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    try:
+        report_pipeline.build_approved_from_raw(raw, "2026-06-10", output_dir=tmp_path, search_log=_search_log())
+    except ValueError as exc:
+        assert "search_log校验失败" in str(exc)
+        assert "未记录的source_round" in str(exc)
+    else:
+        raise AssertionError("invalid search_log should fail build-approved")
+
+
 def test_process_raw_data_rejects_missing_required_fields_and_backfills_type(monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     result = report_pipeline.process_raw_data([
@@ -464,6 +548,33 @@ def test_report_pipeline_cli_render_md_generates_approved_only_report(tmp_path):
         "raw_score": 18,
         "value_score": 6.0,
     }], ensure_ascii=False), encoding="utf-8")
+    raw_path = tmp_path / "raw_2026-06-10.json"
+    raw_path.write_text(json.dumps({
+        "news": [
+            {
+                "title": "星河生物完成数千万元 pre-A 轮融资",
+                "source": "SynBioBeta",
+                "date": "2026-06-10",
+                "summary": "星河生物完成数千万元 pre-A 轮融资，用于合成生物制造平台扩产。",
+                "url": "https://example.com/news/xinghe",
+                "type": "news",
+                "source_round": "r1",
+            },
+            {
+                "title": "旧闻应该被筛掉",
+                "source": "Example",
+                "date": "2026-05-01",
+                "summary": "旧闻。",
+                "url": "https://example.com/news/old",
+                "type": "news",
+                "source_round": "r2",
+            },
+        ],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }, ensure_ascii=False), encoding="utf-8")
     output = tmp_path / "2026-06-10.md"
 
     result = subprocess.run(
@@ -474,6 +585,8 @@ def test_report_pipeline_cli_render_md_generates_approved_only_report(tmp_path):
             str(approved_path),
             "--date",
             "2026-06-10",
+            "--raw",
+            str(raw_path),
             "--output",
             str(output),
         ],
@@ -487,6 +600,7 @@ def test_report_pipeline_cli_render_md_generates_approved_only_report(tmp_path):
     report = output.read_text(encoding="utf-8")
     assert "https://example.com/news/xinghe" in report
     assert "approved=1" in report
+    assert "原始数据=2条" in report
     validation = report_pipeline.run_compliance_check(str(output))
     assert validation["passed"], validation["fix_instructions"]
 

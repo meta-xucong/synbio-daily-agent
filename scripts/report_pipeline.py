@@ -61,6 +61,7 @@ HTML_URL_ATTRS = {"href", "src", "action", "formaction", "poster"}
 TITLE_SIMILARITY_THRESHOLD = 0.80
 HISTORY_DEDUP_DAYS = 30
 MAX_RAW_SCORE = 30
+REQUIRED_SEARCH_ROUNDS = {"r1", "r2", "r3", "r4", "r5"}
 URL_HEALTH_TIMEOUT_SECONDS = 10
 URL_HEALTH_MAX_BYTES = 250_000
 TRACKING_QUERY_PREFIXES = ("utm_",)
@@ -243,6 +244,19 @@ def normalize_raw_input(raw_obj: Any, item_type: str) -> List[Dict[str, Any]]:
             raise ValueError(f"raw item at index {index} must be a dict")
 
     return items
+
+
+def count_raw_items(raw_obj: Any) -> int:
+    """Count raw candidates across a full category dict or a single-category list."""
+    if isinstance(raw_obj, dict):
+        return sum(
+            len(raw_obj.get(item_type, []))
+            for item_type in sorted(VALID_ITEM_TYPES)
+            if isinstance(raw_obj.get(item_type, []), list)
+        )
+    if isinstance(raw_obj, list):
+        return len(raw_obj)
+    raise ValueError("raw data must be a list or a category dict")
 
 
 def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, Dict[str, Any]]:
@@ -1680,16 +1694,108 @@ def save_rejection_log(rejected: List[Dict[str, Any]], report_date: str):
         json.dump(rejected, f, ensure_ascii=False, indent=2)
 
 
+def validate_search_log(search_log: Any, raw_obj: Any | None = None) -> Dict[str, Any]:
+    """Validate evidence that all five search rounds were executed."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not isinstance(search_log, dict):
+        return {
+            "is_valid": False,
+            "errors": ["search_log必须是对象"],
+            "warnings": warnings,
+            "rounds_seen": [],
+            "total_queries": 0,
+        }
+
+    rounds = search_log.get("rounds")
+    if not isinstance(rounds, list):
+        return {
+            "is_valid": False,
+            "errors": ["search_log缺少rounds列表"],
+            "warnings": warnings,
+            "rounds_seen": [],
+            "total_queries": 0,
+        }
+
+    rounds_seen: set[str] = set()
+    total_queries = 0
+    for index, round_entry in enumerate(rounds, 1):
+        if not isinstance(round_entry, dict):
+            errors.append(f"search_log第{index}轮不是对象")
+            continue
+        round_id = str(round_entry.get("round") or round_entry.get("id") or "").strip()
+        if round_id:
+            rounds_seen.add(round_id)
+        queries = round_entry.get("queries", [])
+        if isinstance(queries, list):
+            total_queries += len([q for q in queries if q])
+        else:
+            errors.append(f"search_log第{index}轮queries不是列表")
+        if not round_id:
+            errors.append(f"search_log第{index}轮缺少round/id")
+        if not queries:
+            errors.append(f"search_log第{index}轮缺少queries")
+
+    missing_rounds = sorted(REQUIRED_SEARCH_ROUNDS - rounds_seen)
+    if missing_rounds:
+        errors.append(f"search_log缺少必要搜索轮次: {', '.join(missing_rounds)}")
+
+    if raw_obj is not None:
+        raw_rounds = set()
+        missing_source_round = 0
+        if isinstance(raw_obj, dict):
+            for item_type in sorted(VALID_ITEM_TYPES):
+                items = raw_obj.get(item_type, [])
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if isinstance(item, dict) and item.get("source_round"):
+                        raw_rounds.add(str(item.get("source_round")))
+                    elif isinstance(item, dict):
+                        missing_source_round += 1
+        elif isinstance(raw_obj, list):
+            for item in raw_obj:
+                if isinstance(item, dict) and item.get("source_round"):
+                    raw_rounds.add(str(item.get("source_round")))
+                elif isinstance(item, dict):
+                    missing_source_round += 1
+        if missing_source_round:
+            errors.append(f"raw数据有{missing_source_round}条缺少source_round，无法追溯搜索轮次")
+        if not raw_rounds:
+            errors.append("raw数据缺少source_round，无法追溯搜索轮次")
+        elif not raw_rounds <= rounds_seen:
+            errors.append(f"raw数据包含search_log未记录的source_round: {sorted(raw_rounds - rounds_seen)}")
+        unused_rounds = sorted(rounds_seen - raw_rounds)
+        if unused_rounds:
+            warnings.append(f"以下搜索轮次执行过但未产生raw候选: {', '.join(unused_rounds)}")
+
+    return {
+        "is_valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "rounds_seen": sorted(rounds_seen),
+        "total_queries": total_queries,
+    }
+
+
 def build_approved_from_raw(
     raw_obj: Any,
     report_date: str,
     output_dir: Path | None = None,
     check_url_health_enabled: bool = False,
     url_check_func=check_url_health,
+    search_log: Any | None = None,
 ) -> Dict[str, Any]:
     """Process every category from a full raw dict and persist approved/rejected outputs."""
     if not isinstance(raw_obj, dict):
         raise ValueError("--build-approved requires a full raw category dict")
+
+    search_log_check = None
+    if search_log is not None:
+        search_log_check = validate_search_log(search_log, raw_obj)
+        if not search_log_check["is_valid"]:
+            raise ValueError("search_log校验失败: " + "; ".join(search_log_check["errors"]))
 
     output_dir = output_dir or DATA_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1734,6 +1840,7 @@ def build_approved_from_raw(
         "rejected": all_rejected,
         "stats": stats,
         "approved_schema": approved_check,
+        "search_log_check": search_log_check,
     }
 
 
@@ -2038,7 +2145,9 @@ def main():
     parser.add_argument("--process", type=str, help="处理原始数据JSON文件")
     parser.add_argument("--build-approved", type=str, help="从完整raw dict一次性生成processed/approved/rejected")
     parser.add_argument("--check-url-health", action="store_true", help="build-approved时剔除打不开或疑似删除的主链接")
+    parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验五轮搜索证据")
     parser.add_argument("--render-md", type=str, help="从approved JSON生成确定性Markdown报告")
+    parser.add_argument("--raw", type=str, help="render-md使用的raw JSON路径，用于准确显示原始数据总数")
     parser.add_argument("--date", type=str, help="--build-approved 输出使用的日期 YYYY-MM-DD")
     parser.add_argument("--type", type=str, default="news", help="数据类型")
     parser.add_argument("--output", type=str, help="输出文件路径")
@@ -2089,7 +2198,14 @@ def main():
             parser.error("--render-md requires --output")
         with open(args.render_md, 'r', encoding='utf-8') as f:
             approved_data = json.load(f)
-        markdown = render_markdown_report(approved_data, args.date)
+        raw_count = None
+        raw_path = Path(args.raw) if args.raw else DATA_DIR / f"raw_{args.date}.json"
+        if args.raw and not raw_path.exists():
+            parser.error(f"--raw file does not exist: {raw_path}")
+        if raw_path.exists():
+            with open(raw_path, 'r', encoding='utf-8') as f:
+                raw_count = count_raw_items(json.load(f))
+        markdown = render_markdown_report(approved_data, args.date, raw_count=raw_count)
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(markdown, encoding="utf-8")
@@ -2101,15 +2217,26 @@ def main():
             parser.error("--build-approved requires --date")
         with open(args.build_approved, 'r', encoding='utf-8') as f:
             raw_obj = json.load(f)
+        search_log = None
+        if args.search_log:
+            with open(args.search_log, 'r', encoding='utf-8') as f:
+                search_log = json.load(f)
         output_dir = Path(args.output) if args.output else DATA_DIR
         result = build_approved_from_raw(
             raw_obj,
             args.date,
             output_dir=output_dir,
             check_url_health_enabled=args.check_url_health,
+            search_log=search_log,
         )
         print(f"approved已生成: {result['approved_path']} ({len(result['approved'])}条)")
         print(f"rejected已生成: {result['rejected_path']} ({len(result['rejected'])}条)")
+        if result.get("search_log_check"):
+            print(
+                "search_log校验通过: "
+                f"{len(result['search_log_check']['rounds_seen'])}轮, "
+                f"{result['search_log_check']['total_queries']}个query"
+            )
         if not result["approved_schema"]["is_valid"]:
             print(f"approved schema错误: {len(result['approved_schema']['errors'])}个")
             for error in result["approved_schema"]["errors"][:10]:

@@ -9,9 +9,11 @@ import json
 try:
     from .settings import DATA_DIR, date_str as current_date_str
     from .console_utils import ensure_utf8_console
+    from .report_pipeline import validate_search_log
 except ImportError:
     from settings import DATA_DIR, date_str as current_date_str
     from console_utils import ensure_utf8_console
+    from report_pipeline import validate_search_log
 
 ensure_utf8_console()
 
@@ -23,12 +25,14 @@ def pre_check(date_str: str) -> dict:
     
     # 检查1: 原始数据存在
     raw_path = DATA_DIR / f"raw_{date_str}.json"
+    raw_data = None
     if not raw_path.exists():
         errors.append(f"❌ 原始数据不存在: {raw_path}")
     else:
         try:
             with open(raw_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+            raw_data = data
             total_items = 0
             for cat in ["news", "research", "funding", "policy", "events"]:
                 if cat not in data:
@@ -41,6 +45,27 @@ def pre_check(date_str: str) -> dict:
                 print(f"✅ 原始数据已保存: {total_items} 条信息")
         except Exception as e:
             errors.append(f"❌ 原始数据JSON格式错误: {raw_path} ({e})")
+
+    # 检查1.5: 搜索日志存在且覆盖五轮搜索
+    search_log_path = DATA_DIR / f"search_log_{date_str}.json"
+    if not search_log_path.exists():
+        errors.append(f"❌ 搜索日志不存在: {search_log_path} → 必须记录五轮搜索query和采集证据")
+    else:
+        try:
+            with open(search_log_path, 'r', encoding='utf-8') as f:
+                search_log = json.load(f)
+            search_log_result = validate_search_log(search_log, raw_data)
+            if not search_log_result["is_valid"]:
+                errors.extend([f"❌ 搜索日志不合规: {e}" for e in search_log_result["errors"]])
+            else:
+                print(
+                    "✅ 搜索日志已保存: "
+                    f"{len(search_log_result['rounds_seen'])} 轮, "
+                    f"{search_log_result['total_queries']} 个query"
+                )
+            warnings.extend([f"⚠️ 搜索日志提示: {w}" for w in search_log_result["warnings"]])
+        except Exception as e:
+            errors.append(f"❌ 搜索日志JSON格式错误: {search_log_path} ({e})")
     
     # 检查2: 脚本处理结果存在
     approved_path = DATA_DIR / f"approved_{date_str}.json"

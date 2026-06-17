@@ -16,9 +16,9 @@
 ```
 Step 1: 读取配置（数据源 + 去重规则 + 脚本指南）
 Step 2: 多维度搜索（五轮搜索法）
-Step 3: 保存原始数据为JSON → data/raw_YYYY-MM-DD.json
-Step 4: 调用 report_pipeline.py 处理（去重+过滤+排序）
-Step 5: 基于 approved 列表生成Markdown报告
+Step 3: 保存原始数据和搜索日志 → data/raw_YYYY-MM-DD.json + data/search_log_YYYY-MM-DD.json
+Step 4: 调用 report_pipeline.py 处理（去重+过滤+排序+搜索日志审计）
+Step 5: 基于 approved 列表和 raw 计数生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 生成H5 HTML报告
 Step 8: 生成邮件正文（与H5严格一致）
@@ -33,11 +33,12 @@ Step 9: 邮件推送（send gate通过后才发送）
 
 ### 检查点A：原始数据已保存
 - [ ] 已创建 `data/raw_YYYY-MM-DD.json`
+- [ ] 已创建 `data/search_log_YYYY-MM-DD.json`，覆盖 r1-r5 五轮搜索 query
 - [ ] JSON中包含所有搜索到的信息（news/research/funding/policy/events）
-- [ ] 每条信息有title/source/date/summary/url/type字段
+- [ ] 每条信息有title/source/date/summary/url/type/source_round字段
 - [ ] url字段是具体文章链接，不是网站首页
 
-**未保存原始数据 → 禁止生成报告**
+**未保存原始数据或搜索日志 → 禁止生成报告**
 
 ### 检查点B：脚本已执行
 - [ ] 已调用 `report_pipeline.py` 处理每个类别
@@ -77,6 +78,7 @@ Step 9: 邮件推送（send gate通过后才发送）
 | 偏差模式 | 后果 | 对策 |
 |---------|------|------|
 | 基于搜索结果直接手写报告 | 去重失效、信息重复、格式错误 | **强制先保存JSON，再调用脚本** |
+| 缺少搜索日志或 source_round | 无法证明五轮检索，旧内容可能补录混入 | **发送前 pre_check 强制阻断** |
 | 跳过report_pipeline.py | 去重失效、时效性不检查、价值不排序 | **脚本执行是门禁，不执行不生成** |
 | 使用rejected信息 | 重复信息、过期信息混入报告 | **只使用approved列表** |
 | 跳过验证直接发送 | 格式错误、日期排序错误 | **验证不通过禁止发送** |

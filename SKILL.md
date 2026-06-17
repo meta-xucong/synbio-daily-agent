@@ -165,26 +165,39 @@ from settings import date_str
 
 date_str = date_str()
 raw_data = {
-    "news": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "news"}],
-    "research": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "research"}],
-    "funding": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "funding", "company": "...", "round": "...", "amount": "...", "investor": "..."}],
-    "policy": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "policy"}],
-    "events": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "events", "location": "..."}],
+    "news": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "news", "source_round": "r1"}],
+    "research": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "research", "source_round": "r3"}],
+    "funding": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "funding", "source_round": "r2", "company": "...", "round": "...", "amount": "...", "investor": "..."}],
+    "policy": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "policy", "source_round": "r5"}],
+    "events": [{"title": "...", "source": "...", "date": "2026-06-08", "summary": "...", "url": "https://具体文章链接", "type": "events", "source_round": "r4", "location": "..."}],
 }
 
 raw_path = rf"data/raw_{date_str}.json"
 with open(raw_path, 'w', encoding='utf-8') as f:
     json.dump(raw_data, f, ensure_ascii=False, indent=2)
+
+search_log = {
+    "date": date_str,
+    "rounds": [
+        {"round": "r1", "queries": ["合成生物 最新新闻 今日"], "candidates": []},
+        {"round": "r2", "queries": ["site:36kr.com 合成生物 融资"], "candidates": []},
+        {"round": "r3", "queries": ["synthetic biology breakthrough 2026"], "candidates": []},
+        {"round": "r4", "queries": ["合成生物 今日 最新"], "candidates": []},
+        {"round": "r5", "queries": ["site:gov.cn 合成生物 政策"], "candidates": []},
+    ],
+}
+with open(rf"data/search_log_{date_str}.json", 'w', encoding='utf-8') as f:
+    json.dump(search_log, f, ensure_ascii=False, indent=2)
 ```
 
-**重要**：url字段必须是**具体文章的原始链接**，不能是网站首页或分类页面。
+**重要**：url字段必须是**具体文章的原始链接**，不能是网站首页或分类页面；每条 raw 候选必须带 `source_round`，并且 `data/search_log_YYYY-MM-DD.json` 必须覆盖 r1-r5 五轮检索。
 
 ### 3.2 调用脚本处理（强制步骤）
 
 生产运行必须使用一次性 CLI 入口处理完整 raw dict，不得手工拼接 approved：
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --search-log data\search_log_YYYY-MM-DD.json
 ```
 
 该命令会同时生成：
@@ -203,6 +216,7 @@ python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --da
 - **必须使用脚本处理后的 `approved` 列表中的信息**
 - **严禁使用 `rejected` 列表中的信息**
 - **必须保留 `data/history_index.json`，真实发送成功后会写入，后续跨天去重会检查主链接和 `urls` 备用链接**
+- **必须保留 `data/search_log_YYYY-MM-DD.json`，发送前会检查五轮 query 和 raw 的 `source_round`**
 - 如果所有信息都被拒绝，生成"本周期暂无相关新信息"的报告
 
 ---
@@ -252,7 +266,7 @@ python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --da
 推荐使用确定性 Markdown 生成入口，避免人工链接或旧内容混入：
 
 ```powershell
-python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --output reports\YYYY-MM-DD.md
+python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --raw data\raw_YYYY-MM-DD.json --output reports\YYYY-MM-DD.md
 ```
 
 保存到 `reports/YYYY-MM-DD.md` 后继续执行验证。
@@ -643,9 +657,9 @@ python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\synbio_dai
 ```
 Step 1: 读取配置（数据源 + 去重规则 + 脚本指南）
 Step 2: 多维度搜索（五轮搜索法）
-Step 3: 保存原始数据为JSON → data/raw_YYYY-MM-DD.json
-Step 4: 调用 report_pipeline.py 处理（去重+过滤+排序）
-Step 5: 基于 approved 列表生成Markdown报告
+Step 3: 保存原始数据和搜索日志 → data/raw_YYYY-MM-DD.json + data/search_log_YYYY-MM-DD.json
+Step 4: 调用 report_pipeline.py 处理（去重+过滤+排序+搜索日志审计）
+Step 5: 基于 approved 列表和 raw 计数生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 生成H5 HTML报告
 Step 8: 生成邮件正文（与H5严格一致）
@@ -658,11 +672,12 @@ Step 9: 邮件推送（send gate通过后才发送）
 
 #### 检查点A：原始数据已保存
 - [ ] 已创建 `data/raw_YYYY-MM-DD.json`
+- [ ] 已创建 `data/search_log_YYYY-MM-DD.json`，覆盖 r1-r5 五轮搜索 query
 - [ ] JSON中包含所有搜索到的信息（news/research/funding/policy/events）
-- [ ] 每条信息有title/source/date/summary/url/type字段
+- [ ] 每条信息有title/source/date/summary/url/type/source_round字段
 - [ ] url字段是具体文章链接，不是网站首页
 
-**未保存原始数据 → 禁止生成报告**
+**未保存原始数据或搜索日志 → 禁止生成报告**
 
 #### 检查点B：脚本已执行
 - [ ] 已调用 `report_pipeline.py` 处理每个类别
@@ -700,6 +715,7 @@ Step 9: 邮件推送（send gate通过后才发送）
 | 偏差模式 | 后果 | 对策 |
 |---------|------|------|
 | 基于搜索结果直接手写报告 | 去重失效、信息重复、格式错误 | **强制先保存JSON，再调用脚本** |
+| 缺少搜索日志或 source_round | 无法证明五轮检索，旧内容可能补录混入 | **发送前 pre_check 强制阻断** |
 | 跳过report_pipeline.py | 去重失效、时效性不检查、价值不排序 | **脚本执行是门禁，不执行不生成** |
 | 使用rejected信息 | 重复信息、过期信息混入报告 | **只使用approved列表** |
 | 跳过验证直接发送 | 格式错误、日期排序错误 | **验证不通过禁止发送** |
