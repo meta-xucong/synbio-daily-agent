@@ -133,6 +133,15 @@ python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_dai
 
 `allow_simple_fallback=false` 为默认推荐。只有在 SMTP 服务商持续拒绝 multipart 附件邮件，并且可接受“仅 HTML 正文、无附件”的降级发送时，才应在 `config/email_config.json` 中显式设为 `true`。
 `check_url_health=true` 为默认推荐。发送 gate 会在连接 SMTP 前检查 H5、邮件正文和 Markdown 附件里的实际外链是否可打开，并拦截 4xx/5xx、超时以及“文章已删除/账号已注销/页面不存在”等软失效页面。缺少真实邮箱配置时的 `--dry-run` 也默认执行链接健康检查；测试中需要跳过网络时应显式 mock 或在配置中临时设为 `false`。
+`url_health_mode=strict` 为默认推荐。受限网络或代理环境反复出现 SSL/证书握手误报时，可临时设为 `soft`；soft 模式只把 SSL/证书类网络错误降级为 warning，HTTP 404 和页面删除仍会阻断。
+
+真实发送同一日期日报默认只能成功一次。人工补发必须显式使用：
+
+```powershell
+python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_daily_2026-06-11.html reports\email_2026-06-11.html --force-send --send-mode manual
+```
+
+`--force-send` 只绕过“同日期已发送”检查，不跳过 pre_check、AI grounding、approved URL、链接健康、MIME 等门禁；发送尝试会写入 `data/send_log.json`。
 
 ## 本地测试
 

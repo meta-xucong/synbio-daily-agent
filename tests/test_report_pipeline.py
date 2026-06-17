@@ -1,7 +1,8 @@
 import json
+import ssl
 import subprocess
 import sys
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from pathlib import Path
 
 
@@ -166,6 +167,29 @@ def test_process_raw_data_rejects_policy_bucket_non_policy_content(monkeypatch):
     assert result["stats"]["approved"] == 1
     assert result["stats"]["schema_rejected"] == 1
     assert "type content mismatch" in result["rejected"][0]["reason"]
+
+
+def test_policy_classifier_allows_gov_cn_plan_report_and_association_repost(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    result = report_pipeline.process_raw_data([
+        _item(
+            title="深圳市计划报告：合成生物研究等重大科技设施投用并开放共享",
+            summary="深圳市发展和改革委员会发布计划报告，披露合成生物研究重大科技设施投用并开放共享。",
+            url="https://fgw.sz.gov.cn/zwgk/ghjh/202606/t20260615_123456.htm",
+            source="深圳市发展和改革委员会",
+            type="policy",
+        ),
+        _item(
+            title="武汉市启动2026年度重点研发计划（合成生物领域）申报",
+            summary="武汉市高新技术产业协会转载重点研发计划申报通知，面向合成生物领域项目征集。",
+            url="https://www.whht.org.cn/news/2026-synbio-plan",
+            source="武汉市高新技术产业协会",
+            type="policy",
+        ),
+    ], "policy")
+
+    assert result["stats"]["approved"] == 2
+    assert not result["rejected"]
 
 
 def test_process_raw_data_rejects_url_attribute_injection(monkeypatch):
@@ -712,6 +736,64 @@ def test_check_url_health_detects_http_error_without_network():
 
     assert not result["ok"]
     assert result["status"] == 404
+
+
+def test_check_url_health_soft_mode_warns_on_ssl_errors_without_allowing_404():
+    def ssl_opener(request, timeout=10):
+        raise URLError(ssl.SSLError("SSL: BAD_ECPOINT bad ecpoint"))
+
+    def http_opener(request, timeout=10):
+        raise HTTPError(request.full_url, 404, "not found", {}, None)
+
+    ssl_result = report_pipeline.check_url_health(
+        "https://fgw.sz.gov.cn/zwgk/ghjh/example.html",
+        opener=ssl_opener,
+        mode="soft",
+    )
+    strict_result = report_pipeline.check_url_health(
+        "https://fgw.sz.gov.cn/zwgk/ghjh/example.html",
+        opener=ssl_opener,
+        mode="strict",
+    )
+    http_result = report_pipeline.check_url_health(
+        "https://example.com/news/missing",
+        opener=http_opener,
+        mode="soft",
+    )
+
+    assert ssl_result["ok"]
+    assert ssl_result["ssl_warning"]
+    assert not strict_result["ok"]
+    assert not http_result["ok"]
+    assert http_result["status"] == 404
+
+
+def test_validate_url_health_soft_mode_returns_ssl_warnings():
+    def ssl_check(url, mode="strict"):
+        assert mode == "soft"
+        return {"ok": True, "url": url, "warning": "SSL warning", "ssl_warning": True}
+
+    result = report_pipeline.validate_url_health(["https://example.com/a"], check_func=ssl_check, mode="soft")
+
+    assert result["is_valid"]
+    assert result["warnings"]
+
+
+def test_render_markdown_report_funding_defaults_missing_fields():
+    report = report_pipeline.render_markdown_report([
+        {
+            "title": "天津大学天大系硬科技项目加速IPO，合成生物成优势方向",
+            "source": "Example",
+            "date": "2026-06-15",
+            "summary": "天津大学相关硬科技项目推进IPO。",
+            "url": "https://example.com/funding/tianda",
+            "type": "funding",
+            "raw_score": 10,
+            "value_score": 3.3,
+        }
+    ], "2026-06-17", raw_count=1)
+
+    assert "| 天津大学天大系硬科技项目加速IPO，合成生物成优势方向 | — | 未披露 | — | 2026-06-15 | https://example.com/funding/tianda |" in report
 
 
 def test_run_compliance_check_includes_ai_grounding_errors():

@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import smtplib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 from email.mime.multipart import MIMEMultipart
@@ -77,6 +78,7 @@ def dry_run_email_config() -> Dict[str, Any]:
         "sender_password": "",
         "receiver_email": "dry-run@example.invalid",
         "check_url_health": True,
+        "url_health_mode": "strict",
     }
 
 
@@ -222,6 +224,63 @@ def _update_history_index(date_str: str, approved_items: list[dict[str, Any]]) -
     print(f"历史索引已更新: {len(history['entries'])} 条")
 
 
+def _send_log_path() -> Path:
+    return DATA_DIR / "send_log.json"
+
+
+def _load_send_log() -> dict[str, Any]:
+    path = _send_log_path()
+    if not path.exists():
+        return {"version": 1, "sends": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("sends"), list):
+            return data
+    except Exception:
+        pass
+    return {"version": 1, "sends": []}
+
+
+def _write_send_log(log: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(_send_log_path(), "w", encoding="utf-8") as f:
+        json.dump(log, f, ensure_ascii=False, indent=2)
+
+
+def has_successful_send_for_date(date_str: str) -> bool:
+    """Return True when the report date already has a successful real send."""
+    log = _load_send_log()
+    if any(entry.get("date") == date_str and entry.get("status") == "success" for entry in log.get("sends", [])):
+        return True
+
+    history_path = DATA_DIR / "history_index.json"
+    if not history_path.exists():
+        return False
+    try:
+        with open(history_path, "r", encoding="utf-8") as f:
+            history = json.load(f)
+    except Exception:
+        return False
+    return any(entry.get("first_sent_date") == date_str for entry in history.get("entries", []))
+
+
+def record_send_attempt(date_str: str, *, status: str, send_mode: str, forced: bool, error: str = "") -> None:
+    """Append a report-level send attempt for duplicate-send auditing."""
+    log = _load_send_log()
+    log.setdefault("version", 1)
+    log.setdefault("sends", [])
+    log["sends"].append({
+        "date": date_str,
+        "status": status,
+        "send_mode": send_mode,
+        "forced": forced,
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "error": error,
+    })
+    _write_send_log(log)
+
+
 def validate_template_signature(html: str, label: str) -> Dict[str, Any]:
     """Ensure generated HTML looks like the production template output."""
     required_any = ('class="card"', 'class="data-table"')
@@ -247,6 +306,9 @@ def validate_send_gate(
     email_html_path: str | Path | None = None,
     msg: MIMEMultipart | None = None,
     check_url_health: bool = True,
+    url_health_mode: str = "strict",
+    force_send: bool = False,
+    enforce_send_once: bool = True,
 ) -> Dict[str, Any]:
     """Run all checks required before any SMTP connection is opened."""
     errors: list[str] = []
@@ -261,6 +323,15 @@ def validate_send_gate(
     post_check_module.REPORTS_DIR = runtime_reports_dir
     report_pipeline_module.DATA_DIR = runtime_data_dir
     report_pipeline_module.REPORTS_DIR = runtime_reports_dir
+
+    if has_successful_send_for_date(date_str):
+        duplicate_message = f"[发送门禁] 日期 {date_str} 已发送过日报，禁止重复发送"
+        if force_send:
+            warnings.append(f"{duplicate_message}；已使用 force_send 显式放行")
+        elif not enforce_send_once:
+            warnings.append(f"{duplicate_message}；当前为验证模式，不阻断")
+        else:
+            errors.append(duplicate_message)
 
     pre_result = pre_check(date_str)
     details["pre_check"] = pre_result
@@ -317,10 +388,14 @@ def validate_send_gate(
         + extract_plain_http_urls(files["md_content"])
     ))
     if check_url_health and outbound_urls:
-        url_health = validate_url_health(outbound_urls, label="发送内容")
+        try:
+            url_health = validate_url_health(outbound_urls, label="发送内容", mode=url_health_mode)
+        except TypeError:
+            url_health = validate_url_health(outbound_urls, label="发送内容")
         details["url_health"] = url_health
         if not url_health["is_valid"]:
             errors.extend(url_health["errors"])
+        warnings.extend(url_health.get("warnings", []))
     else:
         details["url_health"] = {
             "is_valid": True,
@@ -367,7 +442,29 @@ def validate_send_gate(
     }
 
 
-def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_run=False):
+def _resolve_url_health_config(config: Dict[str, Any]) -> tuple[bool, str]:
+    value = config.get("check_url_health", True)
+    mode = str(config.get("url_health_mode", "strict") or "strict").lower()
+    if isinstance(value, str):
+        lowered = value.lower()
+        if lowered in {"false", "off", "no", "0"}:
+            return False, mode
+        if lowered in {"soft", "strict"}:
+            return True, lowered
+        if lowered in {"true", "on", "yes", "1"}:
+            return True, mode
+    return bool(value), mode
+
+
+def send_daily_report(
+    date_str,
+    md_path,
+    html_path,
+    email_html_path=None,
+    dry_run=False,
+    force_send=False,
+    send_mode="manual",
+):
     """发送日报邮件。发送前必须通过 gate；dry-run 不连接 SMTP。"""
     try:
         config = load_email_config()
@@ -380,6 +477,7 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_ru
         print("邮件发送已禁用 (enabled=false)")
         return False
 
+    should_check_urls, url_health_mode = _resolve_url_health_config(config)
     files = read_report_files(md_path, html_path, email_html_path)
     msg = build_email_message(
         date_str=date_str,
@@ -396,13 +494,20 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_ru
         html_path,
         email_html_path,
         msg=msg,
-        check_url_health=config.get("check_url_health", True),
+        check_url_health=should_check_urls,
+        url_health_mode=url_health_mode,
+        force_send=force_send,
+        enforce_send_once=not dry_run,
     )
     if not gate["passed"]:
         print(f"邮件发送门禁未通过: {len(gate['errors'])} 个错误")
         for error in gate["errors"][:10]:
             print(f"  - {error}")
         return False
+    if gate.get("warnings"):
+        print(f"邮件发送门禁警告: {len(gate['warnings'])} 个")
+        for warning in gate["warnings"][:10]:
+            print(f"  - {warning}")
 
     if dry_run:
         print(f"邮件 dry-run 通过: {date_str}")
@@ -411,6 +516,7 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_ru
     try:
         send_message_via_smtp(config, msg)
         print(f"邮件发送成功: {date_str}")
+        record_send_attempt(date_str, status="success", send_mode=send_mode, forced=force_send)
         # 发送成功后更新跨天历史索引
         try:
             approved_data = load_approved_data(date_str)
@@ -420,6 +526,7 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_ru
         return True
     except smtplib.SMTPResponseException as exc:
         print_smtp_diagnostics(exc)
+        failure_error = f"SMTP {exc.smtp_code}: {exc.smtp_error!r}"
         if exc.smtp_code == 500 and config.get("allow_simple_fallback", False):
             try:
                 fallback_msg = build_simple_fallback_message(
@@ -430,6 +537,7 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_ru
                 )
                 send_message_via_smtp(config, fallback_msg)
                 print("邮件已降级发送：仅HTML正文，无附件。请检查SMTP MIME兼容性。")
+                record_send_attempt(date_str, status="success", send_mode=send_mode, forced=force_send)
                 try:
                     approved_data = load_approved_data(date_str)
                     _update_history_index(date_str, approved_data)
@@ -438,9 +546,12 @@ def send_daily_report(date_str, md_path, html_path, email_html_path=None, dry_ru
                 return True
             except Exception as fallback_exc:
                 print(f"邮件降级发送失败: {fallback_exc}")
+                failure_error = f"{failure_error}; fallback failed: {fallback_exc}"
+        record_send_attempt(date_str, status="failed", send_mode=send_mode, forced=force_send, error=failure_error)
         return False
     except Exception as e:
         print(f"邮件发送失败: {e}")
+        record_send_attempt(date_str, status="failed", send_mode=send_mode, forced=force_send, error=str(e))
         return False
 
 
@@ -451,6 +562,8 @@ def main() -> int:
     parser.add_argument("html_path")
     parser.add_argument("email_html_path", nargs="?")
     parser.add_argument("--dry-run", action="store_true", help="run gate and build email without SMTP")
+    parser.add_argument("--force-send", action="store_true", help="allow a real resend for a date already recorded as sent")
+    parser.add_argument("--send-mode", choices=["manual", "auto"], default="manual", help="send attempt label written to send_log.json")
     args = parser.parse_args()
 
     success = send_daily_report(
@@ -459,6 +572,8 @@ def main() -> int:
         args.html_path,
         args.email_html_path,
         dry_run=args.dry_run,
+        force_send=args.force_send,
+        send_mode=args.send_mode,
     )
     return 0 if success else 1
 

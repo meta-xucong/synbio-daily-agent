@@ -6,5 +6,6 @@
   "receiver_email": "recipient@example.com",
   "enabled": true,
   "allow_simple_fallback": false,
-  "check_url_health": true
+  "check_url_health": true,
+  "url_health_mode": "strict"
 }

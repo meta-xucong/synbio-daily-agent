@@ -172,7 +172,8 @@ python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_dai
 正式 H5/邮件正文必须由 `generate_from_template.py` 生成；`render_html.py` / `render_email.py` 仅用于 emergency fallback 或测试夹具。
 
 `config/email_config.json` 中的 `allow_simple_fallback` 默认应保持 `false`。只有在 SMTP 服务商持续拒绝带附件的 multipart 邮件，并且可接受“仅 HTML 正文、无附件”的降级发送时，才显式设为 `true`。
-`check_url_health` 默认应保持 `true`；`--dry-run` 即使没有真实邮箱配置也会默认检查实际发送内容中的外链，拦截打不开或疑似删除的链接。
+`check_url_health` 默认应保持 `true`；`url_health_mode` 默认应保持 `strict`。受限网络环境反复出现 SSL/证书握手误报时，可临时设为 `soft`，此时 404、页面已删除仍阻断，SSL/证书类网络错误只作为 warning。
+真实发送同一日期日报默认只允许一次；确需人工补发时使用 `--force-send --send-mode manual`，该操作仍会执行所有内容门禁，并写入 `data/send_log.json` 留痕。
 
 ---
 

@@ -207,6 +207,66 @@ def test_send_gate_blocks_missing_search_log(tmp_path, monkeypatch):
     assert any("搜索日志不存在" in error for error in result["errors"])
 
 
+def test_send_gate_blocks_duplicate_real_send_but_dry_run_warns(tmp_path, monkeypatch, capsys):
+    md, html = _write_runtime_tree(tmp_path)
+    history = {
+        "version": 1,
+        "entries": [{
+            "url": "https://example.com/news/xinghe",
+            "canonical_url": "https://example.com/news/xinghe",
+            "urls": ["https://example.com/news/xinghe"],
+            "title": "Previously sent",
+            "fingerprint": "old",
+            "date": "2026-06-10",
+            "first_sent_date": "2026-06-10",
+        }],
+    }
+    (tmp_path / "data" / "history_index.json").write_text(json.dumps(history, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+
+    blocked = send_email.validate_send_gate("2026-06-10", md, html, check_url_health=False)
+    dry_run = send_email.validate_send_gate(
+        "2026-06-10",
+        md,
+        html,
+        check_url_health=False,
+        enforce_send_once=False,
+    )
+
+    assert not blocked["passed"]
+    assert any("已发送过日报" in error for error in blocked["errors"])
+    assert dry_run["passed"]
+    assert any("验证模式" in warning for warning in dry_run["warnings"])
+
+    assert send_email.send_daily_report("2026-06-10", md, html, dry_run=True) is True
+    output = capsys.readouterr().out
+    assert "邮件发送门禁警告" in output
+    assert "已发送过日报" in output
+
+
+def test_force_send_records_manual_resend(tmp_path, monkeypatch):
+    md, html = _write_runtime_tree(tmp_path)
+    send_log = {"version": 1, "sends": [{"date": "2026-06-10", "status": "success", "send_mode": "auto"}]}
+    (tmp_path / "data" / "send_log.json").write_text(json.dumps(send_log, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+    sent_messages = []
+
+    def record_send(config, msg):
+        sent_messages.append(msg)
+
+    monkeypatch.setattr(send_email, "send_message_via_smtp", record_send)
+
+    assert send_email.send_daily_report("2026-06-10", md, html, force_send=True, send_mode="manual") is True
+    assert len(sent_messages) == 1
+    log = json.loads((tmp_path / "data" / "send_log.json").read_text(encoding="utf-8"))
+    assert log["sends"][-1]["date"] == "2026-06-10"
+    assert log["sends"][-1]["status"] == "success"
+    assert log["sends"][-1]["forced"] is True
+    assert log["sends"][-1]["send_mode"] == "manual"
+
+
 def test_send_gate_health_check_includes_markdown_plain_urls(tmp_path, monkeypatch):
     md, html = _write_runtime_tree(tmp_path)
     md.write_text(

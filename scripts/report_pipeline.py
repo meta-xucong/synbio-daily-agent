@@ -20,6 +20,7 @@ import os
 import re
 import hashlib
 import socket
+import ssl
 from html import unescape
 from html.parser import HTMLParser
 from difflib import SequenceMatcher
@@ -94,7 +95,7 @@ APPROVED_REQUIRED_FIELDS = {
     "title", "source", "date", "summary", "url", "type", "raw_score", "value_score",
 }
 TYPE_TITLE_KEYWORDS = {
-    "policy": ("政策", "法规", "监管", "规划", "指南", "征集", "通知", "公告", "课题", "专项", "申报", "标准", "grant", "call", "program", "programme", "proposal", "award", "regulation", "guidance"),
+    "policy": ("政策", "法规", "监管", "规划", "计划", "报告", "项目", "指南", "征集", "通知", "公告", "课题", "专项", "申报", "标准", "开放共享", "grant", "call", "program", "programme", "proposal", "award", "regulation", "guidance"),
     "events": ("大会", "会议", "论坛", "研讨会", "峰会", "活动", "课程", "培训", "webinar", "conference", "symposium", "forum", "course", "summit", "workshop", "meeting", "webcast"),
     "funding": ("融资", "投资", "轮融资", "募资", "并购", "收购", "上市", "ipo", "series", "funding", "raised", "raises", "raise", "seed", "pre-a", "pre a", "round", "venture", "capital", "backs", "secures", "investment"),
     "research": ("研究", "论文", "nature", "science", "cell", "pnas", "acs", "发现", "突破", "engineer", "research", "journal", "study", "paper", "published", "publication", "biotechnology", "bioengineering"),
@@ -105,7 +106,7 @@ TYPE_NEGATIVE_KEYWORDS = {
     "events": ("investment report", "融资", "获投", "raised", "raises", "funding"),
 }
 POLICY_AUTHORITY_HINTS = (
-    "gov", "政府", "科委", "发改委", "工信", "科技部", "市监", "监管", "部门", "委员会",
+    "gov", "政府", "科委", "科创局", "发改委", "工信", "科技部", "市监", "监管", "部门", "委员会", "协会",
     "ministry", "agency", "commission", "authority", "government", "programme", "program",
 )
 
@@ -436,7 +437,23 @@ def _is_historical_duplicate(item, history_entries):
     return False
 
 
-def check_url_health(url: str, timeout: int = URL_HEALTH_TIMEOUT_SECONDS, opener=urlopen) -> Dict[str, Any]:
+def _is_ssl_network_error(exc: BaseException) -> bool:
+    """Return True for SSL/certificate failures that may be local network issues."""
+    if isinstance(exc, ssl.SSLError):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, ssl.SSLError):
+        return True
+    text = f"{exc} {reason}".lower()
+    return any(marker in text for marker in ("ssl", "certificate", "cert_verify", "bad_ecpoint", "bad ecpoint"))
+
+
+def check_url_health(
+    url: str,
+    timeout: int = URL_HEALTH_TIMEOUT_SECONDS,
+    opener=urlopen,
+    mode: str = "strict",
+) -> Dict[str, Any]:
     """Check whether a URL opens and does not look like a deleted/invalid article."""
     try:
         safe_url(url)
@@ -485,7 +502,14 @@ def check_url_health(url: str, timeout: int = URL_HEALTH_TIMEOUT_SECONDS, opener
             return {"ok": True, "url": url, "status": status, "final_url": final_url}
     except HTTPError as exc:
         return {"ok": False, "url": url, "status": exc.code, "reason": f"HTTP状态异常: {exc.code}"}
-    except (URLError, TimeoutError, socket.timeout) as exc:
+    except (URLError, TimeoutError, socket.timeout, ssl.SSLError) as exc:
+        if str(mode).lower() == "soft" and _is_ssl_network_error(exc):
+            return {
+                "ok": True,
+                "url": url,
+                "warning": f"SSL/证书网络检查失败，soft模式不阻断: {exc}",
+                "ssl_warning": True,
+            }
         return {"ok": False, "url": url, "reason": f"URL无法打开: {exc}"}
     except Exception as exc:
         return {"ok": False, "url": url, "reason": f"URL检查失败: {exc}"}
@@ -504,20 +528,28 @@ def validate_url_health(
     urls: List[str],
     label: str = "URL",
     check_func=check_url_health,
+    mode: str = "strict",
 ) -> Dict[str, Any]:
     """Ensure each outbound URL is reachable and not a known deleted-content page."""
     urls = list(dict.fromkeys(urls))
     errors = []
+    warnings = []
     checked = []
     for url in urls:
-        result = check_func(url)
+        try:
+            result = check_func(url, mode=mode)
+        except TypeError:
+            result = check_func(url)
         checked.append(result)
         if not result.get("ok"):
             errors.append(f"{label}链接不可用: {url} - {result.get('reason', '未知错误')}")
+        if result.get("warning"):
+            warnings.append(f"{label}链接警告: {url} - {result['warning']}")
 
     return {
         "is_valid": len(errors) == 0,
         "errors": errors,
+        "warnings": warnings,
         "checked_urls": checked,
         "total_checked": len(checked),
     }
@@ -1512,6 +1544,10 @@ def _looks_like_type(item: Dict[str, Any], item_type: str) -> bool:
     if item_type == "policy":
         has_policy_keyword = any(keyword.lower() in title_summary_url for keyword in TYPE_TITLE_KEYWORDS["policy"])
         has_authority = any(hint.lower() in text for hint in POLICY_AUTHORITY_HINTS)
+        netloc = urlsplit(str(item.get("url", ""))).netloc.lower()
+        is_gov_cn = netloc.endswith(".gov.cn") or ".gov.cn:" in netloc
+        if is_gov_cn and has_policy_keyword:
+            return True
         return has_policy_keyword and has_authority
     keywords = TYPE_TITLE_KEYWORDS.get(item_type, ())
     return any(keyword.lower() in text for keyword in keywords)
@@ -2106,9 +2142,9 @@ def append_funding_rows(lines: List[str], items: List[Dict[str, Any]]) -> None:
     for item in items:
         cells = [
             markdown_cell(item.get("company") or item.get("title", "")),
-            markdown_cell(item.get("round", "")),
-            markdown_cell(item.get("amount", "")),
-            markdown_cell(item.get("investor", "")),
+            markdown_cell(item.get("round") or "—"),
+            markdown_cell(item.get("amount") or "未披露"),
+            markdown_cell(item.get("investor") or "—"),
             markdown_cell(item.get("date", "")),
             markdown_link(str(item.get("url", ""))),
         ]
