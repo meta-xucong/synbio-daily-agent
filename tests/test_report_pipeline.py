@@ -102,6 +102,16 @@ def test_validate_search_log_blocks_missing_round_and_untraced_raw_item():
     assert any("缺少source_round" in error for error in result["errors"])
 
 
+def test_validate_search_log_allows_empty_raw_when_rounds_have_queries():
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(_search_log(), raw)
+
+    assert result["is_valid"], result["errors"]
+    assert set(result["rounds_seen"]) == {"r1", "r2", "r3", "r4", "r5"}
+    assert "raw数据缺少source_round" not in ";".join(result["errors"])
+
+
 def test_build_approved_blocks_invalid_search_log(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
@@ -189,6 +199,22 @@ def test_policy_classifier_allows_gov_cn_plan_report_and_association_repost(monk
     ], "policy")
 
     assert result["stats"]["approved"] == 2
+    assert not result["rejected"]
+
+
+def test_policy_classifier_allows_gov_cn_measures(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    result = report_pipeline.process_raw_data([
+        _item(
+            title="深圳市推动合成生物创新引领生物制造产业高质量发展若干措施",
+            summary="深圳市政府发布若干措施，支持合成生物创新引领生物制造产业高质量发展。",
+            url="https://fgw.sz.gov.cn/zwgk/zcwj/202606/t20260617_123456.htm",
+            source="深圳市发展和改革委员会",
+            type="policy",
+        )
+    ], "policy")
+
+    assert result["stats"]["approved"] == 1
     assert not result["rejected"]
 
 
