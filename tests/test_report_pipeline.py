@@ -232,10 +232,13 @@ def test_category_filter_allows_article_paths_and_blocks_aggregate_pages():
     assert not report_pipeline._is_category_or_aggregate_url("https://example.com/news/yeast-platform")
     assert not report_pipeline._is_category_or_aggregate_url("https://example.com/news-and-features/yeast-platform")
     assert not report_pipeline._is_category_or_aggregate_url("https://example.com/events/synbio-forum-2026")
+    assert not report_pipeline._is_category_or_aggregate_url("https://example.com/article/123?q=source")
+    assert not report_pipeline._is_category_or_aggregate_url("https://mp.weixin.qq.com/s/example-article")
     assert report_pipeline._is_category_or_aggregate_url("https://example.com/news")
     assert report_pipeline._is_category_or_aggregate_url("https://example.com/category/synthetic-biology")
     assert report_pipeline._is_category_or_aggregate_url("https://example.com/topic-hub/synthetic-biology/news-and-features")
     assert report_pipeline._is_category_or_aggregate_url("https://conferences.nature.com/synthetic-biology")
+    assert report_pipeline._is_category_or_aggregate_url("https://example.com/search?q=synthetic-biology")
 
 
 def test_process_raw_data_rejects_history_index_duplicates(monkeypatch):
@@ -553,6 +556,25 @@ def test_build_approved_drops_conflicting_same_url_titles(tmp_path, monkeypatch)
     assert len(result["approved"]) == 1
     assert any("[approved冲突]" in item["reason"] for item in result["rejected"])
     assert result["approved_schema"]["is_valid"]
+
+
+def test_build_approved_does_not_check_url_health_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    raw = {
+        "news": [_item(title="Healthy by default", url="https://example.com/news/default")],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def fail_if_called(url):
+        raise AssertionError("url health should be opt-in for build-approved")
+
+    result = report_pipeline.build_approved_from_raw(raw, "2026-06-10", output_dir=tmp_path, url_check_func=fail_if_called)
+
+    assert [item["title"] for item in result["approved"]] == ["Healthy by default"]
 
 
 def test_build_approved_can_drop_unhealthy_primary_urls(tmp_path, monkeypatch):
