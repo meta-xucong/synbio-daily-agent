@@ -71,6 +71,8 @@ Step 9: 更新政策库
 使用 kimi_search_v2 进行通用搜索：
 ```
 合成生物 最新新闻 今日
+合成生物 白皮书 报告 发布
+合成生物 生物制造 签约 落地
 synthetic biology news today 2026
 合成生物 融资 投资 动态
 合成生物 政策 监管
@@ -118,6 +120,7 @@ synbio policy regulation
 在生成报告前，再次搜索确认是否有遗漏的重要信息：
 ```
 合成生物 今日 最新
+合成生物 白皮书 报告 发布 签约
 synthetic biology today news
 ```
 
@@ -146,10 +149,11 @@ site:academicx.org 合成生物
 ```
 
 **搜索要求**：
-- 每个 query 的 limit 设为 10
+- 每个 query 的 limit 设为 15-20
 - **必须记录每条信息的来源网站和发布日期**
 - 优先选择有明确日期的新闻
 - **必须记录每条信息的原始URL链接**
+- **必须保留结构化搜索结果（title/url/snippet/source/date），不得只保留人工挑选后的少数URL**
 - **政府网站和会议网站的信息往往不在商业媒体出现，必须直接搜索**
 
 ---
@@ -157,7 +161,13 @@ site:academicx.org 合成生物
 ## Step 3: 脚本强制过滤与去重（严禁跳过）
 
 ### 3.1 保存原始数据
-将搜索到的所有信息按类别保存为JSON文件：
+将搜索到的所有结构化结果先保存到 `search_log_YYYY-MM-DD.json`，再用脚本自动生成 raw，严禁人工挑选后只写入少数结果：
+
+```powershell
+python scripts\report_pipeline.py --build-raw-from-search data\search_log_YYYY-MM-DD.json --date YYYY-MM-DD --output data\raw_YYYY-MM-DD.json
+```
+
+raw 文件结构如下：
 
 ```python
 import json
@@ -197,7 +207,7 @@ with open(rf"data/search_log_{date_str}.json", 'w', encoding='utf-8') as f:
 生产运行必须使用一次性 CLI 入口处理完整 raw dict，不得手工拼接 approved：
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --check-title-match --search-log data\search_log_YYYY-MM-DD.json
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --check-title-match --strict-search-coverage --search-log data\search_log_YYYY-MM-DD.json
 ```
 
 该命令会同时生成：
@@ -210,7 +220,7 @@ python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --da
 - `data/approved_YYYY-MM-DD.json`
 - `data/rejected_YYYY-MM-DD.json`
 
-`--build-approved` 会统一执行 schema、URL聚合页过滤、跨天历史去重、当前批次去重、同URL不同标题冲突剔除、时效性、价值评分和 approved schema 校验。`--check-url-health` 会在 approved 写出前剔除打不开、HTTP 4xx/5xx、超时、证书失败或疑似“文章已删除/账号已注销/页面不存在”的信息。`--check-title-match` 会读取页面标题信号，剔除 URL 可访问但页面标题明显张冠李戴的信息；网络读取失败只记录 warning，不替代链接健康检查。
+`--build-approved` 会统一执行 schema、搜索覆盖率审计、URL聚合页过滤、跨天历史去重、当前批次去重、同URL不同标题冲突剔除、时效性、价值评分和 approved schema 校验。`--strict-search-coverage` 会阻断“搜索结果存在但未进入 raw”的静默漏收。`--check-url-health` 会在 approved 写出前剔除打不开、HTTP 4xx/5xx、超时、证书失败或疑似“文章已删除/账号已注销/页面不存在”的信息。`--check-title-match` 会读取页面标题信号，剔除 URL 可访问但页面标题明显张冠李戴的信息；网络读取失败只记录 warning，不替代链接健康检查。
 
 **重要**：
 - **必须使用脚本处理后的 `approved` 列表中的信息**

@@ -112,6 +112,124 @@ def test_validate_search_log_allows_empty_raw_when_rounds_have_queries():
     assert "raw数据缺少source_round" not in ";".join(result["errors"])
 
 
+def test_build_raw_from_search_log_keeps_whitepaper_result():
+    log = _search_log()
+    log["rounds"][0]["queries"] = [{
+        "query": "合成生物 白皮书 报告 发布",
+        "results": [{
+            "title": "2026中国合成生物制造白皮书发布",
+            "url": "https://bydrug.pharmcube.com/news/detail/whitepaper-2026",
+            "snippet": "该白皮书系统介绍了中国合成生物制造产业的发展阶段、核心技术平台与产业化趋势。",
+            "source": "ByDrug",
+            "date": "2026-06-17",
+        }],
+    }]
+
+    raw = report_pipeline.build_raw_from_search_log(log, report_date="2026-06-18")
+
+    assert len(raw["news"]) == 1
+    assert raw["news"][0]["title"] == "2026中国合成生物制造白皮书发布"
+    assert raw["news"][0]["source_round"] == "r1"
+    assert raw["news"][0]["source_query"] == "合成生物 白皮书 报告 发布"
+
+
+def test_normalize_search_result_date_does_not_invent_missing_dates():
+    assert report_pipeline.normalize_search_result_date("", report_date="2026-06-18") == "N/A"
+    assert report_pipeline.normalize_search_result_date("3天前", report_date="2026-06-18") == "2026-06-15"
+    assert report_pipeline.normalize_search_result_date("yesterday", report_date="2026-06-18") == "2026-06-17"
+
+
+def test_validate_search_coverage_warns_when_search_result_missing_from_raw():
+    log = _search_log()
+    log["rounds"][0]["queries"] = [{
+        "query": "合成生物 白皮书",
+        "results": [{
+            "title": "2026中国合成生物制造白皮书发布",
+            "url": "https://bydrug.pharmcube.com/news/detail/whitepaper-2026",
+            "snippet": "白皮书系统介绍中国合成生物制造产业。",
+            "source": "ByDrug",
+            "date": "2026-06-17",
+        }],
+    }]
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(log, raw)
+    strict_result = report_pipeline.validate_search_log(log, raw, strict_coverage=True)
+
+    assert result["is_valid"]
+    assert any("搜索覆盖率不足" in warning for warning in result["warnings"])
+    assert not strict_result["is_valid"]
+    assert any("搜索覆盖率不足" in error for error in strict_result["errors"])
+
+
+def test_build_approved_blocks_strict_search_coverage_gap(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    log = _search_log()
+    log["rounds"][0]["queries"] = [{
+        "query": "合成生物 白皮书",
+        "results": [{
+            "title": "2026中国合成生物制造白皮书发布",
+            "url": "https://bydrug.pharmcube.com/news/detail/whitepaper-2026",
+            "snippet": "白皮书系统介绍中国合成生物制造产业。",
+            "source": "ByDrug",
+            "date": "2026-06-17",
+        }],
+    }]
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    try:
+        report_pipeline.build_approved_from_raw(
+            raw,
+            "2026-06-18",
+            output_dir=tmp_path,
+            search_log=log,
+            strict_search_coverage=True,
+        )
+    except ValueError as exc:
+        assert "搜索覆盖率不足" in str(exc)
+    else:
+        raise AssertionError("strict search coverage should block missing raw candidates")
+
+
+def test_report_pipeline_cli_build_raw_from_search(tmp_path):
+    search_log = _search_log()
+    search_log["rounds"][0]["queries"] = [{
+        "query": "合成生物 白皮书 报告 发布",
+        "results": [{
+            "title": "2026中国合成生物制造白皮书发布",
+            "url": "https://bydrug.pharmcube.com/news/detail/whitepaper-2026",
+            "snippet": "该白皮书系统介绍了中国合成生物制造产业的发展阶段、核心技术平台与产业化趋势。",
+            "source": "ByDrug",
+            "date": "2026-06-17",
+        }],
+    }]
+    search_path = tmp_path / "search_log.json"
+    output = tmp_path / "raw.json"
+    search_path.write_text(json.dumps(search_log, ensure_ascii=False), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "report_pipeline.py"),
+            "--build-raw-from-search",
+            str(search_path),
+            "--date",
+            "2026-06-18",
+            "--output",
+            str(output),
+        ],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    raw = json.loads(output.read_text(encoding="utf-8"))
+    assert raw["news"][0]["title"] == "2026中国合成生物制造白皮书发布"
+
+
 def test_build_approved_blocks_invalid_search_log(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])

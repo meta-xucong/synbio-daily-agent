@@ -68,6 +68,13 @@ URL_HEALTH_MAX_BYTES = 250_000
 TITLE_MATCH_TIMEOUT_SECONDS = 10
 TITLE_MATCH_MAX_BYTES = 300_000
 TITLE_MATCH_MIN_SCORE = 0.30
+SEARCH_CANDIDATE_LIST_KEYS = ("results", "candidates", "items", "organic_results", "web_results")
+SEARCH_RESULT_TITLE_KEYS = ("title", "name", "headline")
+SEARCH_RESULT_URL_KEYS = ("url", "link", "href", "source_url")
+SEARCH_RESULT_SUMMARY_KEYS = ("summary", "snippet", "description", "content", "text", "abstract")
+SEARCH_RESULT_SOURCE_KEYS = ("source", "site", "publisher", "source_name", "domain")
+SEARCH_RESULT_DATE_KEYS = ("date", "published_at", "published_time", "published", "time", "datetime", "created_at")
+LOW_APPROVED_COUNT_WARNING = 2
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_KEYS = {
     "fbclid", "gclid", "mc_cid", "mc_eid", "igshid", "spm", "from", "ref",
@@ -261,6 +268,236 @@ def count_raw_items(raw_obj: Any) -> int:
     if isinstance(raw_obj, list):
         return len(raw_obj)
     raise ValueError("raw data must be a list or a category dict")
+
+
+def _first_nonempty(mapping: Dict[str, Any], keys: Tuple[str, ...]) -> Any:
+    for key in keys:
+        value = mapping.get(key)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _search_result_dicts(search_log: Any) -> List[Tuple[str, str, Dict[str, Any]]]:
+    """Return structured search result dicts with their source round/query."""
+    if not isinstance(search_log, dict):
+        return []
+    results: list[tuple[str, str, dict[str, Any]]] = []
+    for round_entry in search_log.get("rounds", []) or []:
+        if not isinstance(round_entry, dict):
+            continue
+        round_id = str(round_entry.get("round") or round_entry.get("id") or "").strip()
+        queries = round_entry.get("queries", []) or []
+        query_texts = [str(q) for q in queries if not isinstance(q, dict) and q]
+        if not query_texts:
+            query_texts = [str(q.get("query") or q.get("q") or "") for q in queries if isinstance(q, dict)]
+        default_query = next((q for q in query_texts if q), "")
+        for list_key in SEARCH_CANDIDATE_LIST_KEYS:
+            candidates = round_entry.get(list_key)
+            if not isinstance(candidates, list):
+                continue
+            for candidate in candidates:
+                if isinstance(candidate, dict):
+                    query = str(candidate.get("query") or candidate.get("search_query") or default_query)
+                    results.append((round_id, query, candidate))
+        for query_entry in queries:
+            if not isinstance(query_entry, dict):
+                continue
+            query = str(query_entry.get("query") or query_entry.get("q") or "")
+            for list_key in SEARCH_CANDIDATE_LIST_KEYS:
+                candidates = query_entry.get(list_key)
+                if not isinstance(candidates, list):
+                    continue
+                for candidate in candidates:
+                    if isinstance(candidate, dict):
+                        results.append((round_id, query, candidate))
+    return results
+
+
+def _search_candidate_urls(search_log: Any) -> set[str]:
+    """Collect candidate URLs from both legacy URL lists and structured search results."""
+    urls: set[str] = set()
+    if not isinstance(search_log, dict):
+        return urls
+    for round_entry in search_log.get("rounds", []) or []:
+        if not isinstance(round_entry, dict):
+            continue
+        for list_key in SEARCH_CANDIDATE_LIST_KEYS:
+            candidates = round_entry.get(list_key)
+            if isinstance(candidates, list):
+                for candidate in candidates:
+                    if isinstance(candidate, str) and candidate:
+                        urls.add(canonicalize_url(candidate))
+                    elif isinstance(candidate, dict):
+                        url = _first_nonempty(candidate, SEARCH_RESULT_URL_KEYS)
+                        if url:
+                            urls.add(canonicalize_url(str(url)))
+        for query_entry in round_entry.get("queries", []) or []:
+            if not isinstance(query_entry, dict):
+                continue
+            for list_key in SEARCH_CANDIDATE_LIST_KEYS:
+                candidates = query_entry.get(list_key)
+                if not isinstance(candidates, list):
+                    continue
+                for candidate in candidates:
+                    if isinstance(candidate, str) and candidate:
+                        urls.add(canonicalize_url(candidate))
+                    elif isinstance(candidate, dict):
+                        url = _first_nonempty(candidate, SEARCH_RESULT_URL_KEYS)
+                        if url:
+                            urls.add(canonicalize_url(str(url)))
+    return urls
+
+
+def _raw_candidate_urls(raw_obj: Any) -> set[str]:
+    urls: set[str] = set()
+    if isinstance(raw_obj, dict):
+        item_lists = [
+            raw_obj.get(item_type, [])
+            for item_type in sorted(VALID_ITEM_TYPES)
+            if isinstance(raw_obj.get(item_type, []), list)
+        ]
+    elif isinstance(raw_obj, list):
+        item_lists = [raw_obj]
+    else:
+        return urls
+    for items in item_lists:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            url = item.get("url")
+            if url:
+                urls.add(canonicalize_url(str(url)))
+    return urls
+
+
+def infer_item_type_from_search_result(result: Dict[str, Any], query: str = "") -> str:
+    """Infer the most likely raw category from search result text and query context."""
+    url = str(_first_nonempty(result, SEARCH_RESULT_URL_KEYS) or "")
+    text = " ".join(str(part or "") for part in (
+        _first_nonempty(result, SEARCH_RESULT_TITLE_KEYS),
+        _first_nonempty(result, SEARCH_RESULT_SUMMARY_KEYS),
+        _first_nonempty(result, SEARCH_RESULT_SOURCE_KEYS),
+        url,
+        query,
+    )).lower()
+    if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["funding"]):
+        return "funding"
+    if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["events"]):
+        return "events"
+    if any(keyword in text for keyword in ("白皮书", "行业报告", "产业报告", "blue paper", "white paper")):
+        return "news"
+    if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["research"]):
+        return "research"
+    has_policy_keyword = any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["policy"])
+    has_policy_authority = any(hint.lower() in text for hint in POLICY_AUTHORITY_HINTS)
+    netloc = urlsplit(url).netloc.lower()
+    is_gov_cn = netloc.endswith(".gov.cn") or ".gov.cn:" in netloc
+    if has_policy_keyword and (has_policy_authority or is_gov_cn):
+        return "policy"
+    return "news"
+
+
+def normalize_search_result_date(date_text: str, report_date: str | None = None) -> str:
+    """Normalize explicit or relative search-result dates without inventing missing dates."""
+    raw = str(date_text or "").strip()
+    if parse_date(raw):
+        return raw
+
+    base_date = parse_date(report_date or "") or now_local().replace(tzinfo=None)
+    text = raw.lower()
+    relative_patterns = [
+        (r"(\d+)\s*天前", "days"),
+        (r"(\d+)\s*日前", "days"),
+        (r"(\d+)\s*days?\s+ago", "days"),
+        (r"(\d+)\s*小时前", "hours"),
+        (r"(\d+)\s*hours?\s+ago", "hours"),
+    ]
+    for pattern, unit in relative_patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        amount = int(match.group(1))
+        delta = timedelta(days=amount) if unit == "days" else timedelta(hours=amount)
+        return (base_date - delta).strftime("%Y-%m-%d")
+    if any(marker in text for marker in ("今天", "今日", "today", "刚刚")):
+        return base_date.strftime("%Y-%m-%d")
+    if any(marker in text for marker in ("昨天", "yesterday")):
+        return (base_date - timedelta(days=1)).strftime("%Y-%m-%d")
+    return "N/A"
+
+
+def normalize_search_result_to_raw_item(
+    result: Dict[str, Any],
+    round_id: str,
+    query: str = "",
+    report_date: str | None = None,
+) -> Dict[str, Any] | None:
+    """Convert one structured search result into a raw candidate item."""
+    title = str(_first_nonempty(result, SEARCH_RESULT_TITLE_KEYS) or "").strip()
+    url = str(_first_nonempty(result, SEARCH_RESULT_URL_KEYS) or "").strip()
+    if not title or not url:
+        return None
+    summary = str(_first_nonempty(result, SEARCH_RESULT_SUMMARY_KEYS) or title).strip()
+    source = str(_first_nonempty(result, SEARCH_RESULT_SOURCE_KEYS) or urlsplit(url).netloc or "搜索结果").strip()
+    date_value = str(_first_nonempty(result, SEARCH_RESULT_DATE_KEYS) or "").strip()
+    date_value = normalize_search_result_date(date_value or summary or title, report_date=report_date)
+    item_type = str(result.get("type") or result.get("category") or "").strip()
+    if item_type not in VALID_ITEM_TYPES:
+        item_type = infer_item_type_from_search_result(result, query=query)
+    item = {
+        "title": title,
+        "source": source,
+        "date": date_value,
+        "summary": summary,
+        "url": url,
+        "type": item_type,
+        "source_round": round_id,
+    }
+    if query:
+        item["source_query"] = query
+    return item
+
+
+def build_raw_from_search_log(search_log: Any, report_date: str | None = None) -> Dict[str, Any]:
+    """Build a full raw category dict from structured search_log results."""
+    raw = {item_type: [] for item_type in sorted(VALID_ITEM_TYPES)}
+    seen_urls: set[str] = set()
+    skipped = 0
+    for round_id, query, result in _search_result_dicts(search_log):
+        item = normalize_search_result_to_raw_item(result, round_id, query=query, report_date=report_date)
+        if not item:
+            skipped += 1
+            continue
+        canonical_url = canonicalize_url(str(item.get("url", "")))
+        if canonical_url in seen_urls:
+            continue
+        seen_urls.add(canonical_url)
+        raw[item["type"]].append(item)
+    raw["_meta"] = {
+        "generated_by": "report_pipeline.build_raw_from_search_log",
+        "report_date": report_date,
+        "structured_results": len(_search_result_dicts(search_log)),
+        "raw_items": count_raw_items(raw),
+        "skipped_results": skipped,
+    }
+    return raw
+
+
+def validate_search_coverage(search_log: Any, raw_obj: Any) -> Dict[str, Any]:
+    """Compare search candidates with raw items so search results cannot silently disappear."""
+    search_urls = _search_candidate_urls(search_log)
+    raw_urls = _raw_candidate_urls(raw_obj)
+    missing_urls = sorted(search_urls - raw_urls)
+    return {
+        "is_valid": len(missing_urls) == 0,
+        "errors": [f"搜索结果有{len(missing_urls)}条URL未进入raw数据"] if missing_urls else [],
+        "warnings": [],
+        "search_candidate_count": len(search_urls),
+        "raw_url_count": len(raw_urls),
+        "missing_urls": missing_urls,
+        "coverage_ratio": 1.0 if not search_urls else round(len(search_urls & raw_urls) / len(search_urls), 3),
+    }
 
 
 def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, Dict[str, Any]]:
@@ -1912,7 +2149,11 @@ def save_rejection_log(rejected: List[Dict[str, Any]], report_date: str):
         json.dump(rejected, f, ensure_ascii=False, indent=2)
 
 
-def validate_search_log(search_log: Any, raw_obj: Any | None = None) -> Dict[str, Any]:
+def validate_search_log(
+    search_log: Any,
+    raw_obj: Any | None = None,
+    strict_coverage: bool = False,
+) -> Dict[str, Any]:
     """Validate evidence that all five search rounds were executed."""
     errors: list[str] = []
     warnings: list[str] = []
@@ -1959,6 +2200,7 @@ def validate_search_log(search_log: Any, raw_obj: Any | None = None) -> Dict[str
     if missing_rounds:
         errors.append(f"search_log缺少必要搜索轮次: {', '.join(missing_rounds)}")
 
+    coverage_check = None
     if raw_obj is not None:
         raw_rounds = set()
         missing_source_round = 0
@@ -1988,6 +2230,17 @@ def validate_search_log(search_log: Any, raw_obj: Any | None = None) -> Dict[str
         unused_rounds = sorted(rounds_seen - raw_rounds)
         if unused_rounds:
             warnings.append(f"以下搜索轮次执行过但未产生raw候选: {', '.join(unused_rounds)}")
+        coverage_check = validate_search_coverage(search_log, raw_obj)
+        if coverage_check["search_candidate_count"] and not coverage_check["is_valid"]:
+            message = (
+                f"搜索覆盖率不足: search_log候选{coverage_check['search_candidate_count']}条, "
+                f"raw收录{coverage_check['raw_url_count']}条, "
+                f"缺失{len(coverage_check['missing_urls'])}条"
+            )
+            if strict_coverage:
+                errors.append(message)
+            else:
+                warnings.append(message)
 
     return {
         "is_valid": len(errors) == 0,
@@ -1995,6 +2248,7 @@ def validate_search_log(search_log: Any, raw_obj: Any | None = None) -> Dict[str
         "warnings": warnings,
         "rounds_seen": sorted(rounds_seen),
         "total_queries": total_queries,
+        "coverage_check": coverage_check,
     }
 
 
@@ -2007,6 +2261,7 @@ def build_approved_from_raw(
     url_check_func=check_url_health,
     title_check_func=check_url_title_match,
     search_log: Any | None = None,
+    strict_search_coverage: bool = False,
 ) -> Dict[str, Any]:
     """Process every category from a full raw dict and persist approved/rejected outputs."""
     if not isinstance(raw_obj, dict):
@@ -2014,7 +2269,7 @@ def build_approved_from_raw(
 
     search_log_check = None
     if search_log is not None:
-        search_log_check = validate_search_log(search_log, raw_obj)
+        search_log_check = validate_search_log(search_log, raw_obj, strict_coverage=strict_search_coverage)
         if not search_log_check["is_valid"]:
             raise ValueError("search_log校验失败: " + "; ".join(search_log_check["errors"]))
 
@@ -2372,10 +2627,12 @@ def main():
     parser.add_argument("--email", type=str, help="完整验证使用的邮件HTML路径")
     parser.add_argument("--approved", type=str, help="完整验证使用的approved JSON路径")
     parser.add_argument("--process", type=str, help="处理原始数据JSON文件")
+    parser.add_argument("--build-raw-from-search", type=str, help="从结构化search_log自动生成raw JSON")
     parser.add_argument("--build-approved", type=str, help="从完整raw dict一次性生成processed/approved/rejected")
     parser.add_argument("--check-url-health", action="store_true", help="build-approved时剔除打不开或疑似删除的主链接")
     parser.add_argument("--check-title-match", action="store_true", help="build-approved时验证页面标题与候选标题是否明显一致")
     parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验五轮搜索证据")
+    parser.add_argument("--strict-search-coverage", action="store_true", help="build-approved时要求search_log候选URL全部进入raw")
     parser.add_argument("--render-md", type=str, help="从approved JSON生成确定性Markdown报告")
     parser.add_argument("--raw", type=str, help="render-md使用的raw JSON路径，用于准确显示原始数据总数")
     parser.add_argument("--date", type=str, help="--build-approved 输出使用的日期 YYYY-MM-DD")
@@ -2442,6 +2699,24 @@ def main():
         print(f"Markdown报告已生成: {output_path}")
         sys.exit(0)
 
+    elif args.build_raw_from_search:
+        if not args.date:
+            parser.error("--build-raw-from-search requires --date")
+        if not args.output:
+            parser.error("--build-raw-from-search requires --output")
+        with open(args.build_raw_from_search, 'r', encoding='utf-8') as f:
+            search_log = json.load(f)
+        raw_obj = build_raw_from_search_log(search_log, report_date=args.date)
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(raw_obj, ensure_ascii=False, indent=2), encoding="utf-8")
+        meta = raw_obj.get("_meta", {})
+        print(
+            f"raw已生成: {output_path} "
+            f"(结构化搜索结果{meta.get('structured_results', 0)}条, raw{meta.get('raw_items', 0)}条, 跳过{meta.get('skipped_results', 0)}条)"
+        )
+        sys.exit(0)
+
     elif args.build_approved:
         if not args.date:
             parser.error("--build-approved requires --date")
@@ -2459,6 +2734,7 @@ def main():
             check_url_health_enabled=args.check_url_health,
             check_title_match_enabled=args.check_title_match,
             search_log=search_log,
+            strict_search_coverage=args.strict_search_coverage,
         )
         print(f"approved已生成: {result['approved_path']} ({len(result['approved'])}条)")
         print(f"rejected已生成: {result['rejected_path']} ({len(result['rejected'])}条)")
@@ -2468,6 +2744,13 @@ def main():
                 f"{len(result['search_log_check']['rounds_seen'])}轮, "
                 f"{result['search_log_check']['total_queries']}个query"
             )
+            coverage_check = result["search_log_check"].get("coverage_check")
+            if coverage_check:
+                print(
+                    "搜索覆盖率: "
+                    f"{coverage_check['raw_url_count']}/{coverage_check['search_candidate_count']} "
+                    f"({coverage_check['coverage_ratio']:.0%})"
+                )
         if result.get("title_match_warnings"):
             print(f"标题匹配警告: {len(result['title_match_warnings'])}个")
             for warning in result["title_match_warnings"][:10]:
