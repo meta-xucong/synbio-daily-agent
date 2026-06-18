@@ -16,8 +16,8 @@
 ```
 Step 1: 读取配置（数据源 + 去重规则 + 脚本指南）
 Step 2: 多维度搜索（五轮搜索法）
-Step 3: 保存原始数据和搜索日志 → data/raw_YYYY-MM-DD.json + data/search_log_YYYY-MM-DD.json
-Step 4: 调用 report_pipeline.py 处理（去重+过滤+排序+搜索日志审计）
+Step 3: 保存结构化搜索日志并自动生成raw → data/search_log_YYYY-MM-DD.json + data/raw_YYYY-MM-DD.json
+Step 4: 调用 report_pipeline.py 处理（搜索覆盖率审计+去重+过滤+排序）
 Step 5: 基于 approved 列表和 raw 计数生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 生成H5 HTML报告
@@ -33,8 +33,8 @@ Step 9: 邮件推送（send gate通过后才发送）
 
 ### 检查点A：原始数据已保存
 - [ ] 已创建 `data/raw_YYYY-MM-DD.json`
-- [ ] 已创建 `data/search_log_YYYY-MM-DD.json`，覆盖 r1-r5 五轮搜索 query
-- [ ] JSON中包含所有搜索到的信息（news/research/funding/policy/events）
+- [ ] 已创建 `data/search_log_YYYY-MM-DD.json`，覆盖 r1-r5 五轮搜索 query，并保留结构化搜索结果（title/url/snippet/source/date）
+- [ ] 已用 `--build-raw-from-search` 自动生成 raw，JSON中包含所有搜索到的信息（news/research/funding/policy/events）
 - [ ] 每条信息有title/source/date/summary/url/type/source_round字段
 - [ ] url字段是具体文章链接，不是网站首页
 
@@ -42,6 +42,7 @@ Step 9: 邮件推送（send gate通过后才发送）
 
 ### 检查点B：脚本已执行
 - [ ] 已调用 `report_pipeline.py` 处理每个类别
+- [ ] 已使用 `--strict-search-coverage`，确认 search_log 候选 URL 没有在 raw 阶段静默丢失
 - [ ] 已查看处理结果（approved/rejected数量）
 - [ ] 已确认 rejected 原因（去重/时效性/政策库）
 - [ ] 已保存 `data/approved_YYYY-MM-DD.json`

@@ -9,11 +9,11 @@ import json
 try:
     from .settings import DATA_DIR, date_str as current_date_str
     from .console_utils import ensure_utf8_console
-    from .report_pipeline import validate_search_log
+    from .report_pipeline import LOW_APPROVED_COUNT_WARNING, validate_search_log
 except ImportError:
     from settings import DATA_DIR, date_str as current_date_str
     from console_utils import ensure_utf8_console
-    from report_pipeline import validate_search_log
+    from report_pipeline import LOW_APPROVED_COUNT_WARNING, validate_search_log
 
 ensure_utf8_console()
 
@@ -54,7 +54,7 @@ def pre_check(date_str: str) -> dict:
         try:
             with open(search_log_path, 'r', encoding='utf-8') as f:
                 search_log = json.load(f)
-            search_log_result = validate_search_log(search_log, raw_data)
+            search_log_result = validate_search_log(search_log, raw_data, strict_coverage=True)
             if not search_log_result["is_valid"]:
                 errors.extend([f"❌ 搜索日志不合规: {e}" for e in search_log_result["errors"]])
             else:
@@ -76,6 +76,10 @@ def pre_check(date_str: str) -> dict:
             with open(approved_path, 'r', encoding='utf-8') as f:
                 approved = json.load(f)
             print(f"✅ approved数据已保存: {len(approved)} 条信息")
+            if len(approved) < LOW_APPROVED_COUNT_WARNING:
+                warnings.append(
+                    f"⚠️ approved数量偏低: {len(approved)}条。请复查 search_log 原始搜索结果，确认没有漏收重要信息"
+                )
         except Exception as e:
             errors.append(f"❌ approved数据格式错误: {approved_path} ({e})")
     

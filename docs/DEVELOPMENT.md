@@ -45,13 +45,14 @@ Set `url_health_mode` to `soft` only for restricted network environments where S
 Use this chain for local end-to-end execution from real search data:
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --check-title-match --search-log data\search_log_YYYY-MM-DD.json
+python scripts\report_pipeline.py --build-raw-from-search data\search_log_YYYY-MM-DD.json --date YYYY-MM-DD --output data\raw_YYYY-MM-DD.json
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --check-title-match --strict-search-coverage --search-log data\search_log_YYYY-MM-DD.json
 python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --raw data\raw_YYYY-MM-DD.json --output reports\YYYY-MM-DD.md
 python scripts\generate_from_template.py --date YYYY-MM-DD --approved data\approved_YYYY-MM-DD.json --markdown reports\YYYY-MM-DD.md --html-output reports\synbio_daily_YYYY-MM-DD.html --email-output reports\email_YYYY-MM-DD.html
 python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\synbio_daily_YYYY-MM-DD.html reports\email_YYYY-MM-DD.html --dry-run
 ```
 
-`--build-approved --check-url-health --check-title-match` is intentionally slower because it touches outbound links before report generation. It prevents stale/deleted articles from entering approved data and rejects reachable pages whose title signals clearly do not match the collected item title. Title-match network failures are warnings rather than blockers; see `docs/TITLE_URL_MATCH_GATE.md`.
+`--build-raw-from-search` converts structured search results into raw candidates before any filtering. `--build-approved --check-url-health --check-title-match --strict-search-coverage` is intentionally slower because it audits search coverage and touches outbound links before report generation. It prevents stale/deleted articles from entering approved data and rejects reachable pages whose title signals clearly do not match the collected item title. Title-match network failures are warnings rather than blockers; see `docs/TITLE_URL_MATCH_GATE.md`.
 
 Production runs should also pass `--search-log data\search_log_YYYY-MM-DD.json` to `--build-approved`. The send gate requires the same search log file and verifies that it covers rounds `r1` through `r5`; every raw candidate must include a `source_round` that matches one of those logged rounds.
 

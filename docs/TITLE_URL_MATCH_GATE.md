@@ -5,7 +5,7 @@
 生产生成 approved 时建议显式开启：
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --check-title-match --search-log data\search_log_YYYY-MM-DD.json
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --check-url-health --check-title-match --strict-search-coverage --search-log data\search_log_YYYY-MM-DD.json
 ```
 
 ## 检查内容

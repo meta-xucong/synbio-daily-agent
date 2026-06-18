@@ -15,10 +15,11 @@ $env:SYNBIO_DAILY_TZ = "Asia/Shanghai"
 
 ## 处理原始数据
 
-生产运行应使用一次性入口，从完整 raw dict 生成 processed/approved/rejected，并在写出 approved 前剔除打不开或疑似删除的链接：
+生产运行应先从结构化搜索日志自动生成 raw，避免人工挑选遗漏搜索结果；然后从完整 raw dict 生成 processed/approved/rejected，并在写出 approved 前剔除打不开或疑似删除的链接：
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health --check-title-match --search-log data\search_log_2026-06-11.json
+python scripts\report_pipeline.py --build-raw-from-search data\search_log_2026-06-11.json --date 2026-06-11 --output data\raw_2026-06-11.json
+python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --check-url-health --check-title-match --strict-search-coverage --search-log data\search_log_2026-06-11.json
 ```
 
 该命令会写出：
@@ -31,7 +32,7 @@ python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --da
 - `data/approved_YYYY-MM-DD.json`
 - `data/rejected_YYYY-MM-DD.json`
 
-生产数据还必须包含 `data/search_log_YYYY-MM-DD.json`，记录 `r1` 到 `r5` 五轮检索的 query 和候选证据。raw 中每条候选必须带 `source_round`，否则 `--search-log` 和发送前 `pre_check` 都会阻断。
+生产数据还必须包含 `data/search_log_YYYY-MM-DD.json`，记录 `r1` 到 `r5` 五轮检索的 query 和候选证据。建议 search_log 中保留结构化搜索结果（`title/url/snippet/source/date`），并用 `--build-raw-from-search` 自动写入 raw。raw 中每条候选必须带 `source_round`，否则 `--search-log` 和发送前 `pre_check` 都会阻断。
 
 `--process` 仍支持完整 raw dict 或单类别 list，但主要用于调试单个类别：
 
@@ -67,6 +68,7 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 - `value_score` 为 0-10，`raw_score` 保留原始分
 - approved schema 必须包含 `title/source/date/summary/url/type/raw_score/value_score`，日期、类别、URL和分数范围都会在发送前再次校验
 - `--check-title-match` 会读取页面 `<title>` / `og:title` / `h1`，剔除标题与 URL 页面明显不符的信息；网络或解析失败仅记录 warning，不阻断
+- `--strict-search-coverage` 会要求 search_log 中的候选 URL 全部进入 raw；如果需要人工丢弃某条结果，应先让它进入 raw，再由 rejected 记录拒绝原因
 
 ## 生成 Markdown 报告
 
