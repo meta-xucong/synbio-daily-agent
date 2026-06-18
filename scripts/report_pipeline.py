@@ -2256,8 +2256,8 @@ def build_approved_from_raw(
     raw_obj: Any,
     report_date: str,
     output_dir: Path | None = None,
-    check_url_health_enabled: bool = False,
-    check_title_match_enabled: bool = False,
+    check_url_health_enabled: bool = True,
+    check_title_match_enabled: bool = True,
     url_check_func=check_url_health,
     title_check_func=check_url_title_match,
     search_log: Any | None = None,
@@ -2629,8 +2629,10 @@ def main():
     parser.add_argument("--process", type=str, help="处理原始数据JSON文件")
     parser.add_argument("--build-raw-from-search", type=str, help="从结构化search_log自动生成raw JSON")
     parser.add_argument("--build-approved", type=str, help="从完整raw dict一次性生成processed/approved/rejected")
-    parser.add_argument("--check-url-health", action="store_true", help="build-approved时剔除打不开或疑似删除的主链接")
-    parser.add_argument("--check-title-match", action="store_true", help="build-approved时验证页面标题与候选标题是否明显一致")
+    parser.add_argument("--check-url-health", action="store_true", help="兼容旧命令；build-approved默认已开启链接健康检查")
+    parser.add_argument("--skip-url-health", action="store_true", help="仅离线测试/受限网络临时使用：跳过build-approved链接健康检查")
+    parser.add_argument("--check-title-match", action="store_true", help="兼容旧命令；build-approved默认已开启标题-URL匹配")
+    parser.add_argument("--skip-title-match", action="store_true", help="仅离线测试/受限网络临时使用：跳过build-approved标题-URL匹配")
     parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验五轮搜索证据")
     parser.add_argument("--strict-search-coverage", action="store_true", help="build-approved时要求search_log候选URL全部进入raw")
     parser.add_argument("--render-md", type=str, help="从approved JSON生成确定性Markdown报告")
@@ -2731,8 +2733,8 @@ def main():
             raw_obj,
             args.date,
             output_dir=output_dir,
-            check_url_health_enabled=args.check_url_health,
-            check_title_match_enabled=args.check_title_match,
+            check_url_health_enabled=not args.skip_url_health,
+            check_title_match_enabled=not args.skip_title_match,
             search_log=search_log,
             strict_search_coverage=args.strict_search_coverage,
         )
