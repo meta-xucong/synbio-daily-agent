@@ -185,6 +185,8 @@ def test_build_approved_blocks_strict_search_coverage_gap(tmp_path, monkeypatch)
             output_dir=tmp_path,
             search_log=log,
             strict_search_coverage=True,
+            check_url_health_enabled=False,
+            check_title_match_enabled=False,
         )
     except ValueError as exc:
         assert "搜索覆盖率不足" in str(exc)
@@ -242,7 +244,14 @@ def test_build_approved_blocks_invalid_search_log(tmp_path, monkeypatch):
     }
 
     try:
-        report_pipeline.build_approved_from_raw(raw, "2026-06-10", output_dir=tmp_path, search_log=_search_log())
+        report_pipeline.build_approved_from_raw(
+            raw,
+            "2026-06-10",
+            output_dir=tmp_path,
+            search_log=_search_log(),
+            check_url_health_enabled=False,
+            check_title_match_enabled=False,
+        )
     except ValueError as exc:
         assert "search_log校验失败" in str(exc)
         assert "未记录的source_round" in str(exc)
@@ -630,6 +639,8 @@ def test_report_pipeline_cli_build_approved_generates_outputs(tmp_path):
             "2026-06-10",
             "--output",
             str(tmp_path),
+            "--skip-url-health",
+            "--skip-title-match",
         ],
         cwd=ROOT,
         text=True,
@@ -669,30 +680,75 @@ def test_build_approved_drops_conflicting_same_url_titles(tmp_path, monkeypatch)
         "events": [],
     }
 
-    result = report_pipeline.build_approved_from_raw(raw, "2026-06-10", output_dir=tmp_path)
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+    )
 
     assert len(result["approved"]) == 1
     assert any("[approved冲突]" in item["reason"] for item in result["rejected"])
     assert result["approved_schema"]["is_valid"]
 
 
-def test_build_approved_does_not_check_url_health_by_default(tmp_path, monkeypatch):
+def test_build_approved_checks_url_health_by_default(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
     raw = {
-        "news": [_item(title="Healthy by default", url="https://example.com/news/default")],
+        "news": [
+            _item(title="Healthy by default", url="https://example.com/news/default"),
+            _item(title="Dead by default", url="https://example.com/news/dead"),
+        ],
         "research": [],
         "funding": [],
         "policy": [],
         "events": [],
     }
 
-    def fail_if_called(url):
-        raise AssertionError("url health should be opt-in for build-approved")
+    def fake_check(url):
+        if "dead" in url:
+            return {"ok": False, "reason": "HTTP状态异常: 404"}
+        return {"ok": True, "status": 200}
 
-    result = report_pipeline.build_approved_from_raw(raw, "2026-06-10", output_dir=tmp_path, url_check_func=fail_if_called)
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        url_check_func=fake_check,
+        title_check_func=lambda item: {"ok": True},
+    )
 
     assert [item["title"] for item in result["approved"]] == ["Healthy by default"]
+    assert any("[链接健康]" in item["reason"] for item in result["rejected"])
+
+
+def test_build_approved_can_skip_network_gates_explicitly(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    raw = {
+        "news": [_item(title="Offline test item", url="https://example.com/news/offline")],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def fail_if_called(_):
+        raise AssertionError("network gates should be explicitly skippable")
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+        url_check_func=fail_if_called,
+        title_check_func=fail_if_called,
+    )
+
+    assert [item["title"] for item in result["approved"]] == ["Offline test item"]
 
 
 def test_build_approved_can_drop_unhealthy_primary_urls(tmp_path, monkeypatch):
@@ -719,6 +775,7 @@ def test_build_approved_can_drop_unhealthy_primary_urls(tmp_path, monkeypatch):
         "2026-06-10",
         output_dir=tmp_path,
         check_url_health_enabled=True,
+        check_title_match_enabled=False,
         url_check_func=fake_check,
     )
 
@@ -1008,7 +1065,7 @@ def test_validate_url_health_soft_mode_returns_ssl_warnings():
     assert result["warnings"]
 
 
-def test_build_approved_title_match_is_opt_in(tmp_path, monkeypatch):
+def test_build_approved_title_match_can_be_explicitly_skipped(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
     raw = {
@@ -1026,12 +1083,15 @@ def test_build_approved_title_match_is_opt_in(tmp_path, monkeypatch):
         raw,
         "2026-06-10",
         output_dir=tmp_path / "without",
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
         title_check_func=reject_if_called,
     )
     with_gate = report_pipeline.build_approved_from_raw(
         raw,
         "2026-06-10",
         output_dir=tmp_path / "with",
+        check_url_health_enabled=False,
         check_title_match_enabled=True,
         title_check_func=reject_if_called,
     )
