@@ -387,14 +387,14 @@ def infer_item_type_from_search_result(result: Dict[str, Any], query: str = "") 
         return "events"
     if any(keyword in text for keyword in ("白皮书", "行业报告", "产业报告", "blue paper", "white paper")):
         return "news"
-    if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["research"]):
-        return "research"
     has_policy_keyword = any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["policy"])
     has_policy_authority = any(hint.lower() in text for hint in POLICY_AUTHORITY_HINTS)
     netloc = urlsplit(url).netloc.lower()
     is_gov_cn = netloc.endswith(".gov.cn") or ".gov.cn:" in netloc
     if has_policy_keyword and (has_policy_authority or is_gov_cn):
         return "policy"
+    if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["research"]):
+        return "research"
     return "news"
 
 

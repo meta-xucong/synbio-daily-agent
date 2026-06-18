@@ -133,6 +133,37 @@ def test_build_raw_from_search_log_keeps_whitepaper_result():
     assert raw["news"][0]["source_query"] == "合成生物 白皮书 报告 发布"
 
 
+def test_build_raw_from_search_log_classifies_authority_research_program_as_policy():
+    log = _search_log()
+    log["rounds"][0]["queries"] = [{
+        "query": "合成生物 政策 申报 指南",
+        "results": [
+            {
+                "title": "国家重点研发计划合成生物学重点专项申报指南征求意见",
+                "url": "https://www.most.gov.cn/tztg/202606/t1.html",
+                "snippet": "科技部发布项目申报指南，涉及合成生物学重点专项。",
+                "source": "科技部",
+                "date": "2026-06-17",
+            },
+            {
+                "title": "深圳市合成生物研究设施开放共享若干措施发布",
+                "url": "https://fgw.sz.gov.cn/zwgk/qt/tzgg/content/post_1.html",
+                "snippet": "深圳市发改委发布合成生物研究设施开放共享政策措施。",
+                "source": "深圳市发改委",
+                "date": "2026-06-17",
+            },
+        ],
+    }]
+
+    raw = report_pipeline.build_raw_from_search_log(log, report_date="2026-06-18")
+
+    assert [item["title"] for item in raw["policy"]] == [
+        "国家重点研发计划合成生物学重点专项申报指南征求意见",
+        "深圳市合成生物研究设施开放共享若干措施发布",
+    ]
+    assert not raw["research"]
+
+
 def test_normalize_search_result_date_does_not_invent_missing_dates():
     assert report_pipeline.normalize_search_result_date("", report_date="2026-06-18") == "N/A"
     assert report_pipeline.normalize_search_result_date("3天前", report_date="2026-06-18") == "2026-06-15"
