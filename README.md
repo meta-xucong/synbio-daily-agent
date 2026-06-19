@@ -58,7 +58,7 @@ synbio-daily-agent/
 Step 1: 读取配置（anti_deviation_rules.md + 数据源 + 去重规则）
 Step 2: 多维度搜索（五轮搜索法）
 Step 3: 保存结构化搜索日志，并自动生成 raw → data/search_log_YYYY-MM-DD.json + data/raw_YYYY-MM-DD.json
-Step 4: 调用 report_pipeline.py --build-approved --strict-search-coverage --search-log 处理（覆盖率审计+去重+过滤+死链剔除+标题匹配+排序；链接健康和标题匹配默认开启）
+Step 4: 调用 report_pipeline.py --build-approved --search-log 处理（必搜query门禁+覆盖率审计+去重+过滤+死链剔除+标题匹配+排序；链接健康、标题匹配和搜索覆盖默认严格开启）
 Step 5: 调用 report_pipeline.py --render-md --raw 基于 approved 生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 调用 generate_from_template.py 生成定稿H5 HTML报告
@@ -66,7 +66,7 @@ Step 8: 调用 generate_from_template.py 生成定稿邮件正文
 Step 9: 邮件推送（send gate通过后才发送）
 ```
 
-**任何情况下，Step 3→Step 4→Step 5→Step 6 必须连续执行，不得跳过。发送 gate 会阻断缺少搜索日志或 raw 候选缺少 `source_round` 的报告。**
+**任何情况下，Step 3→Step 4→Step 5→Step 6 必须连续执行，不得跳过。发送 gate 会阻断缺少搜索日志、缺少 `config/search_queries.json` 必搜查询记录，或 raw 候选缺少 `source_round` 的报告。**
 
 ---
 
@@ -82,7 +82,7 @@ Step 9: 邮件推送（send gate通过后才发送）
 | 第四轮 | 生成前复查 | `合成生物 今日 最新 白皮书 报告 发布 签约` |
 | 第五轮 | 政府/会议强制搜索 | `site:gov.cn 合成生物 政策` |
 
-每个 query 建议 limit ≥ 15。搜索日志应保留结构化结果（title/url/snippet/source/date），不要只保存人工挑选后的 URL。
+`config/search_queries.json` 是每日必搜 query 的唯一权威清单。每个 query 建议 limit ≥ 15；即使无结果也必须记录 `executed: true, results_count: 0`。搜索日志应保留结构化结果（title/url/snippet/source/date），不要只保存人工挑选后的 URL。
 
 ### 2. 脚本处理（report_pipeline.py）
 
@@ -93,11 +93,12 @@ Step 9: 邮件推送（send gate通过后才发送）
 
 ```powershell
 python scripts\report_pipeline.py --build-raw-from-search data\search_log_YYYY-MM-DD.json --date YYYY-MM-DD --output data\raw_YYYY-MM-DD.json
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --strict-search-coverage --search-log data\search_log_YYYY-MM-DD.json
+python scripts\audit_search_log.py data\search_log_YYYY-MM-DD.json --raw data\raw_YYYY-MM-DD.json
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --search-log data\search_log_YYYY-MM-DD.json
 python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --raw data\raw_YYYY-MM-DD.json --output reports\YYYY-MM-DD.md
 ```
 
-搜索日志必须记录五轮检索证据，raw 中每条候选必须带 `source_round`，例如：
+搜索日志必须记录 `config/search_queries.json` 中 r1-r5 的全部 `required_queries`，raw 中每条候选必须带 `source_round`，例如：
 
 ```json
 {
@@ -115,18 +116,19 @@ python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --da
 处理流程:
 1. **URL过滤**: 拒绝站点首页、分类/聚合页、黑名单域名和不安全URL
 2. **时效性过滤**: 新闻7天、研究14天、融资7天、政策30天、活动90天；日期无法解析直接拒绝
-3. **搜索覆盖率审计**: `--strict-search-coverage` 会要求 search_log 中的候选 URL 都进入 raw，防止搜索结果被人工挑选阶段静默丢弃
-4. **去重检查**:
+3. **必搜 query 门禁**: build-approved 和 send gate 默认要求 search_log 覆盖 `config/search_queries.json` 的所有 required query；缺少 `site:` 定向查询会阻断
+4. **搜索覆盖率审计**: 默认要求 search_log 中的候选 URL 都进入 raw，防止搜索结果被人工挑选阶段静默丢弃；仅排障可用 `--relaxed-search-coverage`
+5. **去重检查**:
    - 指纹匹配（MD5哈希，基于 company+type+完整title）
    - 公司重复（同一公司+同一类型视为重复）
    - 标题相似度（SequenceMatcher ≥80% 视为重复）
    - 最近30天历史报告 + `data/history_index.json` 持久化索引
    - 主链接和 `urls` 备用链接都会参与跨天去重
    - 当前批次内部重复与同URL不同标题冲突会被拒绝
-5. **链接健康检查**: build-approved 默认会剔除 4xx/5xx、超时、证书失败以及“文章已删除/账号已注销/页面不存在”等软失效页面；仅离线测试可用 `--skip-url-health` 临时关闭
-6. **标题匹配检查**: build-approved 默认会读取页面标题信号，剔除 URL 可访问但标题明显张冠李戴的信息；网络错误只记录 warning，仅离线测试可用 `--skip-title-match` 临时关闭
-7. **价值评分**: 保留 `raw_score`，`value_score` 归一化为0-10
-8. **approved schema**: 发送前要求 `title/source/date/summary/url/type/raw_score/value_score`，并检查类别一致性、日期、URL和分数范围
+6. **链接健康检查**: build-approved 默认会剔除 4xx/5xx、超时、证书失败以及“文章已删除/账号已注销/页面不存在”等软失效页面；仅离线测试可用 `--skip-url-health` 临时关闭
+7. **标题匹配检查**: build-approved 默认会读取页面标题信号，剔除 URL 可访问但标题明显张冠李戴的信息；网络错误只记录 warning，仅离线测试可用 `--skip-title-match` 临时关闭
+8. **价值评分**: 保留 `raw_score`，`value_score` 归一化为0-10
+9. **approved schema**: 发送前要求 `title/source/date/summary/url/type/raw_score/value_score`，并检查类别一致性、日期、URL和分数范围
 
 ### 3. 报告格式验证
 

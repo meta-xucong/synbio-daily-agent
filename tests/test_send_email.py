@@ -54,6 +54,16 @@ def _write_runtime_tree(tmp_path: Path, report_name: str = "valid_report.md"):
         ],
     }
     (tmp_path / "data" / "search_log_2026-06-10.json").write_text(json.dumps(search_log, ensure_ascii=False), encoding="utf-8")
+    query_config = {
+        "rounds": [
+            {"round_id": "r1", "required_queries": ["synthetic biology funding 2026"]},
+            {"round_id": "r2", "required_queries": ["synthetic biology research 2026"]},
+            {"round_id": "r3", "required_queries": ["synthetic biology policy 2026"]},
+            {"round_id": "r4", "required_queries": ["synthetic biology events 2026"]},
+            {"round_id": "r5", "required_queries": ["synthetic biology China 2026"]},
+        ]
+    }
+    (tmp_path / "config" / "search_queries.json").write_text(json.dumps(query_config, ensure_ascii=False), encoding="utf-8")
     md = tmp_path / "reports" / "2026-06-10.md"
     md.write_text((ROOT / "tests" / "fixtures" / report_name).read_text(encoding="utf-8"), encoding="utf-8")
     html = tmp_path / "reports" / "2026-06-10.html"

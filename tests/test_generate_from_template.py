@@ -35,6 +35,7 @@ def _approved(**overrides):
 
 
 def _write_inputs(tmp_path, items=None):
+    (tmp_path / "config").mkdir(exist_ok=True)
     (tmp_path / "data").mkdir()
     (tmp_path / "reports").mkdir()
     approved = items or [
@@ -48,6 +49,16 @@ def _write_inputs(tmp_path, items=None):
     approved_path.write_text(json.dumps(approved, ensure_ascii=False), encoding="utf-8")
     md_path = tmp_path / "reports" / "2026-06-10.md"
     md_path.write_text((ROOT / "tests" / "fixtures" / "valid_report.md").read_text(encoding="utf-8"), encoding="utf-8")
+    query_config = {
+        "rounds": [
+            {"round_id": "r1", "required_queries": ["synthetic biology funding 2026"]},
+            {"round_id": "r2", "required_queries": ["synthetic biology research 2026"]},
+            {"round_id": "r3", "required_queries": ["synthetic biology policy 2026"]},
+            {"round_id": "r4", "required_queries": ["synthetic biology events 2026"]},
+            {"round_id": "r5", "required_queries": ["synthetic biology China 2026"]},
+        ]
+    }
+    (tmp_path / "config" / "search_queries.json").write_text(json.dumps(query_config, ensure_ascii=False), encoding="utf-8")
     return approved, approved_path, md_path
 
 
@@ -177,6 +188,4 @@ def test_send_email_dry_run_passes_generated_template_output(tmp_path, monkeypat
             "total_checked": len(urls),
         },
     )
-    (tmp_path / "config").mkdir()
-
     assert send_email.send_daily_report("2026-06-10", md_path, html_path, email_path, dry_run=True)

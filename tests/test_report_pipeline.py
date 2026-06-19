@@ -112,6 +112,115 @@ def test_validate_search_log_allows_empty_raw_when_rounds_have_queries():
     assert "raw数据缺少source_round" not in ";".join(result["errors"])
 
 
+def test_validate_search_log_blocks_missing_required_queries(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r5", "required_queries": ["site:kw.beijing.gov.cn 合成生物"]}]
+    })
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(_search_log(), raw, strict_coverage=True)
+
+    assert not result["is_valid"]
+    assert "site:kw.beijing.gov.cn 合成生物" in ";".join(result["errors"])
+    assert result["required_query_check"]["required_total"] == 1
+
+
+def test_validate_search_log_warns_when_required_queries_missing_not_strict(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r5", "required_queries": ["site:kw.beijing.gov.cn 合成生物"]}]
+    })
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(_search_log(), raw, strict_coverage=False)
+
+    assert result["is_valid"], result["errors"]
+    assert any("site:kw.beijing.gov.cn 合成生物" in warning for warning in result["warnings"])
+
+
+def test_validate_search_log_passes_when_all_required_queries_present(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [
+            {"round_id": "r2", "required_queries": ["site:synbiobeta.com synthetic biology 2026"]},
+            {"round_id": "r5", "required_queries": ["site:kw.beijing.gov.cn 合成生物"]},
+        ]
+    })
+    log = _search_log()
+    log["rounds"][1]["queries"] = [{"query": "site:synbiobeta.com synthetic biology 2026", "executed": True, "results_count": 0}]
+    log["rounds"][4]["queries"] = [{"query": "site:kw.beijing.gov.cn 合成生物", "executed": True, "results_count": 0}]
+    log["rounds"][0]["candidates"] = []
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(log, raw, strict_coverage=True)
+
+    assert result["is_valid"], result["errors"]
+    assert result["required_query_check"]["executed_required_count"] == 2
+
+
+def test_validate_search_log_accepts_candidate_source_query_legacy_format(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r1", "required_queries": ["合成生物 白皮书 报告 发布"]}]
+    })
+    log = {
+        "date": "2026-06-18",
+        "rounds": [
+            {
+                "round": "r1",
+                "candidates": [{
+                    "title": "2026中国合成生物制造白皮书发布",
+                    "url": "https://bydrug.pharmcube.com/news/detail/whitepaper-2026",
+                    "snippet": "白皮书系统介绍中国合成生物制造产业。",
+                    "source": "ByDrug",
+                    "date": "2026-06-17",
+                    "source_query": "合成生物 白皮书 报告 发布",
+                }],
+            },
+            {"round": "r2", "queries": ["q2"], "candidates": []},
+            {"round": "r3", "queries": ["q3"], "candidates": []},
+            {"round": "r4", "queries": ["q4"], "candidates": []},
+            {"round": "r5", "queries": ["q5"], "candidates": []},
+        ],
+    }
+    raw = report_pipeline.build_raw_from_search_log(log, report_date="2026-06-18")
+
+    result = report_pipeline.validate_search_log(log, raw, strict_coverage=True)
+
+    assert result["is_valid"], result["errors"]
+    assert result["total_queries"] == 5
+    assert raw["news"][0]["source_query"] == "合成生物 白皮书 报告 发布"
+
+
+def test_validate_search_log_blocks_required_query_executed_false(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r5", "required_queries": ["site:kw.beijing.gov.cn 合成生物"]}]
+    })
+    log = _search_log()
+    log["rounds"][4]["queries"] = [{
+        "query": "site:kw.beijing.gov.cn 合成生物",
+        "executed": False,
+        "error": "timeout",
+    }]
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(log, raw, strict_coverage=True)
+
+    assert not result["is_valid"]
+    assert "必需查询未成功执行" in ";".join(result["errors"])
+    assert "timeout" in ";".join(result["errors"])
+
+
+def test_validate_search_log_warns_when_required_query_config_missing(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {})
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(_search_log(), raw)
+    strict_result = report_pipeline.validate_search_log(_search_log(), raw, strict_coverage=True)
+
+    assert result["is_valid"]
+    assert any("搜索查询配置缺失" in warning for warning in result["warnings"])
+    assert not strict_result["is_valid"]
+    assert any("搜索查询配置缺失" in error for error in strict_result["errors"])
+
+
 def test_build_raw_from_search_log_keeps_whitepaper_result():
     log = _search_log()
     log["rounds"][0]["queries"] = [{
@@ -196,6 +305,7 @@ def test_validate_search_coverage_warns_when_search_result_missing_from_raw():
 def test_build_approved_blocks_strict_search_coverage_gap(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {})
     log = _search_log()
     log["rounds"][0]["queries"] = [{
         "query": "合成生物 白皮书",
@@ -223,6 +333,51 @@ def test_build_approved_blocks_strict_search_coverage_gap(tmp_path, monkeypatch)
         assert "搜索覆盖率不足" in str(exc)
     else:
         raise AssertionError("strict search coverage should block missing raw candidates")
+
+
+def test_build_approved_defaults_to_strict_required_query_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r5", "required_queries": ["site:kw.beijing.gov.cn 合成生物"]}]
+    })
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    try:
+        report_pipeline.build_approved_from_raw(
+            raw,
+            "2026-06-18",
+            output_dir=tmp_path,
+            search_log=_search_log(),
+            check_url_health_enabled=False,
+            check_title_match_enabled=False,
+        )
+    except ValueError as exc:
+        assert "site:kw.beijing.gov.cn 合成生物" in str(exc)
+    else:
+        raise AssertionError("build-approved should enforce required query coverage by default")
+
+
+def test_build_approved_can_relax_required_query_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r5", "required_queries": ["site:kw.beijing.gov.cn 合成生物"]}]
+    })
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-18",
+        output_dir=tmp_path,
+        search_log=_search_log(),
+        strict_search_coverage=False,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+    )
+
+    assert result["approved"] == []
+    assert any("site:kw.beijing.gov.cn 合成生物" in warning for warning in result["search_log_check"]["warnings"])
 
 
 def test_report_pipeline_cli_build_raw_from_search(tmp_path):

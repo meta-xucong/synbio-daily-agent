@@ -65,96 +65,40 @@ Step 9: 更新政策库
 
 ---
 
-## Step 2: 多维度搜索（五轮搜索法）
+## Step 2: 多维度搜索（五轮搜索法，配置强制）
 
-### 2.1 第一轮：通用搜索
-使用 kimi_search_v2 进行通用搜索：
-```
-合成生物 最新新闻 今日
-合成生物 白皮书 报告 发布
-合成生物 生物制造 签约 落地
-synthetic biology news today 2026
-合成生物 融资 投资 动态
-合成生物 政策 监管
-合成生物 研讨会 会议 活动
-biomanufacturing news
-precision fermentation
-cell factory
-```
+`config/search_queries.json` 是每日必搜 query 的唯一权威清单。不要从记忆或文档正文里自行删减 query；每次运行必须先读取该配置，逐轮执行 `rounds[].required_queries` 中的每一条查询。
 
-### 2.2 第二轮：定向搜索（site:重点网站）
-对每个重点网站进行定向搜索：
+**执行要求**：
+- 每个 query 的 limit 设为 15-20。
+- 每条 required query 都必须写入 `data/search_log_YYYY-MM-DD.json` 的 `queries`。
+- 查询成功但无结果时，记录 `executed: true, results_count: 0`，这不视为漏搜。
+- 查询因网络、超时或工具错误失败时，记录 `executed: false, error: "..."`，不得跳过不记；严格门禁会阻断，必须重试或人工确认后再继续。
+- 必须保留结构化搜索结果（title/url/snippet/source/date），不得只保留人工挑选后的少数 URL。
+- 政府网站、会议网站、英文专业媒体和中文垂直媒体的 `site:` 查询严禁省略。
 
-**英文搜索**：
-```
-site:synbiobeta.com synthetic biology 2026
-site:genengnews.com synthetic biology biomanufacturing
-site:fiercebiotech.com synthetic biology funding
-site:labiotech.eu biotech synthetic
-site:crisprmedicinenews.com CRISPR gene editing
-site:competition.igem.org synthetic biology
-```
+推荐的 `search_log` 查询记录格式：
 
-**中文搜索**：
-```
-site:vbdata.cn 合成生物
-site:36kr.com 合成生物 融资
-site:pedaily.cn 合成生物 投资
-site:bydrug.pharmcube.com 合成生物
-site:bioon.com 合成生物
-site:synbio-he.com 合成生物
-深波synbio 合成生物
-深波synbio 融资
-深波synbio 政策
+```json
+{
+  "round": "r5",
+  "queries": [
+    {
+      "query": "site:kw.beijing.gov.cn 合成生物",
+      "executed": true,
+      "results_count": 0,
+      "results": []
+    }
+  ],
+  "candidates": []
+}
 ```
 
-### 2.3 第三轮：英文补充搜索
-```
-synthetic biology breakthrough 2026
-biomanufacturing investment funding
-precision fermentation scale up
-synbio policy regulation
-```
+保存 `search_log` 后可先独立审计：
 
-### 2.4 第四轮：生成前复查
-在生成报告前，再次搜索确认是否有遗漏的重要信息：
+```powershell
+python scripts\audit_search_log.py data\search_log_YYYY-MM-DD.json
 ```
-合成生物 今日 最新
-合成生物 白皮书 报告 发布 签约
-synthetic biology today news
-```
-
-### 2.5 第五轮：政府与学术会议定向搜索（每日必搜，严禁跳过）
-无论前四轮结果如何，每日必须执行以下定向搜索，防止遗漏政府征集通知和学术会议信息：
-
-**政府网站（政策征集通知）**：
-```
-site:kw.beijing.gov.cn 合成生物
-site:kw.beijing.gov.cn 生物制造
-site:kw.beijing.gov.cn 征集
-site:stic.sz.gov.cn 合成生物
-site:sh.gov.cn 合成生物
-site:sciencenet.cn 合成生物 征集
-site:sciencenet.cn 生物制造 申报
-```
-
-**学术会议（国际+国内）**：
-```
-site:synbioconference.org
-site:aiche.org synthetic biology
-SEED 2026 synthetic biology
-site:europabio.org event synthetic biology
-site:scientificwisdom.org 合成生物
-site:academicx.org 合成生物
-```
-
-**搜索要求**：
-- 每个 query 的 limit 设为 15-20
-- **必须记录每条信息的来源网站和发布日期**
-- 优先选择有明确日期的新闻
-- **必须记录每条信息的原始URL链接**
-- **必须保留结构化搜索结果（title/url/snippet/source/date），不得只保留人工挑选后的少数URL**
-- **政府网站和会议网站的信息往往不在商业媒体出现，必须直接搜索**
 
 ---
 

@@ -63,6 +63,7 @@ TITLE_SIMILARITY_THRESHOLD = 0.80
 HISTORY_DEDUP_DAYS = 30
 MAX_RAW_SCORE = 30
 REQUIRED_SEARCH_ROUNDS = {"r1", "r2", "r3", "r4", "r5"}
+SEARCH_QUERY_CONFIG_FILENAME = "search_queries.json"
 URL_HEALTH_TIMEOUT_SECONDS = 10
 URL_HEALTH_MAX_BYTES = 250_000
 TITLE_MATCH_TIMEOUT_SECONDS = 10
@@ -298,7 +299,7 @@ def _search_result_dicts(search_log: Any) -> List[Tuple[str, str, Dict[str, Any]
                 continue
             for candidate in candidates:
                 if isinstance(candidate, dict):
-                    query = str(candidate.get("query") or candidate.get("search_query") or default_query)
+                    query = str(candidate.get("source_query") or candidate.get("query") or candidate.get("search_query") or default_query)
                     results.append((round_id, query, candidate))
         for query_entry in queries:
             if not isinstance(query_entry, dict):
@@ -497,6 +498,199 @@ def validate_search_coverage(search_log: Any, raw_obj: Any) -> Dict[str, Any]:
         "raw_url_count": len(raw_urls),
         "missing_urls": missing_urls,
         "coverage_ratio": 1.0 if not search_urls else round(len(search_urls & raw_urls) / len(search_urls), 3),
+    }
+
+
+def load_search_query_config() -> Dict[str, Any]:
+    """Load the required daily search query configuration."""
+    config_path = CONFIG_DIR / SEARCH_QUERY_CONFIG_FILENAME
+    if not config_path.exists():
+        return {}
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    if not isinstance(config, dict):
+        raise ValueError("search_queries.json必须是对象")
+    rounds = config.get("rounds", [])
+    if rounds is not None and not isinstance(rounds, list):
+        raise ValueError("search_queries.json中的rounds必须是列表")
+    return config
+
+
+def _normalize_query_text(query: Any) -> str:
+    return re.sub(r"\s+", " ", str(query or "")).strip()
+
+
+def _bool_from_search_log_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "n", "否", "未执行"}
+    return bool(value)
+
+
+def _query_status_from_entry(query_entry: Any) -> Tuple[str, bool, str]:
+    """Return query text, executed status, and failure reason from one search_log query entry."""
+    if isinstance(query_entry, str):
+        return _normalize_query_text(query_entry), True, ""
+    if not isinstance(query_entry, dict):
+        return "", False, ""
+
+    query = _normalize_query_text(query_entry.get("query") or query_entry.get("q") or "")
+    error = str(query_entry.get("error") or query_entry.get("reason") or query_entry.get("failure") or "").strip()
+    if "executed" in query_entry:
+        executed = _bool_from_search_log_value(query_entry.get("executed"))
+    elif error:
+        executed = False
+    else:
+        executed = True
+    return query, executed, error
+
+
+def _collect_search_log_query_status(
+    search_log: Any,
+) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, Dict[str, str]]]]:
+    """Collect executed and failed queries by round from old and new search_log formats."""
+    executed_by_round: dict[str, dict[str, str]] = {}
+    failed_by_round: dict[str, dict[str, dict[str, str]]] = {}
+    if not isinstance(search_log, dict):
+        return executed_by_round, failed_by_round
+
+    for round_entry in search_log.get("rounds", []) or []:
+        if not isinstance(round_entry, dict):
+            continue
+        round_id = str(round_entry.get("round") or round_entry.get("id") or round_entry.get("round_id") or "").strip()
+        if not round_id:
+            continue
+        executed_by_round.setdefault(round_id, {})
+        failed_by_round.setdefault(round_id, {})
+
+        queries = round_entry.get("queries", []) or []
+        if isinstance(queries, list):
+            for query_entry in queries:
+                query, executed, error = _query_status_from_entry(query_entry)
+                if not query:
+                    continue
+                normalized = _normalize_query_text(query)
+                if executed:
+                    executed_by_round[round_id][normalized] = query
+                else:
+                    failed_by_round[round_id][normalized] = {"query": query, "error": error}
+
+                if isinstance(query_entry, dict):
+                    for list_key in SEARCH_CANDIDATE_LIST_KEYS:
+                        candidates = query_entry.get(list_key)
+                        if not isinstance(candidates, list):
+                            continue
+                        for candidate in candidates:
+                            if isinstance(candidate, dict):
+                                source_query = _normalize_query_text(
+                                    candidate.get("source_query") or candidate.get("query") or candidate.get("search_query")
+                                )
+                                if source_query:
+                                    executed_by_round[round_id][source_query] = source_query
+
+        for list_key in SEARCH_CANDIDATE_LIST_KEYS:
+            candidates = round_entry.get(list_key)
+            if not isinstance(candidates, list):
+                continue
+            for candidate in candidates:
+                if isinstance(candidate, dict):
+                    source_query = _normalize_query_text(
+                        candidate.get("source_query") or candidate.get("query") or candidate.get("search_query")
+                    )
+                    if source_query:
+                        executed_by_round[round_id][source_query] = source_query
+
+    return executed_by_round, failed_by_round
+
+
+def _round_source_queries(round_entry: Dict[str, Any]) -> set[str]:
+    """Collect query evidence from legacy candidate-only search_log rounds."""
+    source_queries: set[str] = set()
+    for list_key in SEARCH_CANDIDATE_LIST_KEYS:
+        candidates = round_entry.get(list_key)
+        if not isinstance(candidates, list):
+            continue
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            source_query = _normalize_query_text(
+                candidate.get("source_query") or candidate.get("query") or candidate.get("search_query")
+            )
+            if source_query:
+                source_queries.add(source_query)
+    return source_queries
+
+
+def validate_required_search_queries(search_log: Any) -> Dict[str, Any]:
+    """Validate that configured required search queries were actually executed."""
+    config = load_search_query_config()
+    rounds_config = config.get("rounds", []) if isinstance(config, dict) else []
+    if not rounds_config:
+        return {
+            "is_valid": False,
+            "errors": [f"搜索查询配置缺失或未配置rounds: {CONFIG_DIR / SEARCH_QUERY_CONFIG_FILENAME}"],
+            "warnings": [],
+            "required_total": 0,
+            "executed_required_count": 0,
+            "missing_by_round": {},
+            "failed_by_round": {},
+        }
+    executed_by_round, failed_by_round = _collect_search_log_query_status(search_log)
+    missing_by_round: dict[str, list[str]] = {}
+    failed_required_by_round: dict[str, list[dict[str, str]]] = {}
+    required_total = 0
+
+    for round_cfg in rounds_config:
+        if not isinstance(round_cfg, dict):
+            continue
+        round_id = str(round_cfg.get("round_id") or round_cfg.get("round") or round_cfg.get("id") or "").strip()
+        if not round_id:
+            continue
+        required_queries = [
+            _normalize_query_text(query)
+            for query in round_cfg.get("required_queries", []) or []
+            if _normalize_query_text(query)
+        ]
+        required_total += len(required_queries)
+        executed = executed_by_round.get(round_id, {})
+        failed = failed_by_round.get(round_id, {})
+        for query in required_queries:
+            normalized = _normalize_query_text(query)
+            if normalized in executed:
+                continue
+            if normalized in failed:
+                failed_required_by_round.setdefault(round_id, []).append(failed[normalized])
+            else:
+                missing_by_round.setdefault(round_id, []).append(query)
+
+    messages: list[str] = []
+    for round_id, missing in sorted(missing_by_round.items()):
+        preview = "；".join(missing[:5])
+        suffix = f" 等{len(missing)}条" if len(missing) > 5 else ""
+        messages.append(f"搜索轮次 {round_id} 缺少必需查询: {preview}{suffix}")
+    for round_id, failed in sorted(failed_required_by_round.items()):
+        formatted = []
+        for item in failed[:5]:
+            query = item.get("query", "")
+            error = item.get("error") or "未记录原因"
+            formatted.append(f"{query} ({error})")
+        suffix = f" 等{len(failed)}条" if len(failed) > 5 else ""
+        messages.append(f"搜索轮次 {round_id} 必需查询未成功执行: {'；'.join(formatted)}{suffix}")
+
+    executed_required_count = required_total - sum(len(v) for v in missing_by_round.values()) - sum(
+        len(v) for v in failed_required_by_round.values()
+    )
+    return {
+        "is_valid": not messages,
+        "errors": messages,
+        "warnings": [],
+        "required_total": required_total,
+        "executed_required_count": executed_required_count,
+        "missing_by_round": missing_by_round,
+        "failed_by_round": failed_required_by_round,
     }
 
 
@@ -2165,6 +2359,7 @@ def validate_search_log(
             "warnings": warnings,
             "rounds_seen": [],
             "total_queries": 0,
+            "required_query_check": None,
         }
 
     rounds = search_log.get("rounds")
@@ -2175,6 +2370,7 @@ def validate_search_log(
             "warnings": warnings,
             "rounds_seen": [],
             "total_queries": 0,
+            "required_query_check": None,
         }
 
     rounds_seen: set[str] = set()
@@ -2188,17 +2384,27 @@ def validate_search_log(
             rounds_seen.add(round_id)
         queries = round_entry.get("queries", [])
         if isinstance(queries, list):
-            total_queries += len([q for q in queries if q])
+            query_count = len([q for q in queries if q])
+            if not query_count:
+                query_count = len(_round_source_queries(round_entry))
+            total_queries += query_count
         else:
             errors.append(f"search_log第{index}轮queries不是列表")
         if not round_id:
             errors.append(f"search_log第{index}轮缺少round/id")
-        if not queries:
+        if not queries and not _round_source_queries(round_entry):
             errors.append(f"search_log第{index}轮缺少queries")
 
     missing_rounds = sorted(REQUIRED_SEARCH_ROUNDS - rounds_seen)
     if missing_rounds:
         errors.append(f"search_log缺少必要搜索轮次: {', '.join(missing_rounds)}")
+
+    required_query_check = validate_required_search_queries(search_log)
+    if required_query_check["errors"]:
+        if strict_coverage:
+            errors.extend(required_query_check["errors"])
+        else:
+            warnings.extend(required_query_check["errors"])
 
     coverage_check = None
     if raw_obj is not None:
@@ -2248,6 +2454,7 @@ def validate_search_log(
         "warnings": warnings,
         "rounds_seen": sorted(rounds_seen),
         "total_queries": total_queries,
+        "required_query_check": required_query_check,
         "coverage_check": coverage_check,
     }
 
@@ -2261,7 +2468,7 @@ def build_approved_from_raw(
     url_check_func=check_url_health,
     title_check_func=check_url_title_match,
     search_log: Any | None = None,
-    strict_search_coverage: bool = False,
+    strict_search_coverage: bool = True,
 ) -> Dict[str, Any]:
     """Process every category from a full raw dict and persist approved/rejected outputs."""
     if not isinstance(raw_obj, dict):
@@ -2634,7 +2841,8 @@ def main():
     parser.add_argument("--check-title-match", action="store_true", help="兼容旧命令；build-approved默认已开启标题-URL匹配")
     parser.add_argument("--skip-title-match", action="store_true", help="仅离线测试/受限网络临时使用：跳过build-approved标题-URL匹配")
     parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验五轮搜索证据")
-    parser.add_argument("--strict-search-coverage", action="store_true", help="build-approved时要求search_log候选URL全部进入raw")
+    parser.add_argument("--strict-search-coverage", action="store_true", help="兼容旧命令；build-approved默认已严格校验必搜query和候选URL覆盖")
+    parser.add_argument("--relaxed-search-coverage", action="store_true", help="仅排障使用：search_log必搜query/候选URL缺失时降级为警告")
     parser.add_argument("--render-md", type=str, help="从approved JSON生成确定性Markdown报告")
     parser.add_argument("--raw", type=str, help="render-md使用的raw JSON路径，用于准确显示原始数据总数")
     parser.add_argument("--date", type=str, help="--build-approved 输出使用的日期 YYYY-MM-DD")
@@ -2736,7 +2944,7 @@ def main():
             check_url_health_enabled=not args.skip_url_health,
             check_title_match_enabled=not args.skip_title_match,
             search_log=search_log,
-            strict_search_coverage=args.strict_search_coverage,
+            strict_search_coverage=not args.relaxed_search_coverage,
         )
         print(f"approved已生成: {result['approved_path']} ({len(result['approved'])}条)")
         print(f"rejected已生成: {result['rejected_path']} ({len(result['rejected'])}条)")
