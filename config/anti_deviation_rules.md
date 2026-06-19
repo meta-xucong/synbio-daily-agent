@@ -15,7 +15,7 @@
 
 ```
 Step 1: 读取配置（数据源 + 去重规则 + 脚本指南）
-Step 2: 多维度搜索（五轮搜索法）
+Step 2: 多维度搜索（五轮搜索法，按 config/search_queries.json 执行全部 required_queries）
 Step 3: 保存结构化搜索日志并自动生成raw → data/search_log_YYYY-MM-DD.json + data/raw_YYYY-MM-DD.json
 Step 4: 调用 report_pipeline.py 处理（搜索覆盖率审计+去重+过滤+排序）
 Step 5: 基于 approved 列表和 raw 计数生成Markdown报告
@@ -33,7 +33,8 @@ Step 9: 邮件推送（send gate通过后才发送）
 
 ### 检查点A：原始数据已保存
 - [ ] 已创建 `data/raw_YYYY-MM-DD.json`
-- [ ] 已创建 `data/search_log_YYYY-MM-DD.json`，覆盖 r1-r5 五轮搜索 query，并保留结构化搜索结果（title/url/snippet/source/date）
+- [ ] 已创建 `data/search_log_YYYY-MM-DD.json`，覆盖 `config/search_queries.json` 中 r1-r5 全部 required query，并保留结构化搜索结果（title/url/snippet/source/date）
+- [ ] 每条 required query 都记录了 `executed` 和 `results_count`；无结果时为 `executed: true, results_count: 0`，不得省略
 - [ ] 已用 `--build-raw-from-search` 自动生成 raw，JSON中包含所有搜索到的信息（news/research/funding/policy/events）
 - [ ] 每条信息有title/source/date/summary/url/type/source_round字段
 - [ ] url字段是具体文章链接，不是网站首页
@@ -42,7 +43,7 @@ Step 9: 邮件推送（send gate通过后才发送）
 
 ### 检查点B：脚本已执行
 - [ ] 已调用 `report_pipeline.py` 处理每个类别
-- [ ] 已使用 `--strict-search-coverage`，确认 search_log 候选 URL 没有在 raw 阶段静默丢失
+- [ ] 已执行 `scripts\audit_search_log.py` 或 build-approved 默认严格门禁，确认 required query 和 search_log 候选 URL 没有在 raw 阶段静默丢失
 - [ ] 已查看处理结果（approved/rejected数量）
 - [ ] 已确认 rejected 原因（去重/时效性/政策库）
 - [ ] 已保存 `data/approved_YYYY-MM-DD.json`
@@ -80,6 +81,7 @@ Step 9: 邮件推送（send gate通过后才发送）
 |---------|------|------|
 | 基于搜索结果直接手写报告 | 去重失效、信息重复、格式错误 | **强制先保存JSON，再调用脚本** |
 | 缺少搜索日志或 source_round | 无法证明五轮检索，旧内容可能补录混入 | **发送前 pre_check 强制阻断** |
+| 省略 site: 定向查询 | 政策、会议、垂直媒体信息系统性漏采 | **config/search_queries.json + audit_search_log.py + send gate 强制阻断** |
 | 跳过report_pipeline.py | 去重失效、时效性不检查、价值不排序 | **脚本执行是门禁，不执行不生成** |
 | 使用rejected信息 | 重复信息、过期信息混入报告 | **只使用approved列表** |
 | 跳过验证直接发送 | 格式错误、日期排序错误 | **验证不通过禁止发送** |

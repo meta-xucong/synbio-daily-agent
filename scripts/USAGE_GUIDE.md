@@ -19,7 +19,8 @@ $env:SYNBIO_DAILY_TZ = "Asia/Shanghai"
 
 ```powershell
 python scripts\report_pipeline.py --build-raw-from-search data\search_log_2026-06-11.json --date 2026-06-11 --output data\raw_2026-06-11.json
-python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --strict-search-coverage --search-log data\search_log_2026-06-11.json
+python scripts\audit_search_log.py data\search_log_2026-06-11.json --raw data\raw_2026-06-11.json
+python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --search-log data\search_log_2026-06-11.json
 ```
 
 该命令会写出：
@@ -32,7 +33,7 @@ python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --da
 - `data/approved_YYYY-MM-DD.json`
 - `data/rejected_YYYY-MM-DD.json`
 
-生产数据还必须包含 `data/search_log_YYYY-MM-DD.json`，记录 `r1` 到 `r5` 五轮检索的 query 和候选证据。建议 search_log 中保留结构化搜索结果（`title/url/snippet/source/date`），并用 `--build-raw-from-search` 自动写入 raw。raw 中每条候选必须带 `source_round`，否则 `--search-log` 和发送前 `pre_check` 都会阻断。
+生产数据还必须包含 `data/search_log_YYYY-MM-DD.json`，记录 `config/search_queries.json` 中 `r1` 到 `r5` 的全部 required query 和候选证据。建议 search_log 中保留结构化搜索结果（`title/url/snippet/source/date`），并用 `--build-raw-from-search` 自动写入 raw。raw 中每条候选必须带 `source_round`，否则 `--search-log` 和发送前 `pre_check` 都会阻断。
 
 `--process` 仍支持完整 raw dict 或单类别 list，但主要用于调试单个类别：
 
@@ -68,7 +69,7 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 - `value_score` 为 0-10，`raw_score` 保留原始分
 - approved schema 必须包含 `title/source/date/summary/url/type/raw_score/value_score`，日期、类别、URL和分数范围都会在发送前再次校验
 - 链接健康和标题-URL匹配在 `--build-approved` 默认开启；仅离线测试或临时排障可用 `--skip-url-health` / `--skip-title-match` 显式关闭
-- `--strict-search-coverage` 会要求 search_log 中的候选 URL 全部进入 raw；如果需要人工丢弃某条结果，应先让它进入 raw，再由 rejected 记录拒绝原因
+- 必搜 query 与 search_log 候选 URL 覆盖在 `--build-approved` 默认严格开启；如果需要人工丢弃某条结果，应先让它进入 raw，再由 rejected 记录拒绝原因。仅排障可用 `--relaxed-search-coverage` 降级为警告
 
 ## 生成 Markdown 报告
 
@@ -130,7 +131,7 @@ python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_dai
 
 任一 gate 失败，脚本返回非 0，且不会连接 SMTP。
 
-`pre_check(date)` 会要求 `raw_YYYY-MM-DD.json`、`approved_YYYY-MM-DD.json` 和 `search_log_YYYY-MM-DD.json` 同时存在，并校验搜索日志覆盖 `r1` 到 `r5`、每条 raw 候选都能通过 `source_round` 追溯到对应搜索轮次。
+`pre_check(date)` 会要求 `raw_YYYY-MM-DD.json`、`approved_YYYY-MM-DD.json` 和 `search_log_YYYY-MM-DD.json` 同时存在，并校验搜索日志覆盖 `config/search_queries.json` 中的全部 required query、每条 raw 候选都能通过 `source_round` 追溯到对应搜索轮次。
 
 `--dry-run` 不要求存在真实 `config/email_config.json`；真实发送仍必须配置邮箱。
 

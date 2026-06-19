@@ -321,6 +321,7 @@ def validate_send_gate(
     pre_check_module.DATA_DIR = runtime_data_dir
     post_check_module.DATA_DIR = runtime_data_dir
     post_check_module.REPORTS_DIR = runtime_reports_dir
+    report_pipeline_module.CONFIG_DIR = CONFIG_DIR
     report_pipeline_module.DATA_DIR = runtime_data_dir
     report_pipeline_module.REPORTS_DIR = runtime_reports_dir
 
