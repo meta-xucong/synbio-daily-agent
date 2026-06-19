@@ -2468,7 +2468,6 @@ def build_approved_from_raw(
     url_check_func=check_url_health,
     title_check_func=check_url_title_match,
     search_log: Any | None = None,
-    strict_search_coverage: bool = True,
 ) -> Dict[str, Any]:
     """Process every category from a full raw dict and persist approved/rejected outputs."""
     if not isinstance(raw_obj, dict):
@@ -2476,7 +2475,8 @@ def build_approved_from_raw(
 
     search_log_check = None
     if search_log is not None:
-        search_log_check = validate_search_log(search_log, raw_obj, strict_coverage=strict_search_coverage)
+        # search_log coverage is always enforced; it cannot be bypassed.
+        search_log_check = validate_search_log(search_log, raw_obj, strict_coverage=True)
         if not search_log_check["is_valid"]:
             raise ValueError("search_log校验失败: " + "; ".join(search_log_check["errors"]))
 
@@ -2842,7 +2842,6 @@ def main():
     parser.add_argument("--skip-title-match", action="store_true", help="仅离线测试/受限网络临时使用：跳过build-approved标题-URL匹配")
     parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验五轮搜索证据")
     parser.add_argument("--strict-search-coverage", action="store_true", help="兼容旧命令；build-approved默认已严格校验必搜query和候选URL覆盖")
-    parser.add_argument("--relaxed-search-coverage", action="store_true", help="仅排障使用：search_log必搜query/候选URL缺失时降级为警告")
     parser.add_argument("--render-md", type=str, help="从approved JSON生成确定性Markdown报告")
     parser.add_argument("--raw", type=str, help="render-md使用的raw JSON路径，用于准确显示原始数据总数")
     parser.add_argument("--date", type=str, help="--build-approved 输出使用的日期 YYYY-MM-DD")
@@ -2944,7 +2943,6 @@ def main():
             check_url_health_enabled=not args.skip_url_health,
             check_title_match_enabled=not args.skip_title_match,
             search_log=search_log,
-            strict_search_coverage=not args.relaxed_search_coverage,
         )
         print(f"approved已生成: {result['approved_path']} ({len(result['approved'])}条)")
         print(f"rejected已生成: {result['rejected_path']} ({len(result['rejected'])}条)")

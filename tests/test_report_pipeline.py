@@ -358,7 +358,7 @@ def test_build_approved_defaults_to_strict_required_query_gate(tmp_path, monkeyp
         raise AssertionError("build-approved should enforce required query coverage by default")
 
 
-def test_build_approved_can_relax_required_query_gate(tmp_path, monkeypatch):
+def test_build_approved_enforces_required_query_gate_strictly(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
     monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
@@ -366,18 +366,19 @@ def test_build_approved_can_relax_required_query_gate(tmp_path, monkeypatch):
     })
     raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
 
-    result = report_pipeline.build_approved_from_raw(
-        raw,
-        "2026-06-18",
-        output_dir=tmp_path,
-        search_log=_search_log(),
-        strict_search_coverage=False,
-        check_url_health_enabled=False,
-        check_title_match_enabled=False,
-    )
-
-    assert result["approved"] == []
-    assert any("site:kw.beijing.gov.cn 合成生物" in warning for warning in result["search_log_check"]["warnings"])
+    try:
+        report_pipeline.build_approved_from_raw(
+            raw,
+            "2026-06-18",
+            output_dir=tmp_path,
+            search_log=_search_log(),
+            check_url_health_enabled=False,
+            check_title_match_enabled=False,
+        )
+    except ValueError as exc:
+        assert "site:kw.beijing.gov.cn 合成生物" in str(exc)
+    else:
+        raise AssertionError("build-approved must always enforce required query coverage; no relaxation allowed")
 
 
 def test_report_pipeline_cli_build_raw_from_search(tmp_path):
