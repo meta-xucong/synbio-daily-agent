@@ -38,7 +38,7 @@ python scripts\audit_search_log.py data\search_log_YYYY-MM-DD.json --raw data\ra
 python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --search-log data\search_log_YYYY-MM-DD.json
 ```
 
-`search_log_YYYY-MM-DD.json` 必须覆盖 `config/search_queries.json` 中 `r1` 到 `r5` 的全部 required query，并保留结构化候选结果；raw 中每条候选必须带 `source_round`，用于审计候选来源并防止遗漏轮次、补录旧信息或人工挑选阶段漏收。build-approved 和发送 gate 默认严格校验必搜 query；仅排障可用 `--relaxed-search-coverage` 降级为警告。
+`search_log_YYYY-MM-DD.json` 必须覆盖 `config/search_queries.json` 中 `r1` 到 `r5` 的全部 required query，并保留结构化候选结果；raw 中每条候选必须带 `source_round`，用于审计候选来源并防止遗漏轮次、补录旧信息或人工挑选阶段漏收。build-approved 和发送 gate 强制校验必搜 query 与候选 URL 覆盖。
 
 发送 gate 默认也会检查 H5、邮件正文和 Markdown 附件中的实际外链。以下情况会阻断发送或进入 rejected：
 

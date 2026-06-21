@@ -318,122 +318,140 @@ def validate_send_gate(
     report_path = Path(md_path)
     runtime_data_dir = DATA_DIR
     runtime_reports_dir = report_path.parent
-    pre_check_module.DATA_DIR = runtime_data_dir
-    post_check_module.DATA_DIR = runtime_data_dir
-    post_check_module.REPORTS_DIR = runtime_reports_dir
-    report_pipeline_module.CONFIG_DIR = CONFIG_DIR
-    report_pipeline_module.DATA_DIR = runtime_data_dir
-    report_pipeline_module.REPORTS_DIR = runtime_reports_dir
-
-    if has_successful_send_for_date(date_str):
-        duplicate_message = f"[发送门禁] 日期 {date_str} 已发送过日报，禁止重复发送"
-        if force_send:
-            warnings.append(f"{duplicate_message}；已使用 force_send 显式放行")
-        elif not enforce_send_once:
-            warnings.append(f"{duplicate_message}；当前为验证模式，不阻断")
-        else:
-            errors.append(duplicate_message)
-
-    pre_result = pre_check(date_str)
-    details["pre_check"] = pre_result
-    errors.extend(pre_result.get("errors", []))
-    warnings.extend(pre_result.get("warnings", []))
-
-    try:
-        approved_data = load_approved_data(date_str)
-    except Exception as exc:
-        approved_data = []
-        errors.append(str(exc))
-
-    approved_schema = validate_approved_schema(approved_data) if approved_data else {
-        "is_valid": True,
-        "errors": [],
-        "warnings": [],
-        "total_checked": 0,
-    }
-    details["approved_schema"] = approved_schema
-    if not approved_schema["is_valid"]:
-        errors.extend([f"[approved schema] {error}" for error in approved_schema["errors"]])
-    warnings.extend(approved_schema.get("warnings", []))
-
-    files = read_report_files(md_path, html_path, email_html_path)
-    html_safety = validate_html_safety(files["html_content"])
-    email_safety = validate_html_safety(files["email_body"])
-    html_template = validate_template_signature(files["html_content"], "H5附件")
-    email_template = validate_template_signature(files["email_body"], "邮件HTML")
-    details["html_safety"] = html_safety
-    details["email_safety"] = email_safety
-    details["html_template"] = html_template
-    details["email_template"] = email_template
-    if not html_safety["is_safe"]:
-        errors.extend([f"[HTML安全] {e}" for e in html_safety["errors"]])
-    if not email_safety["is_safe"]:
-        errors.extend([f"[邮件HTML安全] {e}" for e in email_safety["errors"]])
-    if not html_template["is_valid"]:
-        errors.extend([f"[模板样式] {e}; 请使用 scripts/generate_from_template.py 生成正式H5" for e in html_template["errors"]])
-    if not email_template["is_valid"]:
-        errors.extend([f"[模板样式] {e}; 请使用 scripts/generate_from_template.py 生成正式邮件HTML" for e in email_template["errors"]])
-
-    h5_url_consistency = validate_urls_against_approved(
-        extract_http_urls(files["html_content"]),
-        approved_data,
-        label="H5附件",
+    module_paths = (
+        pre_check_module.DATA_DIR,
+        post_check_module.DATA_DIR,
+        post_check_module.REPORTS_DIR,
+        report_pipeline_module.CONFIG_DIR,
+        report_pipeline_module.DATA_DIR,
+        report_pipeline_module.REPORTS_DIR,
     )
-    details["h5_url_consistency"] = h5_url_consistency
-    if not h5_url_consistency["is_consistent"]:
-        errors.extend(h5_url_consistency["errors"])
+    try:
+        pre_check_module.DATA_DIR = runtime_data_dir
+        post_check_module.DATA_DIR = runtime_data_dir
+        post_check_module.REPORTS_DIR = runtime_reports_dir
+        report_pipeline_module.CONFIG_DIR = CONFIG_DIR
+        report_pipeline_module.DATA_DIR = runtime_data_dir
+        report_pipeline_module.REPORTS_DIR = runtime_reports_dir
 
-    outbound_urls = list(dict.fromkeys(
-        extract_http_urls(files["html_content"])
-        + extract_http_urls(files["email_body"])
-        + extract_plain_http_urls(files["md_content"])
-    ))
-    if check_url_health and outbound_urls:
+        if has_successful_send_for_date(date_str):
+            duplicate_message = f"[发送门禁] 日期 {date_str} 已发送过日报，禁止重复发送"
+            if force_send:
+                warnings.append(f"{duplicate_message}；已使用 force_send 显式放行")
+            elif not enforce_send_once:
+                warnings.append(f"{duplicate_message}；当前为验证模式，不阻断")
+            else:
+                errors.append(duplicate_message)
+
+        pre_result = pre_check(date_str)
+        details["pre_check"] = pre_result
+        errors.extend(pre_result.get("errors", []))
+        warnings.extend(pre_result.get("warnings", []))
+
         try:
-            url_health = validate_url_health(outbound_urls, label="发送内容", mode=url_health_mode)
-        except TypeError:
-            url_health = validate_url_health(outbound_urls, label="发送内容")
-        details["url_health"] = url_health
-        if not url_health["is_valid"]:
-            errors.extend(url_health["errors"])
-        warnings.extend(url_health.get("warnings", []))
-    else:
-        details["url_health"] = {
+            approved_data = load_approved_data(date_str)
+        except Exception as exc:
+            approved_data = []
+            errors.append(str(exc))
+
+        approved_schema = validate_approved_schema(approved_data) if approved_data else {
             "is_valid": True,
             "errors": [],
-            "checked_urls": [],
+            "warnings": [],
             "total_checked": 0,
-            "skipped": True,
         }
+        details["approved_schema"] = approved_schema
+        if not approved_schema["is_valid"]:
+            errors.extend([f"[approved schema] {error}" for error in approved_schema["errors"]])
+        warnings.extend(approved_schema.get("warnings", []))
 
-    validation = run_full_validation(str(md_path), files["email_body"], approved_data)
-    details["full_validation"] = validation
-    if not validation.get("can_send_email"):
-        schema_errors = set(approved_schema.get("errors", []))
-        errors.extend(
-            instruction for instruction in validation.get("fix_instructions", [])
-            if instruction not in schema_errors
+        files = read_report_files(md_path, html_path, email_html_path)
+        html_safety = validate_html_safety(files["html_content"])
+        email_safety = validate_html_safety(files["email_body"])
+        html_template = validate_template_signature(files["html_content"], "H5附件")
+        email_template = validate_template_signature(files["email_body"], "邮件HTML")
+        details["html_safety"] = html_safety
+        details["email_safety"] = email_safety
+        details["html_template"] = html_template
+        details["email_template"] = email_template
+        if not html_safety["is_safe"]:
+            errors.extend([f"[HTML安全] {e}" for e in html_safety["errors"]])
+        if not email_safety["is_safe"]:
+            errors.extend([f"[邮件HTML安全] {e}" for e in email_safety["errors"]])
+        if not html_template["is_valid"]:
+            errors.extend([f"[模板样式] {e}; 请使用 scripts/generate_from_template.py 生成正式H5" for e in html_template["errors"]])
+        if not email_template["is_valid"]:
+            errors.extend([f"[模板样式] {e}; 请使用 scripts/generate_from_template.py 生成正式邮件HTML" for e in email_template["errors"]])
+
+        h5_url_consistency = validate_urls_against_approved(
+            extract_http_urls(files["html_content"]),
+            approved_data,
+            label="H5附件",
         )
+        details["h5_url_consistency"] = h5_url_consistency
+        if not h5_url_consistency["is_consistent"]:
+            errors.extend(h5_url_consistency["errors"])
 
-    post_result = post_check(date_str, str(md_path))
-    details["post_check"] = post_result
-    errors.extend(post_result.get("errors", []))
-    warnings.extend(post_result.get("warnings", []))
+        outbound_urls = list(dict.fromkeys(
+            extract_http_urls(files["html_content"])
+            + extract_http_urls(files["email_body"])
+            + extract_plain_http_urls(files["md_content"])
+        ))
+        if check_url_health and outbound_urls:
+            try:
+                url_health = validate_url_health(outbound_urls, label="发送内容", mode=url_health_mode)
+            except TypeError:
+                url_health = validate_url_health(outbound_urls, label="发送内容")
+            details["url_health"] = url_health
+            if not url_health["is_valid"]:
+                errors.extend(url_health["errors"])
+            warnings.extend(url_health.get("warnings", []))
+        else:
+            details["url_health"] = {
+                "is_valid": True,
+                "errors": [],
+                "checked_urls": [],
+                "total_checked": 0,
+                "skipped": True,
+            }
 
-    if msg is None:
-        msg = build_email_message(
-            date_str=date_str,
-            sender="gate@example.invalid",
-            receiver="gate@example.invalid",
-            md_content=files["md_content"],
-            html_content=files["html_content"],
-            email_body=files["email_body"],
-        )
-    mime_result = validate_email_mime_type(msg)
-    details["mime_check"] = mime_result
-    if not mime_result.get("is_valid"):
-        errors.extend(mime_result.get("errors", []))
-    warnings.extend(mime_result.get("warnings", []))
+        validation = run_full_validation(str(md_path), files["email_body"], approved_data)
+        details["full_validation"] = validation
+        if not validation.get("can_send_email"):
+            schema_errors = set(approved_schema.get("errors", []))
+            errors.extend(
+                instruction for instruction in validation.get("fix_instructions", [])
+                if instruction not in schema_errors
+            )
+
+        post_result = post_check(date_str, str(md_path))
+        details["post_check"] = post_result
+        errors.extend(post_result.get("errors", []))
+        warnings.extend(post_result.get("warnings", []))
+
+        if msg is None:
+            msg = build_email_message(
+                date_str=date_str,
+                sender="gate@example.invalid",
+                receiver="gate@example.invalid",
+                md_content=files["md_content"],
+                html_content=files["html_content"],
+                email_body=files["email_body"],
+            )
+        mime_result = validate_email_mime_type(msg)
+        details["mime_check"] = mime_result
+        if not mime_result.get("is_valid"):
+            errors.extend(mime_result.get("errors", []))
+        warnings.extend(mime_result.get("warnings", []))
+    finally:
+        (
+            pre_check_module.DATA_DIR,
+            post_check_module.DATA_DIR,
+            post_check_module.REPORTS_DIR,
+            report_pipeline_module.CONFIG_DIR,
+            report_pipeline_module.DATA_DIR,
+            report_pipeline_module.REPORTS_DIR,
+        ) = module_paths
 
     return {
         "passed": len(errors) == 0,

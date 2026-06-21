@@ -2,10 +2,10 @@
 
 这个门禁用于拦截一种链接健康检查挡不住的问题：URL 可以打开，也不是删除页，但采集到的标题实际指向另一篇文章或另一个活动。
 
-生产生成 approved 时建议显式开启：
+生产生成 approved 时默认开启标题匹配：
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --strict-search-coverage --search-log data\search_log_YYYY-MM-DD.json
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --search-log data\search_log_YYYY-MM-DD.json
 ```
 
 ## 检查内容

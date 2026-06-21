@@ -7,7 +7,7 @@
 - [ ] Structured `search_log` records every required query with `executed` and `results_count`, and can generate raw through `--build-raw-from-search`.
 - [ ] Production raw items include `source_round`, and `search_log_YYYY-MM-DD.json` covers `r1` through `r5` plus all configured required queries.
 - [ ] `scripts\audit_search_log.py data\search_log_YYYY-MM-DD.json --raw data\raw_YYYY-MM-DD.json` passes.
-- [ ] Production `--build-approved` runs pass `--search-log` and do not use `--relaxed-search-coverage`, `--skip-url-health`, or `--skip-title-match`.
+- [ ] Production `--build-approved` runs pass `--search-log` and do not use `--skip-url-health` or `--skip-title-match`.
 - [ ] `report_pipeline.py --render-md` uses `--raw` so the report trace shows the true raw candidate count.
 - [ ] `send_email.py --dry-run` passes for a known-good local report.
 - [ ] `send_email.py --dry-run` does not require real SMTP credentials.

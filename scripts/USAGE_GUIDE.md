@@ -69,7 +69,7 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 - `value_score` 为 0-10，`raw_score` 保留原始分
 - approved schema 必须包含 `title/source/date/summary/url/type/raw_score/value_score`，日期、类别、URL和分数范围都会在发送前再次校验
 - 链接健康和标题-URL匹配在 `--build-approved` 默认开启；仅离线测试或临时排障可用 `--skip-url-health` / `--skip-title-match` 显式关闭
-- 必搜 query 与 search_log 候选 URL 覆盖在 `--build-approved` 默认严格开启；如果需要人工丢弃某条结果，应先让它进入 raw，再由 rejected 记录拒绝原因。仅排障可用 `--relaxed-search-coverage` 降级为警告
+- 必搜 query 与 search_log 候选 URL 覆盖在 `--build-approved` 强制开启；如果需要人工丢弃某条结果，应先让它进入 raw，再由 rejected 记录拒绝原因。
 
 ## 生成 Markdown 报告
 
