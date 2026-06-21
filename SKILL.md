@@ -151,7 +151,7 @@ with open(rf"data/search_log_{date_str}.json", 'w', encoding='utf-8') as f:
 生产运行必须使用一次性 CLI 入口处理完整 raw dict，不得手工拼接 approved：
 
 ```powershell
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --strict-search-coverage --search-log data\search_log_YYYY-MM-DD.json
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --search-log data\search_log_YYYY-MM-DD.json
 ```
 
 该命令会同时生成：
@@ -164,7 +164,7 @@ python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --da
 - `data/approved_YYYY-MM-DD.json`
 - `data/rejected_YYYY-MM-DD.json`
 
-`--build-approved` 会统一执行 schema、搜索覆盖率审计、URL聚合页过滤、跨天历史去重、当前批次去重、同URL不同标题冲突剔除、时效性、价值评分和 approved schema 校验。`--strict-search-coverage` 会阻断“搜索结果存在但未进入 raw”的静默漏收。链接健康和标题-URL匹配默认开启，会在 approved 写出前剔除打不开、HTTP 4xx/5xx、超时、证书失败、疑似删除页或标题明显张冠李戴的信息；仅离线测试或临时排障可用 `--skip-url-health` / `--skip-title-match` 显式关闭。
+`--build-approved` 会统一执行 schema、必搜 query 覆盖审计、候选 URL 覆盖审计、URL聚合页过滤、跨天历史去重、当前批次去重、同URL不同标题冲突剔除、时效性、价值评分和 approved schema 校验。搜索覆盖不可绕过，会阻断“必搜 query 未执行”或“搜索结果存在但未进入 raw”的静默漏收。链接健康和标题-URL匹配默认开启，会在 approved 写出前剔除打不开、HTTP 4xx/5xx、超时、证书失败、疑似删除页或标题明显张冠李戴的信息；仅离线测试或临时排障可用 `--skip-url-health` / `--skip-title-match` 显式关闭。
 
 **重要**：
 - **必须使用脚本处理后的 `approved` 列表中的信息**

@@ -221,6 +221,20 @@ def test_validate_search_log_warns_when_required_query_config_missing(monkeypatc
     assert any("搜索查询配置缺失" in error for error in strict_result["errors"])
 
 
+def test_search_query_config_covers_sciencenet_policy_terms():
+    config = report_pipeline.load_search_query_config()
+    queries = {
+        query
+        for round_cfg in config["rounds"]
+        for query in round_cfg.get("required_queries", [])
+    }
+
+    assert "site:sciencenet.cn 合成生物 征求意见" in queries
+    assert "site:sciencenet.cn 合成生物 申报指南" in queries
+    assert "site:sciencenet.cn 合成生物 通知" in queries
+    assert "site:sciencenet.cn 合成生物 国家重点研发计划" in queries
+
+
 def test_build_raw_from_search_log_keeps_whitepaper_result():
     log = _search_log()
     log["rounds"][0]["queries"] = [{
@@ -302,7 +316,7 @@ def test_validate_search_coverage_warns_when_search_result_missing_from_raw():
     assert any("搜索覆盖率不足" in error for error in strict_result["errors"])
 
 
-def test_build_approved_blocks_strict_search_coverage_gap(tmp_path, monkeypatch):
+def test_build_approved_blocks_search_coverage_gap(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
     monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {})
@@ -325,7 +339,6 @@ def test_build_approved_blocks_strict_search_coverage_gap(tmp_path, monkeypatch)
             "2026-06-18",
             output_dir=tmp_path,
             search_log=log,
-            strict_search_coverage=True,
             check_url_health_enabled=False,
             check_title_match_enabled=False,
         )
@@ -548,7 +561,13 @@ def test_category_filter_allows_article_paths_and_blocks_aggregate_pages():
     assert not report_pipeline._is_category_or_aggregate_url("https://example.com/events/synbio-forum-2026")
     assert not report_pipeline._is_category_or_aggregate_url("https://example.com/article/123?q=source")
     assert not report_pipeline._is_category_or_aggregate_url("https://mp.weixin.qq.com/s/example-article")
+    assert not report_pipeline._is_category_or_aggregate_url("https://isynbio.siat.ac.cn/siat/2026-06/18/article_2026061810313229176.html")
+    assert not report_pipeline._is_category_or_aggregate_url("https://synbio.suat-sz.edu.cn/index/zxcg.htm")
+    assert not report_pipeline._is_category_or_aggregate_url("https://example.edu.cn/research/publications.html")
+    assert not report_pipeline._is_category_or_aggregate_url("https://example.ac.cn/papers.html")
     assert report_pipeline._is_category_or_aggregate_url("https://example.com/news")
+    assert report_pipeline._is_category_or_aggregate_url("https://isynbio.siat.ac.cn/")
+    assert report_pipeline._is_category_or_aggregate_url("https://isynbio.siat.ac.cn/index.html")
     assert report_pipeline._is_category_or_aggregate_url("https://example.com/category/synthetic-biology")
     assert report_pipeline._is_category_or_aggregate_url("https://example.com/topic-hub/synthetic-biology/news-and-features")
     assert report_pipeline._is_category_or_aggregate_url("https://conferences.nature.com/synthetic-biology")

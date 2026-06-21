@@ -11,6 +11,7 @@ if str(SCRIPTS) not in sys.path:
 
 import send_email
 import generate_from_template
+import report_pipeline
 
 
 def _write_runtime_tree(tmp_path: Path, report_name: str = "valid_report.md"):
@@ -104,6 +105,18 @@ def test_send_dry_run_passes_without_smtp(tmp_path, monkeypatch):
     monkeypatch.setattr(send_email, "smtplib", type("SMTPModule", (), {"SMTP_SSL": lambda *a, **k: (_ for _ in ()).throw(AssertionError("SMTP called"))}))
 
     assert send_email.send_daily_report("2026-06-10", md, html, dry_run=True) is True
+
+
+def test_send_gate_restores_report_pipeline_runtime_paths(tmp_path, monkeypatch):
+    md, html = _write_runtime_tree(tmp_path)
+    original_paths = (report_pipeline.CONFIG_DIR, report_pipeline.DATA_DIR, report_pipeline.REPORTS_DIR)
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+
+    result = send_email.validate_send_gate("2026-06-10", md, html, check_url_health=False)
+
+    assert result["passed"], result["errors"]
+    assert (report_pipeline.CONFIG_DIR, report_pipeline.DATA_DIR, report_pipeline.REPORTS_DIR) == original_paths
 
 
 def test_send_dry_run_does_not_require_email_config(tmp_path, monkeypatch):

@@ -117,7 +117,7 @@ python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --da
 1. **URL过滤**: 拒绝站点首页、分类/聚合页、黑名单域名和不安全URL
 2. **时效性过滤**: 新闻7天、研究14天、融资7天、政策30天、活动90天；日期无法解析直接拒绝
 3. **必搜 query 门禁**: build-approved 和 send gate 默认要求 search_log 覆盖 `config/search_queries.json` 的所有 required query；缺少 `site:` 定向查询会阻断
-4. **搜索覆盖率审计**: 默认要求 search_log 中的候选 URL 都进入 raw，防止搜索结果被人工挑选阶段静默丢弃；仅排障可用 `--relaxed-search-coverage`
+4. **搜索覆盖率审计**: 强制要求 search_log 中的候选 URL 都进入 raw，防止搜索结果被人工挑选阶段静默丢弃
 5. **去重检查**:
    - 指纹匹配（MD5哈希，基于 company+type+完整title）
    - 公司重复（同一公司+同一类型视为重复）
@@ -170,7 +170,7 @@ python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --da
 ```powershell
 python -m pytest -q
 python scripts\report_pipeline.py --build-raw-from-search data\search_log_2026-06-11.json --date 2026-06-11 --output data\raw_2026-06-11.json
-python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --strict-search-coverage --search-log data\search_log_2026-06-11.json
+python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --search-log data\search_log_2026-06-11.json
 python scripts\report_pipeline.py --render-md data\approved_2026-06-11.json --date 2026-06-11 --raw data\raw_2026-06-11.json --output reports\2026-06-11.md
 python scripts\generate_from_template.py --date 2026-06-11 --approved data\approved_2026-06-11.json --markdown reports\2026-06-11.md --html-output reports\synbio_daily_2026-06-11.html --email-output reports\email_2026-06-11.html
 python scripts\send_email.py 2026-06-11 reports\2026-06-11.md reports\synbio_daily_2026-06-11.html reports\email_2026-06-11.html --dry-run

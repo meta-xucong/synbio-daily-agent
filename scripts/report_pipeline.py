@@ -148,6 +148,13 @@ URL_AGGREGATE_PREFIXES = (
 URL_AGGREGATE_SUFFIXES = (
     "/news-and-features",
 )
+URL_AGGREGATE_PATH_EXCEPTIONS = (
+    r"/zxcg\.htm$",
+    r"/cg\.htm$",
+    r"/latest-results?\.html$",
+    r"/publications?\.html$",
+    r"/papers?\.html$",
+)
 
 # 需要排除的域名片段（内容聚合站）
 DOMAIN_BLACKLIST = [
@@ -768,6 +775,9 @@ def _is_category_or_aggregate_url(url: str) -> bool:
         slashless_path = normalized_path.rstrip("/")
     else:
         slashless_path = normalized_path
+
+    if any(re.search(pattern, slashless_path) for pattern in URL_AGGREGATE_PATH_EXCEPTIONS):
+        return False
 
     if normalized_path in URL_AGGREGATE_EXACT_PATHS or slashless_path in URL_AGGREGATE_EXACT_PATHS:
         return True
