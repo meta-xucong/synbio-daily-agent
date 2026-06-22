@@ -120,7 +120,7 @@ TYPE_NEGATIVE_KEYWORDS = {
 # 合成生物学主题相关性组合匹配规则
 # 从"精确包含合成生物/学"改为"合成/细胞/基因/代谢 + 生物相关术语"的组合匹配
 SYNBIO_EXACT_TERMS = (
-    "合成生物", "合成生物学", "synthetic biology", "synbio",
+    "合成生物", "合成生物学", "合成细胞", "synthetic biology", "synbio",
     "biomanufacturing", "bioengineering", "precision fermentation",
     "cell factory", "genome engineering", "metabolic engineering",
 )
