@@ -19,6 +19,22 @@
       ]
     },
     {
+      "round_id": "r1b",
+      "theme": "合成生物学组合关键词补搜（肽/蛋白/酶/代谢物）",
+      "required_queries": [
+        "site:bioon.com 合成肽",
+        "site:bioon.com 合成蛋白",
+        "site:bioon.com 合成代谢",
+        "site:vbdata.cn 合成 血清素",
+        "site:vbdata.cn 合成 肽",
+        "site:vbdata.cn 合成 蛋白",
+        "site:vbdata.cn 合成 酶",
+        "合成 肽 生物",
+        "合成 蛋白 微生物",
+        "合成 代谢物 工程"
+      ]
+    },
+    {
       "round_id": "r2",
       "theme": "英文专业媒体定向",
       "required_queries": [

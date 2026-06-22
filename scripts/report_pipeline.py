@@ -116,6 +116,49 @@ TYPE_NEGATIVE_KEYWORDS = {
     "funding": ("forum", "conference", "course", "policy", "regulation", "guidance", "研究", "论文"),
     "events": ("investment report", "融资", "获投", "raised", "raises", "funding"),
 }
+
+# 合成生物学主题相关性组合匹配规则
+# 从"精确包含合成生物/学"改为"合成/细胞/基因/代谢 + 生物相关术语"的组合匹配
+SYNBIO_EXACT_TERMS = (
+    "合成生物", "合成生物学", "synthetic biology", "synbio",
+    "biomanufacturing", "bioengineering", "precision fermentation",
+    "cell factory", "genome engineering", "metabolic engineering",
+)
+SYNBIO_COMBO_PREFIXES = (
+    "合成", "细胞", "基因", "代谢", "酶", "发酵", "底盘",
+)
+SYNBIO_COMBO_SUFFIXES = (
+    "肽", "血清素", "蛋白", "酶", "dna", "rna",
+    "菌", "酵母", "大肠杆菌", "芽孢杆菌", "枯草芽孢杆菌", "地衣芽孢杆菌",
+    "抗生素", "维生素", "氨基酸", "脂质", "多糖", "激素",
+    "抗体", "疫苗", "色素", "香料", "燃料", "材料", "聚合物",
+    "组织", "器官", "神经", "生物", "化学", "分子",
+    "工程", "编辑", "改造", "设计", "构建", "重构",
+    "途径", "通路", "网络", "系统", "工厂", "底盘",
+    "元件", "模块", "线路", "回路", "发酵", "催化",
+    "提取", "纯化", "修饰", "表达", "递送", "筛选",
+    "进化", "定向进化", "高通量", "自动化",
+)
+
+def _is_synbio_combination_match(text: str) -> bool:
+    """检查文本是否包含合成生物学相关的组合匹配（前缀+后缀）。"""
+    text_lower = str(text or "").lower()
+    for prefix in SYNBIO_COMBO_PREFIXES:
+        for suffix in SYNBIO_COMBO_SUFFIXES:
+            if prefix + suffix in text_lower:
+                return True
+    return False
+
+def _is_synbio_relevant(text: str) -> bool:
+    """检查文本是否与合成生物学主题相关（精确匹配或组合匹配）。"""
+    text_lower = str(text or "").lower()
+    # 精确匹配
+    if any(term in text_lower for term in SYNBIO_EXACT_TERMS):
+        return True
+    # 组合匹配
+    if _is_synbio_combination_match(text_lower):
+        return True
+    return False
 POLICY_AUTHORITY_HINTS = (
     "gov", "政府", "科委", "科创局", "发改委", "工信", "科技部", "市监", "监管", "部门", "委员会", "协会",
     "ministry", "agency", "commission", "authority", "government", "programme", "program",
@@ -402,6 +445,9 @@ def infer_item_type_from_search_result(result: Dict[str, Any], query: str = "") 
     if has_policy_keyword and (has_policy_authority or is_gov_cn):
         return "policy"
     if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["research"]):
+        return "research"
+    # 合成生物学组合匹配：即使没有典型研究关键词，合成生物学相关技术内容也归为 research
+    if _is_synbio_combination_match(text):
         return "research"
     return "news"
 
@@ -2160,6 +2206,12 @@ def validate_email_mime_type(email_msg) -> Dict[str, Any]:
 def _looks_like_type(item: Dict[str, Any], item_type: str) -> bool:
     title_summary_url = f"{item.get('title', '')} {item.get('summary', '')} {item.get('url', '')}".lower()
     text = f"{title_summary_url} {item.get('source', '')}".lower()
+    
+    # 合成生物学主题相关性：所有类型都必须与合成生物学相关
+    # 使用精确匹配或组合匹配（"合成/细胞/基因/代谢 + 生物相关术语"）
+    if not _is_synbio_relevant(text):
+        return False
+    
     if item_type == "news":
         return True
     if any(keyword in title_summary_url for keyword in TYPE_NEGATIVE_KEYWORDS.get(item_type, ())):
