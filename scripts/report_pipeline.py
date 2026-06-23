@@ -117,31 +117,15 @@ TYPE_NEGATIVE_KEYWORDS = {
     "events": ("investment report", "融资", "获投", "raised", "raises", "funding"),
 }
 
-# 合成生物学主题相关性判断：使用 LLM 语义判断模块替代硬编码关键词
-# 通过 prompt-based 语义理解区分"工程化改造生物系统"（合成生物学）
-# vs "纯化学合成" vs "基础生物学研究"（自然过程）
-try:
-    from llm_judge import is_synbio_relevant as _llm_is_synbio_relevant
-except ImportError:
-    _llm_is_synbio_relevant = None
+# 合成生物学主题相关性判断：使用语义启发式模块替代硬编码关键词
+# 区分"工程化改造生物系统"（合成生物学）vs "纯化学合成" vs "基础生物学研究"
+from llm_judge import is_synbio_relevant as _is_synbio_relevant_impl
 
 
 def _is_synbio_relevant(title: str = "", summary: str = "", url: str = "") -> bool:
-    """Wrapper for llm_judge.is_synbio_relevant with fallback."""
-    if _llm_is_synbio_relevant is not None:
-        try:
-            is_relevant, reason, confidence = _llm_is_synbio_relevant(title, summary, url)
-            return is_relevant
-        except Exception:
-            pass
-    # Fallback: check exact terms only
-    text = f"{title} {summary}".lower()
-    exact_terms = (
-        "合成生物", "合成生物学", "合成细胞", "synthetic biology", "synbio",
-        "biomanufacturing", "bioengineering", "precision fermentation",
-        "cell factory", "genome engineering", "metabolic engineering",
-    )
-    return any(term in text for term in exact_terms)
+    """Wrapper for llm_judge.is_synbio_relevant. Returns bool only."""
+    is_relevant, _, _ = _is_synbio_relevant_impl(title, summary, url)
+    return is_relevant
 POLICY_AUTHORITY_HINTS = (
     "gov", "政府", "科委", "科创局", "发改委", "工信", "科技部", "市监", "监管", "部门", "委员会", "协会",
     "ministry", "agency", "commission", "authority", "government", "programme", "program",
