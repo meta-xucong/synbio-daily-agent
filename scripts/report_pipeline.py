@@ -117,48 +117,31 @@ TYPE_NEGATIVE_KEYWORDS = {
     "events": ("investment report", "融资", "获投", "raised", "raises", "funding"),
 }
 
-# 合成生物学主题相关性组合匹配规则
-# 从"精确包含合成生物/学"改为"合成/细胞/基因/代谢 + 生物相关术语"的组合匹配
-SYNBIO_EXACT_TERMS = (
-    "合成生物", "合成生物学", "合成细胞", "synthetic biology", "synbio",
-    "biomanufacturing", "bioengineering", "precision fermentation",
-    "cell factory", "genome engineering", "metabolic engineering",
-)
-SYNBIO_COMBO_PREFIXES = (
-    "合成", "细胞", "基因", "代谢", "酶", "发酵", "底盘",
-)
-SYNBIO_COMBO_SUFFIXES = (
-    "肽", "血清素", "蛋白", "酶", "dna", "rna",
-    "菌", "酵母", "大肠杆菌", "芽孢杆菌", "枯草芽孢杆菌", "地衣芽孢杆菌",
-    "抗生素", "维生素", "氨基酸", "脂质", "多糖", "激素",
-    "抗体", "疫苗", "色素", "香料", "燃料", "材料", "聚合物",
-    "组织", "器官", "神经", "生物", "化学", "分子",
-    "工程", "编辑", "改造", "设计", "构建", "重构",
-    "途径", "通路", "网络", "系统", "工厂", "底盘",
-    "元件", "模块", "线路", "回路", "发酵", "催化",
-    "提取", "纯化", "修饰", "表达", "递送", "筛选",
-    "进化", "定向进化", "高通量", "自动化",
-)
+# 合成生物学主题相关性判断：使用 LLM 语义判断模块替代硬编码关键词
+# 通过 prompt-based 语义理解区分"工程化改造生物系统"（合成生物学）
+# vs "纯化学合成" vs "基础生物学研究"（自然过程）
+try:
+    from llm_judge import is_synbio_relevant as _llm_is_synbio_relevant
+except ImportError:
+    _llm_is_synbio_relevant = None
 
-def _is_synbio_combination_match(text: str) -> bool:
-    """检查文本是否包含合成生物学相关的组合匹配（前缀+后缀）。"""
-    text_lower = str(text or "").lower()
-    for prefix in SYNBIO_COMBO_PREFIXES:
-        for suffix in SYNBIO_COMBO_SUFFIXES:
-            if prefix + suffix in text_lower:
-                return True
-    return False
 
-def _is_synbio_relevant(text: str) -> bool:
-    """检查文本是否与合成生物学主题相关（精确匹配或组合匹配）。"""
-    text_lower = str(text or "").lower()
-    # 精确匹配
-    if any(term in text_lower for term in SYNBIO_EXACT_TERMS):
-        return True
-    # 组合匹配
-    if _is_synbio_combination_match(text_lower):
-        return True
-    return False
+def _is_synbio_relevant(title: str = "", summary: str = "", url: str = "") -> bool:
+    """Wrapper for llm_judge.is_synbio_relevant with fallback."""
+    if _llm_is_synbio_relevant is not None:
+        try:
+            is_relevant, reason, confidence = _llm_is_synbio_relevant(title, summary, url)
+            return is_relevant
+        except Exception:
+            pass
+    # Fallback: check exact terms only
+    text = f"{title} {summary}".lower()
+    exact_terms = (
+        "合成生物", "合成生物学", "合成细胞", "synthetic biology", "synbio",
+        "biomanufacturing", "bioengineering", "precision fermentation",
+        "cell factory", "genome engineering", "metabolic engineering",
+    )
+    return any(term in text for term in exact_terms)
 POLICY_AUTHORITY_HINTS = (
     "gov", "政府", "科委", "科创局", "发改委", "工信", "科技部", "市监", "监管", "部门", "委员会", "协会",
     "ministry", "agency", "commission", "authority", "government", "programme", "program",
@@ -425,9 +408,11 @@ def _raw_candidate_urls(raw_obj: Any) -> set[str]:
 def infer_item_type_from_search_result(result: Dict[str, Any], query: str = "") -> str:
     """Infer the most likely raw category from search result text and query context."""
     url = str(_first_nonempty(result, SEARCH_RESULT_URL_KEYS) or "")
+    title = str(_first_nonempty(result, SEARCH_RESULT_TITLE_KEYS) or "")
+    summary = str(_first_nonempty(result, SEARCH_RESULT_SUMMARY_KEYS) or "")
     text = " ".join(str(part or "") for part in (
-        _first_nonempty(result, SEARCH_RESULT_TITLE_KEYS),
-        _first_nonempty(result, SEARCH_RESULT_SUMMARY_KEYS),
+        title,
+        summary,
         _first_nonempty(result, SEARCH_RESULT_SOURCE_KEYS),
         url,
         query,
@@ -446,8 +431,8 @@ def infer_item_type_from_search_result(result: Dict[str, Any], query: str = "") 
         return "policy"
     if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["research"]):
         return "research"
-    # 合成生物学组合匹配：即使没有典型研究关键词，合成生物学相关技术内容也归为 research
-    if _is_synbio_combination_match(text):
+    # LLM 语义判断：即使无典型研究关键词，合成生物学相关技术内容也归为 research
+    if _is_synbio_relevant(title=title, summary=summary, url=url):
         return "research"
     return "news"
 
@@ -2204,18 +2189,30 @@ def validate_email_mime_type(email_msg) -> Dict[str, Any]:
 
 
 def _looks_like_type(item: Dict[str, Any], item_type: str) -> bool:
+    """Check whether item content matches its claimed type and synbio relevance."""
     title_summary_url = f"{item.get('title', '')} {item.get('summary', '')} {item.get('url', '')}".lower()
     text = f"{title_summary_url} {item.get('source', '')}".lower()
     
-    # 合成生物学主题相关性：所有类型都必须与合成生物学相关
-    # 使用精确匹配或组合匹配（"合成/细胞/基因/代谢 + 生物相关术语"）
-    if not _is_synbio_relevant(text):
+    # 1. 合成生物学主题相关性（核心判断）
+    # 使用 LLM 语义判断（优先）或精确匹配（fallback）
+    is_relevant, reason, confidence = _is_synbio_relevant(
+        title=str(item.get("title", "")),
+        summary=str(item.get("summary", "")),
+        url=str(item.get("url", "")),
+    )
+    if not is_relevant:
         return False
     
-    if item_type == "news":
+    # 2. 如果 LLM 高置信度判断为合成生物学，且类型是 research 或 news，直接通过
+    # 避免老关键词列表的过度过滤（如"改造地衣芽孢杆菌高效合成血清素"不含"研究"）
+    if confidence in ("high", "llm", "cached") and item_type in ("news", "research"):
         return True
+    
+    # 3. 类型专用负向检查（避免错配）
     if any(keyword in title_summary_url for keyword in TYPE_NEGATIVE_KEYWORDS.get(item_type, ())):
         return False
+    
+    # 4. 类型专用正向检查（低置信度或 policy/funding/events 仍需关键词验证）
     if item_type == "policy":
         has_policy_keyword = any(keyword.lower() in title_summary_url for keyword in TYPE_TITLE_KEYWORDS["policy"])
         has_authority = any(hint.lower() in text for hint in POLICY_AUTHORITY_HINTS)
@@ -2224,6 +2221,11 @@ def _looks_like_type(item: Dict[str, Any], item_type: str) -> bool:
         if is_gov_cn and has_policy_keyword:
             return True
         return has_policy_keyword and has_authority
+    
+    if item_type in ("news", "research"):
+        # news/research 在 LLM 判断通过后已直接返回，走到这里是低置信度情况
+        return True
+    
     keywords = TYPE_TITLE_KEYWORDS.get(item_type, ())
     return any(keyword.lower() in text for keyword in keywords)
 
