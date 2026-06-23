@@ -37,13 +37,19 @@ try:
     from .console_utils import ensure_utf8_console
     from .ai_analysis_check import validate_ai_analysis
     from .render_utils import safe_url
+    from .llm_judge import Decision, is_synbio_relevant as _is_synbio_relevant_impl
+    from .llm_judge import judge_item_relevance
 except ImportError:
     from settings import CONFIG_DIR, DATA_DIR, REPORTS_DIR, TEMPLATES_DIR, now_local
     from console_utils import ensure_utf8_console
     from ai_analysis_check import validate_ai_analysis
     from render_utils import safe_url
+    from llm_judge import Decision, is_synbio_relevant as _is_synbio_relevant_impl
+    from llm_judge import judge_item_relevance
 
 ensure_utf8_console()
+
+RelevanceDecision = Decision
 
 # ==================== 配置常量 ====================
 
@@ -117,14 +123,14 @@ TYPE_NEGATIVE_KEYWORDS = {
     "events": ("investment report", "融资", "获投", "raised", "raises", "funding"),
 }
 
-# 合成生物学主题相关性判断：使用语义启发式模块替代硬编码关键词
-# 区分"工程化改造生物系统"（合成生物学）vs "纯化学合成" vs "基础生物学研究"
-from llm_judge import is_synbio_relevant as _is_synbio_relevant_impl
+def _is_synbio_relevant(title: str = "", summary: str = "", url: str = "") -> Tuple[bool, str, str]:
+    """Backward-compatible wrapper for llm_judge.is_synbio_relevant."""
+    return _is_synbio_relevant_impl(title, summary, url)
 
 
-def _is_synbio_relevant(title: str = "", summary: str = "", url: str = "") -> bool:
-    """Wrapper for llm_judge.is_synbio_relevant. Returns bool only."""
-    is_relevant, _, _ = _is_synbio_relevant_impl(title, summary, url)
+def _is_synbio_relevant_bool(title: str = "", summary: str = "", url: str = "") -> bool:
+    """Boolean convenience wrapper for classifier-like callers."""
+    is_relevant, _, _ = _is_synbio_relevant(title, summary, url)
     return is_relevant
 POLICY_AUTHORITY_HINTS = (
     "gov", "政府", "科委", "科创局", "发改委", "工信", "科技部", "市监", "监管", "部门", "委员会", "协会",
@@ -416,7 +422,7 @@ def infer_item_type_from_search_result(result: Dict[str, Any], query: str = "") 
     if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["research"]):
         return "research"
     # LLM 语义判断：即使无典型研究关键词，合成生物学相关技术内容也归为 research
-    if _is_synbio_relevant(title=title, summary=summary, url=url):
+    if _is_synbio_relevant_bool(title=title, summary=summary, url=url):
         return "research"
     return "news"
 
@@ -2515,6 +2521,8 @@ def build_approved_from_raw(
     check_title_match_enabled: bool = True,
     url_check_func=check_url_health,
     title_check_func=check_url_title_match,
+    llm_relevance_mode: str = "auto",
+    llm_judge_func=judge_item_relevance,
     search_log: Any | None = None,
 ) -> Dict[str, Any]:
     """Process every category from a full raw dict and persist approved/rejected outputs."""
@@ -2558,6 +2566,14 @@ def build_approved_from_raw(
             title_check_func=title_check_func,
         )
         all_rejected.extend(title_rejected)
+    llm_relevance_warnings: list[str] = []
+    if llm_relevance_mode != "off":
+        all_approved, llm_rejected, llm_relevance_warnings = remove_llm_rejected_items(
+            all_approved,
+            mode=llm_relevance_mode,
+            judge_func=llm_judge_func,
+        )
+        all_rejected.extend(llm_rejected)
     all_approved = sort_approved_items(all_approved)
     approved_check = validate_approved_schema(all_approved)
     approved_path = output_dir / f"approved_{report_date}.json"
@@ -2580,6 +2596,7 @@ def build_approved_from_raw(
         "approved_schema": approved_check,
         "search_log_check": search_log_check,
         "title_match_warnings": title_match_warnings,
+        "llm_relevance_warnings": llm_relevance_warnings,
     }
 
 
@@ -2664,6 +2681,56 @@ def remove_unhealthy_url_items(
         kept.append(item)
 
     return kept, rejected
+
+
+def remove_llm_rejected_items(
+    items: List[Dict[str, Any]],
+    mode: str = "auto",
+    judge_func=judge_item_relevance,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
+    """Run the LLM/semantic relevance gate over approved candidates."""
+    kept: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    warnings: list[str] = []
+
+    for item in items:
+        decision = judge_func(item, mode=mode)
+        if not isinstance(decision, Decision):
+            warnings.append(f"LLM领域审计返回非标准结果，已保守拒绝: {item.get('title', '')}")
+            rejected.append({
+                "item": item,
+                "reason": "[LLM领域审计] 非标准审计结果",
+                "action": "排除",
+            })
+            continue
+
+        annotated = dict(item)
+        annotated["llm_relevance"] = {
+            "is_approved": decision.is_approved,
+            "domain_relevance": decision.domain_relevance,
+            "confidence": decision.confidence,
+            "reason": decision.reason,
+            "evidence_spans": decision.evidence_spans,
+            "section": decision.section,
+            "provider": decision.provider,
+        }
+        annotated["domain_relevance"] = decision.domain_relevance
+        annotated["confidence"] = decision.confidence
+
+        if decision.provider == "heuristic-fallback":
+            warnings.append(f"LLM领域审计失败，已对候选使用本地fallback: {item.get('title', '')}")
+
+        if decision.is_approved:
+            kept.append(annotated)
+            continue
+
+        rejected.append({
+            "item": annotated,
+            "reason": f"[LLM领域审计] {decision.reject_message()}",
+            "action": "排除",
+        })
+
+    return kept, rejected, warnings
 
 
 def markdown_cell(value: object) -> str:
@@ -2888,6 +2955,7 @@ def main():
     parser.add_argument("--skip-url-health", action="store_true", help="仅离线测试/受限网络临时使用：跳过build-approved链接健康检查")
     parser.add_argument("--check-title-match", action="store_true", help="兼容旧命令；build-approved默认已开启标题-URL匹配")
     parser.add_argument("--skip-title-match", action="store_true", help="仅离线测试/受限网络临时使用：跳过build-approved标题-URL匹配")
+    parser.add_argument("--llm-relevance-mode", choices=["auto", "llm", "heuristic", "off"], default="auto", help="领域相关性审计模式：auto默认有LLM配置则调用，否则本地语义fallback")
     parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验五轮搜索证据")
     parser.add_argument("--strict-search-coverage", action="store_true", help="兼容旧命令；build-approved默认已严格校验必搜query和候选URL覆盖")
     parser.add_argument("--render-md", type=str, help="从approved JSON生成确定性Markdown报告")
@@ -2990,6 +3058,7 @@ def main():
             output_dir=output_dir,
             check_url_health_enabled=not args.skip_url_health,
             check_title_match_enabled=not args.skip_title_match,
+            llm_relevance_mode=args.llm_relevance_mode,
             search_log=search_log,
         )
         print(f"approved已生成: {result['approved_path']} ({len(result['approved'])}条)")
@@ -3010,6 +3079,10 @@ def main():
         if result.get("title_match_warnings"):
             print(f"标题匹配警告: {len(result['title_match_warnings'])}个")
             for warning in result["title_match_warnings"][:10]:
+                print(f"  - {warning}")
+        if result.get("llm_relevance_warnings"):
+            print(f"LLM领域审计警告: {len(result['llm_relevance_warnings'])}个")
+            for warning in result["llm_relevance_warnings"][:10]:
                 print(f"  - {warning}")
         if not result["approved_schema"]["is_valid"]:
             print(f"approved schema错误: {len(result['approved_schema']['errors'])}个")

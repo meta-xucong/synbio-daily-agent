@@ -57,6 +57,19 @@ python scripts\send_email.py YYYY-MM-DD reports\YYYY-MM-DD.md reports\synbio_dai
 
 Production runs should pass `--search-log data\search_log_YYYY-MM-DD.json` to `--build-approved`. The send gate requires the same search log file, verifies that it covers rounds `r1` through `r5`, and checks all configured required queries. Every raw candidate must include a `source_round` that matches one of those logged rounds.
 
+## LLM Relevance Gate
+
+`--build-approved` runs `--llm-relevance-mode auto` by default. When `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` are present, `scripts\llm_judge.py` calls an Anthropic-compatible Messages API and expects strict JSON. Without those environment variables it falls back to the local semantic heuristic, which rejects obvious out-of-domain biology/chemistry items but keeps uncertain candidates for the deterministic gates and review trail.
+
+Use these modes deliberately:
+
+- `auto`: production default; use provider when configured, otherwise fallback.
+- `llm`: require provider semantics; provider errors become rejected/escalated LLM audit results.
+- `heuristic`: local fallback only for offline diagnostics.
+- `off`: disables the semantic gate and should not be used in production.
+
+Never write provider tokens to the repository, config examples, fixtures, docs, or captured test logs. Tests must use fake clients/openers rather than live external calls. See `docs\LLM_RELEVANCE_GATE.md` for the full design.
+
 ## Runtime Artifacts
 
 Do not commit generated runtime data from `data/` or `reports/`. Test fixtures belong under `tests/fixtures/`.

@@ -58,7 +58,7 @@ synbio-daily-agent/
 Step 1: 读取配置（anti_deviation_rules.md + 数据源 + 去重规则）
 Step 2: 多维度搜索（五轮搜索法）
 Step 3: 保存结构化搜索日志，并自动生成 raw → data/search_log_YYYY-MM-DD.json + data/raw_YYYY-MM-DD.json
-Step 4: 调用 report_pipeline.py --build-approved --search-log 处理（必搜query门禁+覆盖率审计+去重+过滤+死链剔除+标题匹配+排序；链接健康、标题匹配和搜索覆盖默认严格开启）
+Step 4: 调用 report_pipeline.py --build-approved --search-log 处理（必搜query门禁+覆盖率审计+去重+过滤+死链剔除+标题匹配+LLM领域审计+排序；链接健康、标题匹配、领域审计和搜索覆盖默认开启）
 Step 5: 调用 report_pipeline.py --render-md --raw 基于 approved 生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 调用 generate_from_template.py 生成定稿H5 HTML报告
@@ -127,8 +127,9 @@ python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --da
    - 当前批次内部重复与同URL不同标题冲突会被拒绝
 6. **链接健康检查**: build-approved 默认会剔除 4xx/5xx、超时、证书失败以及“文章已删除/账号已注销/页面不存在”等软失效页面；仅离线测试可用 `--skip-url-health` 临时关闭
 7. **标题匹配检查**: build-approved 默认会读取页面标题信号，剔除 URL 可访问但标题明显张冠李戴的信息；网络错误只记录 warning，仅离线测试可用 `--skip-title-match` 临时关闭
-8. **价值评分**: 保留 `raw_score`，`value_score` 归一化为0-10
-9. **approved schema**: 发送前要求 `title/source/date/summary/url/type/raw_score/value_score`，并检查类别一致性、日期、URL和分数范围
+8. **LLM 领域审计**: `--llm-relevance-mode auto` 默认开启；配置 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN` 后调用 Anthropic-compatible provider 判断是否属于合成生物/生物制造领域，未配置时使用本地语义 fallback 拦截明显跑题项
+9. **价值评分**: 保留 `raw_score`，`value_score` 归一化为0-10
+10. **approved schema**: 发送前要求 `title/source/date/summary/url/type/raw_score/value_score`，并检查类别一致性、日期、URL和分数范围
 
 ### 3. 报告格式验证
 

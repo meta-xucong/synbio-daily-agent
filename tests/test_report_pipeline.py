@@ -957,6 +957,111 @@ def test_build_approved_can_skip_network_gates_explicitly(tmp_path, monkeypatch)
     assert [item["title"] for item in result["approved"]] == ["Offline test item"]
 
 
+def test_build_approved_llm_gate_rejects_out_of_scope_item(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    raw = {
+        "news": [
+            _item(
+                title="Engineered microbe cell factory improves fermentation yield",
+                summary="Synthetic biology platform uses metabolic engineering and cell factory design.",
+                url="https://example.com/news/cell-factory",
+            ),
+            _item(
+                title="Synthetic biology forum mentions hospital expansion",
+                summary="The healthcare forum mentioned synthetic biology while discussing hospital expansion.",
+                url="https://example.com/news/hospital-expansion",
+            ),
+        ],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def fake_judge(item, mode="auto"):
+        if "hospital" in item["title"].lower():
+            return report_pipeline.RelevanceDecision(
+                is_approved=False,
+                domain_relevance="out_of_scope",
+                confidence=0.93,
+                reason="只是泛行业会议提及，不是合成生物事件",
+                reject_reason="普通医疗行业扩张，缺少合成生物工程化证据",
+                evidence_spans=["hospital expansion"],
+                section="news",
+                provider="llm-test",
+            )
+        return report_pipeline.RelevanceDecision(
+            is_approved=True,
+            domain_relevance="core_synbio",
+            confidence=0.94,
+            reason="含代谢工程和细胞工厂证据",
+            evidence_spans=["metabolic engineering", "cell factory"],
+            section="news",
+            provider="llm-test",
+        )
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+        llm_relevance_mode="llm",
+        llm_judge_func=fake_judge,
+    )
+
+    assert [item["title"] for item in result["approved"]] == [
+        "Engineered microbe cell factory improves fermentation yield"
+    ]
+    assert result["approved"][0]["llm_relevance"]["provider"] == "llm-test"
+    assert any("[LLM领域审计]" in item["reason"] for item in result["rejected"])
+
+
+def test_build_approved_can_disable_llm_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    raw = {
+        "news": [_item(
+            title="Synthetic biology platform expansion",
+            summary="Synthetic biology platform expands fermentation manufacturing.",
+            url="https://example.com/news/platform-expansion",
+        )],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def fail_if_called(item, mode="auto"):
+        raise AssertionError("LLM gate should be disabled")
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+        llm_relevance_mode="off",
+        llm_judge_func=fail_if_called,
+    )
+
+    assert [item["title"] for item in result["approved"]] == [
+        "Synthetic biology platform expansion"
+    ]
+    assert "llm_relevance" not in result["approved"][0]
+
+
+def test_looks_like_type_uses_tuple_relevance_wrapper_without_type_error():
+    assert report_pipeline._looks_like_type(
+        _item(
+            title="Synthetic biology platform expansion",
+            summary="Synthetic biology platform expands fermentation manufacturing.",
+        ),
+        "news",
+    )
+
+
 def test_build_approved_can_drop_unhealthy_primary_urls(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])

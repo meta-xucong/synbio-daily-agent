@@ -69,7 +69,21 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 - `value_score` 为 0-10，`raw_score` 保留原始分
 - approved schema 必须包含 `title/source/date/summary/url/type/raw_score/value_score`，日期、类别、URL和分数范围都会在发送前再次校验
 - 链接健康和标题-URL匹配在 `--build-approved` 默认开启；仅离线测试或临时排障可用 `--skip-url-health` / `--skip-title-match` 显式关闭
+- LLM 领域审计在 `--build-approved` 默认以 `--llm-relevance-mode auto` 开启；当环境变量 `ANTHROPIC_BASE_URL` 与 `ANTHROPIC_AUTH_TOKEN` 存在时调用 Anthropic-compatible provider 做语义审稿，未配置时使用本地 fallback 拦截明显跑题信息
+- 正式运行不要使用 `--llm-relevance-mode off`；离线测试可临时使用 `heuristic` 或 `off`，但必须在测试记录中说明
 - 必搜 query 与 search_log 候选 URL 覆盖在 `--build-approved` 强制开启；如果需要人工丢弃某条结果，应先让它进入 raw，再由 rejected 记录拒绝原因。
+
+### LLM 领域审计 Provider
+
+生产环境只通过环境变量提供 provider 配置，严禁把 token 写入仓库、配置样例、测试 fixture 或运行日志：
+
+```powershell
+$env:ANTHROPIC_BASE_URL = "https://your-provider.example"
+$env:ANTHROPIC_AUTH_TOKEN = "<set-in-local-secret-store>"
+$env:ANTHROPIC_MODEL = "claude-3-5-sonnet-20241022"
+```
+
+LLM 审计只判断“是否属于合成生物/生物制造领域”，不会替代 URL 健康、标题匹配、时效性、去重和 approved URL 一致性门禁。被拒绝的候选会进入 `rejected_YYYY-MM-DD.json`，原因以 `[LLM领域审计]` 开头。
 
 ## 生成 Markdown 报告
 
