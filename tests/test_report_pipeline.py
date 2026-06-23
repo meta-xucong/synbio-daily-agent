@@ -868,14 +868,14 @@ def test_build_approved_drops_conflicting_same_url_titles(tmp_path, monkeypatch)
     raw = {
         "news": [
             _item(
-                title="Nature reports engineered legumes",
-                summary="A Nature paper reports engineered legumes for nitrogen fixation.",
+                title="Engineered yeast platform for nitrogen fixation",
+                summary="A study reports engineered yeast platform for nitrogen fixation.",
                 url="https://example.com/news/shared",
                 date="2026-06-10",
             ),
             _item(
                 title="AlphaFold revolutionizes protein design",
-                summary="A different story incorrectly reuses the same Nature URL.",
+                summary="A different story about synthetic biology but incorrectly reuses the same URL.",
                 url="https://example.com/news/shared?utm_source=x",
                 date="2026-06-10",
             ),

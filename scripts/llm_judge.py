@@ -91,7 +91,7 @@ class JudgeClient(Protocol):
 # Strong positive signals: engineered biological systems and biomanufacturing.
 _STRONG_POSITIVE = frozenset([
     "代谢工程", "基因编辑", "crispr", "基因线路", "基因回路", "基因电路",
-    "细胞工厂", "底盘细胞", "底盘菌", "合成生物学", "synthetic biology",
+    "细胞工厂", "底盘细胞", "底盘菌", "合成生物", "合成生物学", "synthetic biology",
     "synbio", "生物制造", "biomanufacturing", "dna合成", "蛋白质工程",
     "途径重构", "代谢通路", "异源表达", "异源合成", "异源生产",
     "定向进化", "高通量筛选", "自动化平台", "生物反应器", "发酵优化",
@@ -103,10 +103,28 @@ _STRONG_POSITIVE = frozenset([
     "一碳生物技术", "co₂固定", "人工固碳", "人工代谢途径",
     "工程菌", "工程菌株", "重组菌", "重组表达", "重组蛋白",
     "从头设计", "从头合成", "设计构建", "改造优化",
+    "cell-free", "biosynthesis", "biosynthetic", "synthetic genomics",
     "metabolic engineering", "cell factory", "engineered microbe",
     "engineered microbes", "engineered yeast", "precision fermentation",
     "pathway engineering", "genome editing", "protein engineering",
     "gene circuit", "dna synthesis", "fermentation",
+])
+
+# Minimum bio signals: if a candidate lacks ANY of these, it is almost certainly not biology-related.
+_MINIMUM_BIO_SIGNALS = frozenset([
+    "cell", "cells", "gene", "genes", "protein", "proteins", "enzyme", "enzymes",
+    "bacteria", "bacterial", "microbe", "microbes", "microbial", "virus", "viral",
+    "organism", "organisms", "biological", "biotech", "biotechnology", "biomanufacturing",
+    "genome", "genomic", "genomics", "dna", "rna", "metabolism", "metabolic",
+    "fermentation", "ferment", "biosynthesis", "biosynthetic", "synthetic", "engineering",
+    "pathway", "pathways", "strain", "strains", "plasmid", "vector", "vectors", "host",
+    "expression", "recombinant", "sequencing", "crispr", "editing", "molecular",
+    "biochemistry", "biochemical", "biofuel", "biomaterial", "bioprocess",
+    "organism", "organisms", "microorganism", "microorganisms", "bioreactor",
+    "酵母", "细菌", "基因", "蛋白", "细胞", "代谢", "发酵", "合成", "工程",
+    "编辑", "序列", "测序", "酶", "菌株", "质粒", "载体", "表达", "重组",
+    "生物", "分子", "生化", "微生物", "有机体", "生物反应器", "生物技术",
+    "途径", "通路", "改造", "构建", "设计", "优化", "调控",
 ])
 
 _STRONG_NEGATIVE = frozenset([
@@ -132,9 +150,16 @@ _NATURAL_PROCESS = frozenset([
     "疾病机制", "发病机制", "病理机制", "病理生理", "致病机制",
     "动物模型", "小鼠模型", "大鼠模型", "临床前",
     "行为学", "社交行为", "学习记忆", "认知功能", "情绪调节",
-    "neuronal", "neuron", "neural circuit", "neural circuits", "synaptic",
-    "receptor signaling", "endogenous receptor", "endogenous", "social behavior",
-    "signal transduction", "immune response", "inflammatory response",
+    "neuronal", "neuron", "neurons", "neural circuit", "neural circuits", "synaptic",
+    "receptor signaling", "receptor", "receptors", "endogenous receptor", "endogenous", "social behavior",
+    "signal transduction", "signaling pathway", "signaling", "pathway", "pathways",
+    "immune response", "immune", "inflammatory response", "inflammation", "inflammatory",
+    "cytokine", "cytokines", "il-1", "interleukin", "interferon", "chemokine",
+    "apoptosis", "autophagy", "necrosis", "pyroptosis", "cell death",
+    "natural process", "natural product", "innate", "innate immunity", "adaptive immunity",
+    "neurotransmitter", "neurotransmission", "synapse", "synapses", "connectivity",
+    "behavior", "behaviour", "cognitive", "cognition", "memory", "learning",
+    "physiology", "physiological", "pathology", "pathological", "disease mechanism",
 ])
 
 _RE_ENGINEERING = re.compile(
@@ -314,11 +339,25 @@ def heuristic_relevance_decision(item: dict[str, Any]) -> Decision:
             section=section,
         )
 
+    # Minimum bio-signal gate: if the text contains absolutely no biology-related
+    # terminology, it cannot be synthetic biology (or even biology adjacent).
+    bio_signal = _count_hits(text, _MINIMUM_BIO_SIGNALS)
+    if bio_signal == 0:
+        return Decision(
+            is_approved=False,
+            domain_relevance="out_of_scope",
+            confidence=0.95,
+            reason="内容不含任何生物学术语，明显不属于合成生物学或生物学领域",
+            reject_reason="非生物学内容，完全超出合成生物学范围",
+            section=section,
+        )
+
     return Decision(
-        is_approved=True,
-        domain_relevance="adjacent",
-        confidence=0.70,
-        reason="本地语义fallback未发现明确跑题证据，保留给后续门禁/人工复核",
+        is_approved=False,
+        domain_relevance="uncertain",
+        confidence=0.55,
+        reason="本地语义fallback未找到明确的合成生物工程化证据，保守拒绝",
+        reject_reason="未找到明确的合成生物工程化证据",
         evidence_spans=[title or summary[:80] or url],
         section=section,
     )
