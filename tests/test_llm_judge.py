@@ -1,4 +1,5 @@
 import json
+import pytest
 import sys
 from pathlib import Path
 
@@ -152,34 +153,48 @@ def test_judge_item_relevance_auto_falls_back_when_unconfigured(monkeypatch):
     assert decision.provider == "heuristic"
 
 
-def test_judge_item_relevance_llm_failure_escalates():
+def test_judge_item_relevance_llm_failure_raises():
     class BrokenClient:
         is_configured = True
 
         def judge(self, item):
             raise RuntimeError("provider unavailable")
 
-    decision = llm_judge.judge_item_relevance({}, mode="llm", client=BrokenClient())
+    with pytest.raises(RuntimeError) as exc_info:
+        llm_judge.judge_item_relevance({}, mode="llm", client=BrokenClient())
 
-    assert not decision.is_approved
-    assert decision.provider == "llm"
-    assert decision.decision == "escalate"
-    assert "LLM领域审计失败" in decision.reject_message()
+    assert "LLM领域审计失败" in str(exc_info.value)
 
 
-def test_judge_item_relevance_auto_marks_provider_failure_fallback():
+def test_judge_item_relevance_auto_configured_failure_raises():
     class BrokenClient:
         is_configured = True
 
         def judge(self, item):
             raise RuntimeError("provider unavailable")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        llm_judge.judge_item_relevance({
+            "title": "工程菌细胞工厂提升萜类化合物生物制造效率",
+            "summary": "代谢工程构建细胞工厂。",
+            "type": "research",
+        }, mode="auto", client=BrokenClient())
+
+    assert "LLM API已配置但调用失败" in str(exc_info.value)
+
+
+def test_judge_item_relevance_auto_not_configured_fallbacks():
+    class NotConfiguredClient:
+        is_configured = False
+
+        def judge(self, item):
+            raise RuntimeError("should not be called")
 
     decision = llm_judge.judge_item_relevance({
         "title": "工程菌细胞工厂提升萜类化合物生物制造效率",
         "summary": "代谢工程构建细胞工厂。",
         "type": "research",
-    }, mode="auto", client=BrokenClient())
+    }, mode="auto", client=NotConfiguredClient())
 
     assert decision.is_approved
-    assert decision.provider == "heuristic-fallback"
-    assert "LLM领域审计失败" in decision.reason
+    assert decision.provider == "heuristic"

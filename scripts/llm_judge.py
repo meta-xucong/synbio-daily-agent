@@ -20,7 +20,15 @@ from typing import Any, Callable, Optional, Protocol, Tuple
 from urllib.request import Request, urlopen
 
 
-DEFAULT_MODEL = "claude-3-5-sonnet-20241022"
+def _default_model() -> str:
+    """Return default model based on the configured base URL."""
+    base = os.getenv("ANTHROPIC_BASE_URL", "")
+    if "aiself.vip" in base:
+        return "kimi-for-coding"
+    return "claude-3-5-sonnet-20241022"
+
+
+DEFAULT_MODEL = _default_model()
 MIN_APPROVAL_CONFIDENCE = 0.70
 ALLOWED_RELEVANCE = {"core_synbio", "adjacent", "out_of_scope", "uncertain"}
 ALLOWED_SECTIONS = {"news", "research", "funding", "policy", "events"}
@@ -555,26 +563,18 @@ def judge_item_relevance(
         )
     if selected_mode == "heuristic":
         return heuristic_relevance_decision(item)
-    try:
-        if selected_mode == "llm" or (client or LLMClient()).is_configured:
-            return llm_relevance_decision(item, client=client)
-    except Exception as exc:
-        if selected_mode == "llm":
-            return Decision(
-                is_approved=False,
-                domain_relevance="uncertain",
-                confidence=0.0,
-                reason=f"LLM领域审计失败: {exc}",
-                reject_reason="LLM领域审计失败，未进入日报",
-                provider="llm",
-                decision="escalate",
-            )
-        fallback = heuristic_relevance_decision(item)
-        fallback.provider = "heuristic-fallback"
-        fallback.reason = f"LLM领域审计失败，使用本地fallback: {fallback.reason}"
-        if fallback.reject_reason:
-            fallback.reject_reason = f"LLM领域审计失败，使用本地fallback: {fallback.reject_reason}"
-        return fallback
+    client_instance = client or LLMClient()
+    if selected_mode == "llm" or (selected_mode == "auto" and client_instance.is_configured):
+        try:
+            return llm_relevance_decision(item, client=client_instance)
+        except Exception as exc:
+            if selected_mode == "llm":
+                # Fail closed: when LLM is explicitly required, any API failure
+                # should stop the pipeline rather than silently falling back.
+                raise RuntimeError(f"LLM领域审计失败: {exc}") from exc
+            # auto mode: client is configured but API call failed -> also fail closed
+            raise RuntimeError(f"LLM API已配置但调用失败: {exc}") from exc
+    # auto mode: client not configured -> fallback to heuristic
     return heuristic_relevance_decision(item)
 
 
