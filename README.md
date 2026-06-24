@@ -56,9 +56,9 @@ synbio-daily-agent/
 
 ```
 Step 1: 读取配置（anti_deviation_rules.md + 数据源 + 去重规则）
-Step 2: 多维度搜索（五轮搜索法）
-Step 3: 保存结构化搜索日志，并自动生成 raw → data/search_log_YYYY-MM-DD.json + data/raw_YYYY-MM-DD.json
-Step 4: 调用 report_pipeline.py --build-approved --search-log 处理（必搜query门禁+覆盖率审计+去重+过滤+死链剔除+标题匹配+LLM领域审计+排序；链接健康、标题匹配、领域审计和搜索覆盖默认开启）
+Step 2: 生成 LLM 动态搜索策略，并执行基座必搜 + 动态 query
+Step 3: 保存结构化搜索日志，并自动生成 raw → data/search_strategy_YYYY-MM-DD.json + data/search_log_YYYY-MM-DD.json + data/raw_YYYY-MM-DD.json
+Step 4: 调用 report_pipeline.py --build-approved --search-log --search-strategy 处理（基座必搜门禁+LLM动态query门禁+覆盖率审计+去重+过滤+死链剔除+标题匹配+LLM领域审计+排序；链接健康、标题匹配、领域审计和搜索覆盖默认开启）
 Step 5: 调用 report_pipeline.py --render-md --raw 基于 approved 生成Markdown报告
 Step 6: 调用 report_pipeline.py 验证报告格式
 Step 7: 调用 generate_from_template.py 生成定稿H5 HTML报告
@@ -66,13 +66,13 @@ Step 8: 调用 generate_from_template.py 生成定稿邮件正文
 Step 9: 邮件推送（send gate通过后才发送）
 ```
 
-**任何情况下，Step 3→Step 4→Step 5→Step 6 必须连续执行，不得跳过。发送 gate 会阻断缺少搜索日志、缺少 `config/search_queries.json` 必搜查询记录，或 raw 候选缺少 `source_round` 的报告。**
+**任何情况下，Step 2→Step 3→Step 4→Step 5→Step 6 必须连续执行，不得跳过。发送 gate 会阻断缺少搜索日志、缺少 `config/search_queries.json` 必搜查询记录，或 raw 候选缺少 `source_round` 的报告；build-approved 传入 `--search-strategy` 时还会阻断未执行的 LLM 动态 query。**
 
 ---
 
 ## 核心机制详解
 
-### 1. 五轮搜索法
+### 1. 基座必搜 + LLM 动态搜索策略
 
 | 轮次 | 目的 | 示例 Query |
 |------|------|-----------|
@@ -82,7 +82,7 @@ Step 9: 邮件推送（send gate通过后才发送）
 | 第四轮 | 生成前复查 | `合成生物 今日 最新 白皮书 报告 发布 签约` |
 | 第五轮 | 政府/会议强制搜索 | `site:gov.cn 合成生物 政策` |
 
-`config/search_queries.json` 是每日必搜 query 的唯一权威清单。每个 query 建议 limit ≥ 15；即使无结果也必须记录 `executed: true, results_count: 0`。搜索日志应保留结构化结果（title/url/snippet/source/date），不要只保存人工挑选后的 URL。
+`config/search_queries.json` 是每日基座必搜 query 的权威清单；`config/llm_search_strategy.json` 是 LLM 搜索中枢的种子记忆，不是固定 query 清单。每天先生成 `data/search_strategy_YYYY-MM-DD.json`，再执行基座 query 和策略里的动态 query。每个 query 建议 limit ≥ 15；即使无结果也必须记录 `executed: true, results_count: 0`。搜索日志应保留结构化结果（title/url/snippet/source/date），不要只保存人工挑选后的 URL。
 
 ### 2. 脚本处理（report_pipeline.py）
 
@@ -92,9 +92,11 @@ Step 9: 邮件推送（send gate通过后才发送）
 推荐生产命令:
 
 ```powershell
+python scripts\llm_search_strategy.py --date YYYY-MM-DD --output data\search_strategy_YYYY-MM-DD.json --mode llm
+# 执行 config/search_queries.json 基座 query + data\search_strategy_YYYY-MM-DD.json 动态 query，保存 search_log 后继续：
 python scripts\report_pipeline.py --build-raw-from-search data\search_log_YYYY-MM-DD.json --date YYYY-MM-DD --output data\raw_YYYY-MM-DD.json
-python scripts\audit_search_log.py data\search_log_YYYY-MM-DD.json --raw data\raw_YYYY-MM-DD.json
-python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --search-log data\search_log_YYYY-MM-DD.json
+python scripts\audit_search_log.py data\search_log_YYYY-MM-DD.json --raw data\raw_YYYY-MM-DD.json --search-strategy data\search_strategy_YYYY-MM-DD.json
+python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --search-log data\search_log_YYYY-MM-DD.json --search-strategy data\search_strategy_YYYY-MM-DD.json
 python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --raw data\raw_YYYY-MM-DD.json --output reports\YYYY-MM-DD.md
 ```
 
@@ -116,20 +118,21 @@ python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --da
 处理流程:
 1. **URL过滤**: 拒绝站点首页、分类/聚合页、黑名单域名和不安全URL
 2. **时效性过滤**: 新闻7天、研究14天、融资7天、政策30天、活动90天；日期无法解析直接拒绝
-3. **必搜 query 门禁**: build-approved 和 send gate 默认要求 search_log 覆盖 `config/search_queries.json` 的所有 required query；缺少 `site:` 定向查询会阻断
-4. **搜索覆盖率审计**: 强制要求 search_log 中的候选 URL 都进入 raw，防止搜索结果被人工挑选阶段静默丢弃
-5. **去重检查**:
+3. **基座必搜 query 门禁**: build-approved 和 send gate 默认要求 search_log 覆盖 `config/search_queries.json` 的所有 required query；缺少 `site:` 定向查询会阻断
+4. **LLM动态 query 门禁**: 传入 `--search-strategy` 时，策略中的 required query 必须在 search_log 中成功执行；缺失或失败会阻断 build-approved
+5. **搜索覆盖率审计**: 强制要求 search_log 中的候选 URL 都进入 raw，防止搜索结果被人工挑选阶段静默丢弃
+6. **去重检查**:
    - 指纹匹配（MD5哈希，基于 company+type+完整title）
    - 公司重复（同一公司+同一类型视为重复）
    - 标题相似度（SequenceMatcher ≥80% 视为重复）
    - 最近30天历史报告 + `data/history_index.json` 持久化索引
    - 主链接和 `urls` 备用链接都会参与跨天去重
    - 当前批次内部重复与同URL不同标题冲突会被拒绝
-6. **链接健康检查**: build-approved 默认会剔除 4xx/5xx、超时、证书失败以及“文章已删除/账号已注销/页面不存在”等软失效页面；仅离线测试可用 `--skip-url-health` 临时关闭
-7. **标题匹配检查**: build-approved 默认会读取页面标题信号，剔除 URL 可访问但标题明显张冠李戴的信息；网络错误只记录 warning，仅离线测试可用 `--skip-title-match` 临时关闭
-8. **LLM 领域审计**: `--llm-relevance-mode auto` 默认开启；配置 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN` 后调用 Anthropic-compatible provider 判断是否属于合成生物/生物制造领域，未配置时使用本地语义 fallback 拦截明显跑题项
-9. **价值评分**: 保留 `raw_score`，`value_score` 归一化为0-10
-10. **approved schema**: 发送前要求 `title/source/date/summary/url/type/raw_score/value_score`，并检查类别一致性、日期、URL和分数范围
+7. **链接健康检查**: build-approved 默认会剔除 4xx/5xx、超时、证书失败以及“文章已删除/账号已注销/页面不存在”等软失效页面；仅离线测试可用 `--skip-url-health` 临时关闭
+8. **标题匹配检查**: build-approved 默认会读取页面标题信号，剔除 URL 可访问但标题明显张冠李戴的信息；网络错误只记录 warning，仅离线测试可用 `--skip-title-match` 临时关闭
+9. **LLM 领域审计**: `--llm-relevance-mode auto` 默认开启；配置 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN` 后调用 Anthropic-compatible provider 判断是否属于合成生物/生物制造领域，未配置时使用本地语义 fallback 拦截明显跑题项
+10. **价值评分**: 保留 `raw_score`，`value_score` 归一化为0-10
+11. **approved schema**: 发送前要求 `title/source/date/summary/url/type/raw_score/value_score`，并检查类别一致性、日期、URL和分数范围
 
 ### 3. 报告格式验证
 

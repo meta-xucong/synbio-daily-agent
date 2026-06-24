@@ -93,6 +93,22 @@
         "site:scientificwisdom.org 合成生物",
         "site:academicx.org 合成生物"
       ]
+    },
+    {
+      "round_id": "r6",
+      "theme": "生物制造（Biomanufacturing）独立主题搜索",
+      "required_queries": [
+        "生物制造 最新新闻 2026",
+        "生物制造 融资 投资",
+        "生物制造 政策 落地",
+        "生物制造 产业化 项目",
+        "biomanufacturing news 2026",
+        "biomanufacturing funding investment",
+        "biomanufacturing policy regulation",
+        "precision fermentation scale up",
+        "cell factory industrial scale",
+        "bio-based materials manufacturing"
+      ]
     }
   ]
 }

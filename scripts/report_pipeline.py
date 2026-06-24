@@ -544,6 +544,23 @@ def load_search_query_config() -> Dict[str, Any]:
     return config
 
 
+def find_default_search_strategy_path(report_date: str, search_log_path: Path | None = None) -> Path | None:
+    """Return the default search_strategy path when it already exists."""
+    candidates: list[Path] = []
+    if search_log_path is not None:
+        candidates.append(search_log_path.parent / f"search_strategy_{report_date}.json")
+    candidates.append(DATA_DIR / f"search_strategy_{report_date}.json")
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _normalize_query_text(query: Any) -> str:
     return re.sub(r"\s+", " ", str(query or "")).strip()
 
@@ -719,6 +736,103 @@ def validate_required_search_queries(search_log: Any) -> Dict[str, Any]:
         "executed_required_count": executed_required_count,
         "missing_by_round": missing_by_round,
         "failed_by_round": failed_required_by_round,
+    }
+
+
+def validate_search_strategy_execution(search_strategy: Any, search_log: Any) -> Dict[str, Any]:
+    """Validate that LLM-generated dynamic strategy queries were executed."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(search_strategy, dict):
+        return {
+            "is_valid": False,
+            "errors": ["search_strategy必须是对象"],
+            "warnings": warnings,
+            "required_total": 0,
+            "executed_required_count": 0,
+            "missing_queries": [],
+            "failed_queries": [],
+        }
+
+    raw_queries = search_strategy.get("queries")
+    if not isinstance(raw_queries, list):
+        return {
+            "is_valid": False,
+            "errors": ["search_strategy缺少queries列表"],
+            "warnings": warnings,
+            "required_total": 0,
+            "executed_required_count": 0,
+            "missing_queries": [],
+            "failed_queries": [],
+        }
+
+    required_queries: list[str] = []
+    malformed = 0
+    for entry in raw_queries:
+        if isinstance(entry, str):
+            query = _normalize_query_text(entry)
+            required = True
+        elif isinstance(entry, dict):
+            query = _normalize_query_text(entry.get("query") or entry.get("q") or "")
+            required = _bool_from_search_log_value(entry.get("required", True))
+        else:
+            query = ""
+            required = True
+        if not query:
+            malformed += 1
+            continue
+        if required and query not in required_queries:
+            required_queries.append(query)
+    if malformed:
+        errors.append(f"search_strategy有{malformed}条query格式无效")
+
+    executed_by_round, failed_by_round = _collect_search_log_query_status(search_log)
+    executed_all = {
+        query
+        for round_queries in executed_by_round.values()
+        for query in round_queries
+    }
+    failed_all: dict[str, dict[str, str]] = {}
+    for round_id, round_failed in failed_by_round.items():
+        for query, info in round_failed.items():
+            failed_all[query] = {
+                "query": info.get("query", query),
+                "error": info.get("error", ""),
+                "round": round_id,
+            }
+
+    missing_queries: list[str] = []
+    failed_queries: list[dict[str, str]] = []
+    for query in required_queries:
+        normalized = _normalize_query_text(query)
+        if normalized in executed_all:
+            continue
+        if normalized in failed_all:
+            failed_queries.append(failed_all[normalized])
+        else:
+            missing_queries.append(query)
+
+    if missing_queries:
+        preview = "；".join(missing_queries[:5])
+        suffix = f" 等{len(missing_queries)}条" if len(missing_queries) > 5 else ""
+        errors.append(f"LLM搜索策略缺少执行记录: {preview}{suffix}")
+    if failed_queries:
+        formatted = []
+        for item in failed_queries[:5]:
+            error = item.get("error") or "未记录原因"
+            formatted.append(f"{item.get('query', '')} ({error})")
+        suffix = f" 等{len(failed_queries)}条" if len(failed_queries) > 5 else ""
+        errors.append(f"LLM搜索策略query执行失败: {'；'.join(formatted)}{suffix}")
+
+    executed_required_count = len(required_queries) - len(missing_queries) - len(failed_queries)
+    return {
+        "is_valid": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "required_total": len(required_queries),
+        "executed_required_count": executed_required_count,
+        "missing_queries": missing_queries,
+        "failed_queries": failed_queries,
     }
 
 
@@ -2401,6 +2515,7 @@ def validate_search_log(
     search_log: Any,
     raw_obj: Any | None = None,
     strict_coverage: bool = False,
+    search_strategy: Any | None = None,
 ) -> Dict[str, Any]:
     """Validate evidence that all five search rounds were executed."""
     errors: list[str] = []
@@ -2414,6 +2529,7 @@ def validate_search_log(
             "rounds_seen": [],
             "total_queries": 0,
             "required_query_check": None,
+            "strategy_check": None,
         }
 
     rounds = search_log.get("rounds")
@@ -2425,6 +2541,7 @@ def validate_search_log(
             "rounds_seen": [],
             "total_queries": 0,
             "required_query_check": None,
+            "strategy_check": None,
         }
 
     rounds_seen: set[str] = set()
@@ -2459,6 +2576,13 @@ def validate_search_log(
             errors.extend(required_query_check["errors"])
         else:
             warnings.extend(required_query_check["errors"])
+
+    strategy_check = None
+    if search_strategy is not None:
+        strategy_check = validate_search_strategy_execution(search_strategy, search_log)
+        if strategy_check["errors"]:
+            errors.extend(strategy_check["errors"])
+        warnings.extend(strategy_check.get("warnings", []))
 
     coverage_check = None
     if raw_obj is not None:
@@ -2510,6 +2634,7 @@ def validate_search_log(
         "total_queries": total_queries,
         "required_query_check": required_query_check,
         "coverage_check": coverage_check,
+        "strategy_check": strategy_check,
     }
 
 
@@ -2524,15 +2649,23 @@ def build_approved_from_raw(
     llm_relevance_mode: str = "auto",
     llm_judge_func=judge_item_relevance,
     search_log: Any | None = None,
+    search_strategy: Any | None = None,
 ) -> Dict[str, Any]:
     """Process every category from a full raw dict and persist approved/rejected outputs."""
     if not isinstance(raw_obj, dict):
         raise ValueError("--build-approved requires a full raw category dict")
+    if search_strategy is not None and search_log is None:
+        raise ValueError("search_strategy requires search_log so dynamic query execution can be audited")
 
     search_log_check = None
     if search_log is not None:
         # search_log coverage is always enforced; it cannot be bypassed.
-        search_log_check = validate_search_log(search_log, raw_obj, strict_coverage=True)
+        search_log_check = validate_search_log(
+            search_log,
+            raw_obj,
+            strict_coverage=True,
+            search_strategy=search_strategy,
+        )
         if not search_log_check["is_valid"]:
             raise ValueError("search_log校验失败: " + "; ".join(search_log_check["errors"]))
 
@@ -2957,6 +3090,7 @@ def main():
     parser.add_argument("--skip-title-match", action="store_true", help="仅离线测试/受限网络临时使用：跳过build-approved标题-URL匹配")
     parser.add_argument("--llm-relevance-mode", choices=["auto", "llm", "heuristic", "off"], default="auto", help="领域相关性审计模式：auto默认有LLM配置则调用，否则本地语义fallback")
     parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验五轮搜索证据")
+    parser.add_argument("--search-strategy", type=str, help="LLM动态搜索策略JSON路径，用于校验动态query执行证据")
     parser.add_argument("--strict-search-coverage", action="store_true", help="兼容旧命令；build-approved默认已严格校验必搜query和候选URL覆盖")
     parser.add_argument("--render-md", type=str, help="从approved JSON生成确定性Markdown报告")
     parser.add_argument("--raw", type=str, help="render-md使用的raw JSON路径，用于准确显示原始数据总数")
@@ -3048,9 +3182,21 @@ def main():
         with open(args.build_approved, 'r', encoding='utf-8') as f:
             raw_obj = json.load(f)
         search_log = None
+        search_log_path = Path(args.search_log) if args.search_log else None
         if args.search_log:
-            with open(args.search_log, 'r', encoding='utf-8') as f:
+            with open(search_log_path, 'r', encoding='utf-8') as f:
                 search_log = json.load(f)
+        search_strategy = None
+        search_strategy_path = Path(args.search_strategy) if args.search_strategy else None
+        if search_strategy_path is None:
+            search_strategy_path = find_default_search_strategy_path(args.date, search_log_path)
+        if args.search_strategy:
+            with open(search_strategy_path, 'r', encoding='utf-8') as f:
+                search_strategy = json.load(f)
+        elif search_strategy_path is not None:
+            with open(search_strategy_path, 'r', encoding='utf-8') as f:
+                search_strategy = json.load(f)
+            print(f"自动加载LLM搜索策略: {search_strategy_path}")
         output_dir = Path(args.output) if args.output else DATA_DIR
         result = build_approved_from_raw(
             raw_obj,
@@ -3060,6 +3206,7 @@ def main():
             check_title_match_enabled=not args.skip_title_match,
             llm_relevance_mode=args.llm_relevance_mode,
             search_log=search_log,
+            search_strategy=search_strategy,
         )
         print(f"approved已生成: {result['approved_path']} ({len(result['approved'])}条)")
         print(f"rejected已生成: {result['rejected_path']} ({len(result['rejected'])}条)")
@@ -3075,6 +3222,13 @@ def main():
                     "搜索覆盖率: "
                     f"{coverage_check['raw_url_count']}/{coverage_check['search_candidate_count']} "
                     f"({coverage_check['coverage_ratio']:.0%})"
+                )
+            strategy_check = result["search_log_check"].get("strategy_check")
+            if strategy_check:
+                print(
+                    "LLM动态搜索策略: "
+                    f"{strategy_check['executed_required_count']}/{strategy_check['required_total']} "
+                    "required queries executed"
                 )
         if result.get("title_match_warnings"):
             print(f"标题匹配警告: {len(result['title_match_warnings'])}个")

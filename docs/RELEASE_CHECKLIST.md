@@ -4,10 +4,12 @@
 - [ ] `python -m compileall scripts` passes.
 - [ ] `report_pipeline.py --process` accepts a complete raw dict fixture.
 - [ ] `config/search_queries.json` is present and contains the production required query list.
+- [ ] `config/llm_search_strategy.json` is present, and production runs create `data/search_strategy_YYYY-MM-DD.json` before search execution.
 - [ ] Structured `search_log` records every required query with `executed` and `results_count`, and can generate raw through `--build-raw-from-search`.
+- [ ] Dynamic LLM strategy queries are recorded in `search_log`, and `scripts\audit_search_log.py ... --search-strategy data\search_strategy_YYYY-MM-DD.json` passes.
 - [ ] Production raw items include `source_round`, and `search_log_YYYY-MM-DD.json` covers `r1` through `r5` plus all configured required queries.
 - [ ] `scripts\audit_search_log.py data\search_log_YYYY-MM-DD.json --raw data\raw_YYYY-MM-DD.json` passes.
-- [ ] Production `--build-approved` runs pass `--search-log` and do not use `--skip-url-health` or `--skip-title-match`.
+- [ ] Production `--build-approved` runs pass `--search-log` and `--search-strategy`, and do not use `--skip-url-health` or `--skip-title-match`.
 - [ ] Production `--build-approved` uses `--llm-relevance-mode auto` or `llm`; any use of `heuristic`/`off` is documented as a temporary diagnostic exception.
 - [ ] LLM provider variables are set in the runtime environment when semantic model review is required, and no provider tokens are committed or printed in logs.
 - [ ] `report_pipeline.py --render-md` uses `--raw` so the report trace shows the true raw candidate count.

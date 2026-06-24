@@ -15,12 +15,13 @@ $env:SYNBIO_DAILY_TZ = "Asia/Shanghai"
 
 ## 处理原始数据
 
-生产运行应先从结构化搜索日志自动生成 raw，避免人工挑选遗漏搜索结果；然后从完整 raw dict 生成 processed/approved/rejected，并在写出 approved 前剔除打不开或疑似删除的链接：
+生产运行应先生成 LLM 动态搜索策略，执行基座 query + 动态 query 后，从结构化搜索日志自动生成 raw，避免人工挑选遗漏搜索结果；然后从完整 raw dict 生成 processed/approved/rejected，并在写出 approved 前剔除打不开或疑似删除的链接：
 
 ```powershell
+python scripts\llm_search_strategy.py --date 2026-06-11 --output data\search_strategy_2026-06-11.json --mode llm
 python scripts\report_pipeline.py --build-raw-from-search data\search_log_2026-06-11.json --date 2026-06-11 --output data\raw_2026-06-11.json
-python scripts\audit_search_log.py data\search_log_2026-06-11.json --raw data\raw_2026-06-11.json
-python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --search-log data\search_log_2026-06-11.json
+python scripts\audit_search_log.py data\search_log_2026-06-11.json --raw data\raw_2026-06-11.json --search-strategy data\search_strategy_2026-06-11.json
+python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --search-log data\search_log_2026-06-11.json --search-strategy data\search_strategy_2026-06-11.json
 ```
 
 该命令会写出：
@@ -72,6 +73,7 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 - LLM 领域审计在 `--build-approved` 默认以 `--llm-relevance-mode auto` 开启；当环境变量 `ANTHROPIC_BASE_URL` 与 `ANTHROPIC_AUTH_TOKEN` 存在时调用 Anthropic-compatible provider 做语义审稿，未配置时使用本地 fallback 拦截明显跑题信息
 - 正式运行不要使用 `--llm-relevance-mode off`；离线测试可临时使用 `heuristic` 或 `off`，但必须在测试记录中说明
 - 必搜 query 与 search_log 候选 URL 覆盖在 `--build-approved` 强制开启；如果需要人工丢弃某条结果，应先让它进入 raw，再由 rejected 记录拒绝原因。
+- 如果生成了 `data/search_strategy_YYYY-MM-DD.json`，正式 `--build-approved` 必须传 `--search-strategy`；LLM 动态 query 缺失或执行失败会阻断。
 
 ### LLM 领域审计 Provider
 

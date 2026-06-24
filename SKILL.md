@@ -65,13 +65,20 @@ Step 9: 更新政策库
 
 ---
 
-## Step 2: 多维度搜索（五轮搜索法，配置强制）
+## Step 2: 基座必搜 + LLM 动态搜索策略（配置强制）
 
-`config/search_queries.json` 是每日必搜 query 的唯一权威清单。不要从记忆或文档正文里自行删减 query；每次运行必须先读取该配置，逐轮执行 `rounds[].required_queries` 中的每一条查询。
+`config/search_queries.json` 是每日基座必搜 query 的权威清单。`config/llm_search_strategy.json` 是 LLM 搜索中枢的种子记忆。不要从记忆或文档正文里自行删减 query；每次运行必须先读取基座配置，并先生成当日动态策略：
+
+```powershell
+python scripts\llm_search_strategy.py --date YYYY-MM-DD --output data\search_strategy_YYYY-MM-DD.json --mode llm
+```
+
+随后逐轮执行 `rounds[].required_queries` 中的每一条基座查询，并执行 `data/search_strategy_YYYY-MM-DD.json` 中 `queries[].required=true` 的每一条动态查询。
 
 **执行要求**：
 - 每个 query 的 limit 设为 15-20。
 - 每条 required query 都必须写入 `data/search_log_YYYY-MM-DD.json` 的 `queries`。
+- LLM 动态策略中的 required query 也必须写入 `data/search_log_YYYY-MM-DD.json`；建议使用 `round: "llm_dynamic"` 或在 query 记录里保留 `source_query`。
 - 查询成功但无结果时，记录 `executed: true, results_count: 0`，这不视为漏搜。
 - 查询因网络、超时或工具错误失败时，记录 `executed: false, error: "..."`，不得跳过不记；严格门禁会阻断，必须重试或人工确认后再继续。
 - 必须保留结构化搜索结果（title/url/snippet/source/date），不得只保留人工挑选后的少数 URL。
@@ -98,6 +105,12 @@ Step 9: 更新政策库
 
 ```powershell
 python scripts\audit_search_log.py data\search_log_YYYY-MM-DD.json
+```
+
+如果已经生成 LLM 动态策略，必须同时审计策略覆盖：
+
+```powershell
+python scripts\audit_search_log.py data\search_log_YYYY-MM-DD.json --search-strategy data\search_strategy_YYYY-MM-DD.json
 ```
 
 ---
@@ -164,13 +177,14 @@ python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --da
 - `data/approved_YYYY-MM-DD.json`
 - `data/rejected_YYYY-MM-DD.json`
 
-`--build-approved` 会统一执行 schema、必搜 query 覆盖审计、候选 URL 覆盖审计、URL聚合页过滤、跨天历史去重、当前批次去重、同URL不同标题冲突剔除、时效性、链接健康、标题-URL匹配、LLM领域审计、价值评分和 approved schema 校验。搜索覆盖不可绕过，会阻断“必搜 query 未执行”或“搜索结果存在但未进入 raw”的静默漏收。链接健康和标题-URL匹配默认开启，会在 approved 写出前剔除打不开、HTTP 4xx/5xx、超时、证书失败、疑似删除页或标题明显张冠李戴的信息；LLM领域审计默认 `--llm-relevance-mode auto`，配置 `ANTHROPIC_BASE_URL` 与 `ANTHROPIC_AUTH_TOKEN` 后调用 Anthropic-compatible provider 判断是否属于合成生物/生物制造领域，未配置时使用本地 fallback 仅拦截明显跑题项。仅离线测试或临时排障可用 `--skip-url-health` / `--skip-title-match` / `--llm-relevance-mode heuristic|off` 显式降级。
+`--build-approved` 会统一执行 schema、基座必搜 query 覆盖审计、LLM动态query覆盖审计、候选 URL 覆盖审计、URL聚合页过滤、跨天历史去重、当前批次去重、同URL不同标题冲突剔除、时效性、链接健康、标题-URL匹配、LLM领域审计、价值评分和 approved schema 校验。搜索覆盖不可绕过，会阻断“必搜 query 未执行”“LLM动态 query 未执行”或“搜索结果存在但未进入 raw”的静默漏收。链接健康和标题-URL匹配默认开启，会在 approved 写出前剔除打不开、HTTP 4xx/5xx、超时、证书失败、疑似删除页或标题明显张冠李戴的信息；LLM领域审计默认 `--llm-relevance-mode auto`，配置 `ANTHROPIC_BASE_URL` 与 `ANTHROPIC_AUTH_TOKEN` 后调用 Anthropic-compatible provider 判断是否属于合成生物/生物制造领域，未配置时使用本地 fallback 仅拦截明显跑题项。仅离线测试或临时排障可用 `--skip-url-health` / `--skip-title-match` / `--llm-relevance-mode heuristic|off` 显式降级。
 
 **重要**：
 - **必须使用脚本处理后的 `approved` 列表中的信息**
 - **严禁使用 `rejected` 列表中的信息**
 - **必须保留 `data/history_index.json`，真实发送成功后会写入，后续跨天去重会检查主链接和 `urls` 备用链接**
 - **必须保留 `data/search_log_YYYY-MM-DD.json`，发送前会检查五轮 query 和 raw 的 `source_round`**
+- **如果生成了 `data/search_strategy_YYYY-MM-DD.json`，build-approved 必须传 `--search-strategy`，确保 LLM 动态 query 没被跳过**
 - **严禁把 LLM provider token 写入仓库、配置文件、测试 fixture、报告或日志；只能由运行环境变量提供**
 - 如果所有信息都被拒绝，生成"本周期暂无相关新信息"的报告
 

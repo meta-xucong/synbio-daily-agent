@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "description": "Seed memory for LLM-driven daily search strategy generation. This is not a fixed query checklist; it tells the LLM what dimensions must be considered before it writes dynamic queries.",
+  "strategy_round_id": "llm_dynamic",
+  "min_queries": 8,
+  "max_queries": 12,
+  "base_rounds": ["r1", "r5"],
+  "coverage_dimensions": [
+    "policy",
+    "funding",
+    "enterprise",
+    "research",
+    "events",
+    "international",
+    "technology_products"
+  ],
+  "tracked_entities": [
+    "蓝晶微生物",
+    "华恒生物",
+    "凯赛生物",
+    "华熙生物",
+    "引航生物",
+    "川宁生物",
+    "和晨生物",
+    "微远生物",
+    "虹摹生物",
+    "微元合成"
+  ],
+  "technology_topics": [
+    "precision fermentation",
+    "替代蛋白",
+    "无细胞合成",
+    "DNA合成",
+    "基因合成",
+    "AI合成生物",
+    "微生物组工程",
+    "生物基材料",
+    "PHA",
+    "细胞工厂",
+    "生物制造放大"
+  ],
+  "source_hints": [
+    "site:vbdata.cn 合成生物 融资",
+    "site:36kr.com 合成生物 融资",
+    "site:pedaily.cn 合成生物 投资",
+    "site:cninfo.com.cn 合成生物 公告",
+    "site:biorxiv.org synthetic biology",
+    "site:techcrunch.com synthetic biology",
+    "site:nature.com synthetic biology news",
+    "site:fda.gov synthetic biology",
+    "site:ec.europa.eu synthetic biology"
+  ],
+  "negative_guidance": [
+    "不要把自然生物学、普通医学信号通路、普通化学合成或非工程化生物过程当成合成生物新闻",
+    "不要为了凑数生成过宽泛的 query，例如单独的 生物 或 biotech",
+    "不要重复基座轮次已经覆盖且近期低效的碎片化 query"
+  ]
+}
