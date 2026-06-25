@@ -28,6 +28,7 @@ try:
         run_full_validation,
         validate_email_mime_type,
         validate_approved_schema,
+        validate_approved_not_previously_sent,
         validate_url_health,
         validate_urls_against_approved,
     )
@@ -46,6 +47,7 @@ except ImportError:
         run_full_validation,
         validate_email_mime_type,
         validate_approved_schema,
+        validate_approved_not_previously_sent,
         validate_url_health,
         validate_urls_against_approved,
     )
@@ -187,11 +189,19 @@ def _update_history_index(date_str: str, approved_items: list[dict[str, Any]]) -
             pass
 
     existing_urls = set()
+    existing_url_keys = set()
     for entry in history.get("entries", []):
         entry_urls = report_pipeline_module._item_candidate_urls(entry)
         entry_urls.append(entry.get("canonical_url", ""))
         existing_urls.update(
             report_pipeline_module.canonicalize_url(url)
+            for url in entry_urls
+            if url
+        )
+        if entry.get("dedup_key"):
+            existing_url_keys.add(str(entry.get("dedup_key")))
+        existing_url_keys.update(
+            report_pipeline_module.url_dedup_key(url)
             for url in entry_urls
             if url
         )
@@ -202,15 +212,18 @@ def _update_history_index(date_str: str, approved_items: list[dict[str, Any]]) -
         new_urls = [
             url for url in item_urls
             if report_pipeline_module.canonicalize_url(url) not in existing_urls
+            and report_pipeline_module.url_dedup_key(url) not in existing_url_keys
         ]
         if not title or not new_urls:
             continue
         fingerprint = report_pipeline_module._make_fingerprint(item)
         for url in new_urls:
             canonical_url = report_pipeline_module.canonicalize_url(url)
+            dedup_key = report_pipeline_module.url_dedup_key(url)
             history["entries"].append({
                 "url": url,
                 "canonical_url": canonical_url,
+                "dedup_key": dedup_key,
                 "urls": item_urls,
                 "title": title[:120],
                 "fingerprint": fingerprint,
@@ -218,9 +231,11 @@ def _update_history_index(date_str: str, approved_items: list[dict[str, Any]]) -
                 "first_sent_date": date_str,
             })
             existing_urls.add(canonical_url)
+            existing_url_keys.add(dedup_key)
 
     with open(history_path, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
+    report_pipeline_module.update_sent_url_registry(date_str, approved_items, data_dir=DATA_DIR)
     print(f"历史索引已更新: {len(history['entries'])} 条")
 
 
@@ -364,6 +379,25 @@ def validate_send_gate(
         if not approved_schema["is_valid"]:
             errors.extend([f"[approved schema] {error}" for error in approved_schema["errors"]])
         warnings.extend(approved_schema.get("warnings", []))
+
+        sent_url_check = validate_approved_not_previously_sent(
+            approved_data,
+            data_dir=runtime_data_dir,
+            label="发送门禁approved",
+        ) if approved_data else {
+            "is_valid": True,
+            "errors": [],
+            "checked": [],
+            "total_checked": 0,
+        }
+        details["sent_url_registry"] = sent_url_check
+        if not sent_url_check["is_valid"]:
+            if force_send:
+                warnings.extend([f"[URL去重] {error}；已使用 force_send 显式放行" for error in sent_url_check["errors"]])
+            elif not enforce_send_once:
+                warnings.extend([f"[URL去重] {error}；当前为验证模式，不阻断" for error in sent_url_check["errors"]])
+            else:
+                errors.extend([f"[URL去重] {error}" for error in sent_url_check["errors"]])
 
         files = read_report_files(md_path, html_path, email_html_path)
         html_safety = validate_html_safety(files["html_content"])

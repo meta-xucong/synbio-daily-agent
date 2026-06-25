@@ -22,6 +22,7 @@ import hashlib
 import socket
 import ssl
 import smtplib
+from email.utils import parsedate_to_datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from html import unescape
@@ -58,11 +59,13 @@ RelevanceDecision = Decision
 
 # 时间窗口配置（天）
 TIME_WINDOWS = {
-    "news": 7,
+    "news": 3,
     "research": 14,
-    "policy": 30,
-    "events": 90,  # 未来90天
+    "policy": 7,
+    "events": 60,  # 未来60天
     "funding": 7,
+    "report": 30,
+    "market_report": 30,
 }
 
 REQUIRED_RAW_FIELDS = {"title", "source", "date", "summary", "url"}
@@ -75,6 +78,8 @@ REQUIRED_SEARCH_ROUNDS = {"r1", "r2", "r3", "r4", "r5"}
 SEARCH_QUERY_CONFIG_FILENAME = "search_queries.json"
 URL_HEALTH_TIMEOUT_SECONDS = 10
 URL_HEALTH_MAX_BYTES = 250_000
+DATE_VERIFY_TIMEOUT_SECONDS = 10
+DATE_VERIFY_MAX_BYTES = 300_000
 TITLE_MATCH_TIMEOUT_SECONDS = 10
 TITLE_MATCH_MAX_BYTES = 300_000
 TITLE_MATCH_MIN_SCORE = 0.30
@@ -181,6 +186,67 @@ DOMAIN_BLACKLIST = [
     "conferences.nature.com",  # Nature 会议列表首页
     "synbioconference.org",  # SEED 会议列表首页
 ]
+
+MARKET_REPORT_KEYWORDS = (
+    "market analysis report",
+    "market research report",
+    "market report",
+    "industry report",
+    "market size",
+    "market share",
+    "market forecast",
+    "market trends",
+    "cagr",
+    "forecast 2026",
+    "forecast 2030",
+    "forecast 2034",
+    "2026-2030",
+    "2026-2034",
+    "市场分析报告",
+    "市场研究报告",
+    "行业发展趋势研究报告",
+    "行业趋势研究报告",
+    "市场规模",
+    "市场份额",
+    "市场预测",
+    "增长率",
+    "复合年增长率",
+    "iim",
+    "polaris market research",
+)
+
+PAGE_DATE_META_KEYS = {
+    "article:published_time",
+    "article:modified_time",
+    "datepublished",
+    "datemodified",
+    "date",
+    "publishdate",
+    "pubdate",
+    "published_time",
+    "publish_time",
+    "og:updated_time",
+    "lastmod",
+    "sailthru.date",
+}
+
+DATE_TEXT_PATTERNS = (
+    r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日",
+    r"\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2}",
+    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s*\d{4}",
+)
+DATE_EVENT_CONTEXT_KEYWORDS = (
+    "发布", "发表", "印发", "出台", "通过", "批准", "审议", "召开", "举办", "举行", "做客",
+    "启动", "开放", "投用", "上线", "签约", "落地", "完成", "融资", "上市", "聆讯", "申报",
+    "征求意见", "研讨会", "论坛", "会议", "publication", "published", "posted", "announced",
+    "approved", "held", "launched", "released", "filed", "listed",
+)
+DATE_EFFECTIVE_CONTEXT_KEYWORDS = (
+    "施行", "实施", "生效", "执行", "起施行", "起实施", "effective", "takes effect", "come into force",
+)
+DATE_NOISE_CONTEXT_KEYWORDS = (
+    "copyright", "版权所有", "备案", "沪icp", "粤icp", "京icp",
+)
 
 # 板块名称映射
 SECTION_MAP = {
@@ -481,6 +547,8 @@ def normalize_search_result_to_raw_item(
         "title": title,
         "source": source,
         "date": date_value,
+        "search_date": date_value,
+        "date_source": "search_result",
         "summary": summary,
         "url": url,
         "type": item_type,
@@ -883,6 +951,389 @@ def canonicalize_url(url: str) -> str:
     return urlunsplit((scheme, netloc, path, query, ""))
 
 
+def url_dedup_key(url: str) -> str:
+    """Return a permanent article identity key for sent-URL deduplication."""
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return ""
+    parts = urlsplit(raw_url)
+    hostname = (parts.hostname or "").lower()
+    if not hostname:
+        return ""
+    if hostname.startswith("www."):
+        hostname = hostname[4:]
+    path = re.sub(r"/{2,}", "/", parts.path or "/")
+    path = path.rstrip("/") or "/"
+
+    if hostname.endswith("36kr.com"):
+        match = re.search(r"/p/(\d+)", path)
+        if match:
+            return f"36kr:p:{match.group(1)}"
+
+    if hostname == "mp.weixin.qq.com":
+        params = dict(parse_qsl(parts.query, keep_blank_values=True))
+        biz = params.get("__biz") or params.get("biz")
+        mid = params.get("mid")
+        if biz and mid:
+            return f"weixin:{biz}:{mid}"
+
+    return f"{hostname}{path}".lower()
+
+
+def _item_url_dedup_keys(item: Dict[str, Any]) -> set[str]:
+    return {
+        key for key in (url_dedup_key(url) for url in _item_candidate_urls(item))
+        if key
+    }
+
+
+def _sent_url_registry_path(data_dir: Path | None = None) -> Path:
+    return (data_dir or DATA_DIR) / "sent_url_registry.json"
+
+
+def _load_sent_url_registry(data_dir: Path | None = None) -> Dict[str, Any]:
+    path = _sent_url_registry_path(data_dir)
+    if not path.exists():
+        return {"version": 1, "registry": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("registry"), dict):
+            return data
+    except Exception:
+        pass
+    return {"version": 1, "registry": {}}
+
+
+def update_sent_url_registry(
+    date_str: str,
+    approved_items: List[Dict[str, Any]],
+    data_dir: Path | None = None,
+) -> None:
+    """Persist permanent sent URL keys after a successful real send."""
+    registry = _load_sent_url_registry(data_dir)
+    registry.setdefault("version", 1)
+    entries = registry.setdefault("registry", {})
+
+    for item in approved_items:
+        title = str(item.get("title") or "").strip()
+        for url in _item_candidate_urls(item):
+            key = url_dedup_key(url)
+            if not key:
+                continue
+            existing = entries.get(key)
+            if isinstance(existing, dict):
+                existing["sent_count"] = int(existing.get("sent_count") or 1) + 1
+                existing.setdefault("first_sent_date", date_str)
+                existing["last_seen_date"] = date_str
+                continue
+            entries[key] = {
+                "url": url,
+                "dedup_key": key,
+                "title": title[:120],
+                "first_sent_date": date_str,
+                "last_seen_date": date_str,
+                "sent_count": 1,
+            }
+
+    path = _sent_url_registry_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(registry, f, ensure_ascii=False, indent=2)
+
+
+def _history_entries_from_data_dir(data_dir: Path | None = None) -> list[dict[str, Any]]:
+    path = (data_dir or DATA_DIR) / "history_index.json"
+    if not path.exists():
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        entries = data.get("entries", []) if isinstance(data, dict) else []
+        return [entry for entry in entries if isinstance(entry, dict)]
+    except Exception:
+        return []
+
+
+def validate_approved_not_previously_sent(
+    approved_data: List[Dict[str, Any]],
+    data_dir: Path | None = None,
+    label: str = "approved",
+) -> Dict[str, Any]:
+    """Block any approved item whose URL identity was already sent before.
+
+    This is the send-gate backstop. build-approved also checks history, but a
+    manually edited approved JSON must not be able to bypass permanent URL
+    deduplication.
+    """
+    registry = _load_sent_url_registry(data_dir)
+    registry_entries = registry.get("registry", {}) if isinstance(registry, dict) else {}
+    history_entries = _history_entries_from_data_dir(data_dir)
+    sent_keys: dict[str, dict[str, Any]] = {}
+
+    for key, entry in (registry_entries or {}).items():
+        if key:
+            sent_keys[str(key)] = entry if isinstance(entry, dict) else {"dedup_key": key}
+
+    for entry in history_entries:
+        candidate_urls = _item_candidate_urls(entry)
+        candidate_urls.append(str(entry.get("canonical_url") or ""))
+        candidate_urls.append(str(entry.get("url") or ""))
+        if entry.get("dedup_key"):
+            sent_keys.setdefault(str(entry["dedup_key"]), entry)
+        for url in candidate_urls:
+            key = url_dedup_key(url)
+            if key:
+                sent_keys.setdefault(key, entry)
+
+    errors: list[str] = []
+    checked: list[dict[str, Any]] = []
+    for index, item in enumerate(approved_data, 1):
+        title = str(item.get("title") or "未命名信息")
+        for key in sorted(_item_url_dedup_keys(item)):
+            checked.append({"index": index, "title": title, "dedup_key": key})
+            previous = sent_keys.get(key)
+            if not previous:
+                continue
+            first_sent = previous.get("first_sent_date") or previous.get("date") or "unknown"
+            prev_title = previous.get("title") or "历史记录"
+            errors.append(
+                f"{label}第{index}项URL已发送过: {title} "
+                f"(dedup_key={key}, first_sent_date={first_sent}, previous_title={prev_title})"
+            )
+
+    return {
+        "is_valid": len(errors) == 0,
+        "errors": errors,
+        "checked": checked,
+        "total_checked": len(checked),
+    }
+
+
+class PageDateParser(HTMLParser):
+    """Extract common structured dates from HTML without external dependencies."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.meta_dates: list[str] = []
+        self.time_dates: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {str(name).lower(): str(value or "") for name, value in attrs}
+        if tag.lower() == "meta":
+            key = (
+                attributes.get("property")
+                or attributes.get("name")
+                or attributes.get("itemprop")
+                or ""
+            ).lower()
+            content = attributes.get("content", "")
+            if content and key in PAGE_DATE_META_KEYS:
+                self.meta_dates.append(content)
+        if tag.lower() == "time" and attributes.get("datetime"):
+            self.time_dates.append(attributes["datetime"])
+
+
+def _parse_any_date(value: str) -> Optional[datetime]:
+    parsed = parse_date(value)
+    if parsed:
+        return parsed
+    try:
+        parsed_email_date = parsedate_to_datetime(str(value or ""))
+        if parsed_email_date is not None:
+            return parsed_email_date.replace(tzinfo=None)
+    except Exception:
+        return None
+    return None
+
+
+def _date_candidates_from_text(text: str) -> list[datetime]:
+    candidates: list[datetime] = []
+    for pattern in DATE_TEXT_PATTERNS:
+        for match in re.finditer(pattern, text or "", flags=re.IGNORECASE):
+            parsed = _parse_any_date(match.group(0))
+            if parsed:
+                candidates.append(parsed)
+    return candidates
+
+
+def _date_context(text: str, start: int, end: int, window: int = 48) -> str:
+    left = max(0, start - window)
+    right = min(len(text or ""), end + window)
+    return (text or "")[left:right].lower()
+
+
+def _is_noise_date_context(context: str) -> bool:
+    return any(keyword.lower() in context for keyword in DATE_NOISE_CONTEXT_KEYWORDS)
+
+
+def _is_effective_date_context(context: str) -> bool:
+    has_effective = any(keyword.lower() in context for keyword in DATE_EFFECTIVE_CONTEXT_KEYWORDS)
+    if not has_effective:
+        return False
+    # Policies often mention both approval/release and effective dates. If the
+    # context also contains a release/approval verb, keep it as a real event date.
+    has_event = any(keyword.lower() in context for keyword in DATE_EVENT_CONTEXT_KEYWORDS)
+    return not has_event
+
+
+def _is_event_date_context(context: str) -> bool:
+    if _is_noise_date_context(context) or _is_effective_date_context(context):
+        return False
+    return any(keyword.lower() in context for keyword in DATE_EVENT_CONTEXT_KEYWORDS)
+
+
+def _contextual_date_candidates_from_text(text: str) -> list[datetime]:
+    """Return body dates whose nearby text says publication or real event date.
+
+    Search engines often expose crawl dates. The page body may contain many
+    unrelated dates too, such as effective dates, copyright years, or market
+    history. Only contextual dates are allowed to override the search date.
+    """
+    candidates: list[datetime] = []
+    for pattern in DATE_TEXT_PATTERNS:
+        for match in re.finditer(pattern, text or "", flags=re.IGNORECASE):
+            context = _date_context(text or "", match.start(), match.end())
+            if not _is_event_date_context(context):
+                continue
+            parsed = _parse_any_date(match.group(0))
+            if parsed:
+                candidates.append(parsed)
+    return candidates
+
+
+def extract_page_verified_date(html: str, search_date: str = "") -> Dict[str, Any]:
+    """Extract a conservative original date from a fetched page."""
+    parser = PageDateParser()
+    try:
+        parser.feed(html or "")
+    except Exception:
+        pass
+
+    meta_dates = [
+        parsed for parsed in (_parse_any_date(value) for value in parser.meta_dates + parser.time_dates)
+        if parsed
+    ]
+    text = unescape(re.sub(r"<[^>]+>", " ", html or ""))
+    text = re.sub(r"\s+", " ", text)
+
+    context_dates: list[datetime] = []
+    context_pattern = (
+        r"(?:发布时间|发布日期|发布于|发表时间|成文日期|发文日期|印发日期|通过日期|"
+        r"日期|时间|Published|Posted|Updated)"
+        r"[:：\s]{0,12}"
+        r"(\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2}|"
+        r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s*\d{4})"
+    )
+    for match in re.finditer(context_pattern, text, flags=re.IGNORECASE):
+        parsed = _parse_any_date(match.group(1))
+        if parsed:
+            context_dates.append(parsed)
+
+    event_dates = _contextual_date_candidates_from_text(text)
+    # If no structured or contextual signal exists, fall back to generic body
+    # dates with only medium confidence. This keeps legacy pages usable while
+    # preventing effective/copyright dates from overriding a real publish date.
+    generic_dates = [] if (meta_dates or context_dates or event_dates) else [
+        candidate
+        for candidate in _date_candidates_from_text(text)
+    ]
+    all_dates = meta_dates + context_dates + event_dates + generic_dates
+    if all_dates:
+        verified = min(all_dates)
+        source = "meta/body" if meta_dates or context_dates or event_dates else "body"
+        confidence = "high" if meta_dates or context_dates or event_dates else "medium"
+        return {
+            "verified_date": verified.strftime("%Y-%m-%d"),
+            "confidence": confidence,
+            "source": source,
+            "date_count": len(all_dates),
+        }
+
+    return {
+        "verified_date": search_date,
+        "confidence": "low",
+        "source": "search_fallback",
+        "date_count": 0,
+    }
+
+
+def fetch_and_verify_date(
+    url: str,
+    search_date: str,
+    timeout: int = DATE_VERIFY_TIMEOUT_SECONDS,
+    opener=urlopen,
+) -> Dict[str, Any]:
+    """Fetch a candidate page and verify its earliest visible publication/event date."""
+    try:
+        safe_url(url)
+    except ValueError as exc:
+        return {
+            "verified_date": search_date,
+            "confidence": "low",
+            "source": "search_fallback",
+            "error": f"URL不安全: {exc}",
+        }
+
+    request = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/126.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    try:
+        with opener(request, timeout=timeout) as response:
+            headers = getattr(response, "headers", {}) or {}
+            charset = "utf-8"
+            if hasattr(headers, "get_content_charset"):
+                charset = headers.get_content_charset() or charset
+            body = response.read(DATE_VERIFY_MAX_BYTES)
+        html = body.decode(charset, errors="replace")
+        result = extract_page_verified_date(html, search_date=search_date)
+        result["url"] = url
+        return result
+    except Exception as exc:
+        return {
+            "verified_date": search_date,
+            "confidence": "low",
+            "source": "search_fallback",
+            "url": url,
+            "error": str(exc),
+        }
+
+
+def should_verify_page_date(item: Dict[str, Any]) -> bool:
+    """Only search-derived candidates need network date verification."""
+    return (
+        item.get("date_source") == "search_result"
+        or bool(item.get("source_round"))
+        or bool(item.get("source_query"))
+    )
+
+
+def verify_item_page_date(
+    item: Dict[str, Any],
+    date_verify_func=fetch_and_verify_date,
+) -> Dict[str, Any]:
+    """Attach verified page date metadata and use it as the effective item date."""
+    verified_item = dict(item)
+    search_date = str(verified_item.get("search_date") or verified_item.get("date") or "")
+    result = date_verify_func(str(verified_item.get("url") or ""), search_date)
+    if not isinstance(result, dict):
+        return verified_item
+    verified_item["date_verification"] = result
+    verified_date = str(result.get("verified_date") or "").strip()
+    if result.get("source") != "search_fallback" and parse_date(verified_date):
+        verified_item["verified_date"] = verified_date
+        verified_item["date"] = verified_date
+    return verified_item
+
+
 def _hostname_matches(hostname: str, domain: str) -> bool:
     hostname = hostname.lower().strip(".")
     domain = domain.lower().strip(".")
@@ -999,23 +1450,43 @@ def _item_candidate_urls(item) -> list[str]:
     return [url for url in dict.fromkeys(str(url or "") for url in urls) if url]
 
 
-def _is_historical_duplicate(item, history_entries):
+def _is_historical_duplicate(item, history_entries, sent_url_registry: Dict[str, Any] | None = None):
     """
     检查 item 是否与历史索引中的条目重复。
-    检查维度：URL 完全匹配、标题完全匹配、内容指纹相似度 > 75%。
+    检查维度：URL 身份键、URL 完全匹配、标题完全匹配、内容指纹相似度 > 75%。
     """
+    item_urls = {canonicalize_url(url) for url in _item_candidate_urls(item)}
+    item_url_keys = _item_url_dedup_keys(item)
+    registry_entries = {}
+    if isinstance(sent_url_registry, dict):
+        registry_entries = sent_url_registry.get("registry", {}) or {}
+    if item_url_keys and any(key in registry_entries for key in item_url_keys):
+        return True
+
     if not history_entries:
         return False
-    item_urls = {canonicalize_url(url) for url in _item_candidate_urls(item)}
     item_title = item.get("title", "").strip()
     item_title_norm = normalize_title(item_title)
     item_fp = _make_fingerprint(item)
     item_tokens = set(item_fp.split())
     for entry in history_entries:
+        entry_url_keys = set()
+        if entry.get("dedup_key"):
+            entry_url_keys.add(str(entry.get("dedup_key")))
         # URL 完全匹配
         entry_urls = [entry.get("canonical_url") or canonicalize_url(entry.get("url", ""))]
         entry_urls.extend(canonicalize_url(url) for url in _coerce_url_list(entry.get("urls", [])))
         entry_urls = {url for url in entry_urls if url}
+        entry_url_keys.update(
+            key for key in (
+                url_dedup_key(entry.get("url", "")),
+                *[url_dedup_key(url) for url in _coerce_url_list(entry.get("urls", []))],
+                *[url_dedup_key(url) for url in entry_urls],
+            )
+            if key
+        )
+        if item_url_keys and item_url_keys & entry_url_keys:
+            return True
         if item_urls and item_urls & entry_urls:
             return True
         # 标题完全匹配
@@ -1077,6 +1548,15 @@ def check_url_health(
                 content_type = headers.get("Content-Type", "") or headers.get("content-type", "")
 
             if status >= 400:
+                # In lenient mode, treat 403 (Forbidden) as a warning for academic sites
+                # rather than a hard error, since many journals block HEAD requests
+                if mode == "lenient" and status == 403:
+                    return {
+                        "ok": True,
+                        "url": url,
+                        "status": status,
+                        "warning": f"HTTP {status} (访问受限，链接可能有效但需登录/特定网络)",
+                    }
                 return {"ok": False, "url": url, "status": status, "reason": f"HTTP状态异常: {status}"}
 
             if any(kind in content_type.lower() for kind in ("text/", "html", "xml", "json", "")):
@@ -1138,7 +1618,11 @@ def validate_url_health(
             result = check_func(url)
         checked.append(result)
         if not result.get("ok"):
-            errors.append(f"{label}链接不可用: {url} - {result.get('reason', '未知错误')}")
+            # In lenient mode, suppress 403 errors for academic/publisher sites
+            if mode == "lenient" and result.get("status") == 403:
+                warnings.append(f"{label}链接访问受限(HTTP 403): {url} - 可能需要登录或特定网络访问")
+            else:
+                errors.append(f"{label}链接不可用: {url} - {result.get('reason', '未知错误')}")
         if result.get("warning"):
             warnings.append(f"{label}链接警告: {url} - {result['warning']}")
 
@@ -1313,7 +1797,7 @@ def remove_title_mismatch_items(
         if result.get("warning"):
             warnings.append(f"{item.get('title', '未命名信息')}: {result['warning']}")
         kept.append(item)
-    return kept, rejected, warnings, api_error
+    return kept, rejected, warnings
 
 
 def normalize_title(title: str) -> str:
@@ -1523,20 +2007,21 @@ def is_duplicate(item: Dict[str, Any], fingerprint_db: Dict[str, Any]) -> Tuple[
 
 def check_timeliness(item: Dict[str, Any], item_type: str, now: Optional[datetime] = None) -> Tuple[bool, str]:
     """检查时效性"""
-    date_str = item.get("date", "")
+    effective_type = str(item.get("content_type") or item_type or "news")
+    date_str = item.get("verified_date") or item.get("date", "")
     item_date = parse_date(date_str)
     current_time = (now or now_local()).replace(tzinfo=None)
     
     if not item_date:
         return False, f"无法解析日期 ({date_str})"
     
-    window_days = TIME_WINDOWS.get(item_type, 7)
+    window_days = TIME_WINDOWS.get(effective_type, TIME_WINDOWS.get(item_type, 7))
     cutoff = current_time - timedelta(days=window_days)
     # 只比较日期部分，避免边界时间问题
     cutoff = cutoff.replace(hour=0, minute=0, second=0, microsecond=0)
     
     if item_type == "events":
-        # 活动预告：检查是否在未来90天内
+        # 活动预告：检查是否在未来窗口内
         future_cutoff = current_time + timedelta(days=window_days)
         today = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
         item_day = item_date.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1550,6 +2035,24 @@ def check_timeliness(item: Dict[str, Any], item_type: str, now: Optional[datetim
         return False, f"超过时间窗口 ({date_str}, 限制{window_days}天)"
     
     return True, ""
+
+
+def classify_content_type(item: Dict[str, Any], item_type: str) -> Tuple[str, str]:
+    """Classify content semantics separately from report section type."""
+    text = " ".join(
+        str(item.get(field) or "")
+        for field in ("title", "summary", "source", "url")
+    ).lower()
+    if any(keyword in text for keyword in MARKET_REPORT_KEYWORDS):
+        return "market_report", "市场研究/行业规模报告，主体是历史数据或预测，不是当日事件"
+    if item_type == "events":
+        return "event_preview", "活动预告"
+    return item_type, "沿用栏目类型"
+
+
+def should_exclude_content_type(content_type: str) -> bool:
+    """Return True for content types that should not enter the daily main report."""
+    return content_type == "market_report"
 
 
 def calculate_raw_score(item: Dict[str, Any]) -> int:
@@ -1647,7 +2150,11 @@ def aggregate_duplicates(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 # ==================== 核心处理函数 ====================
 
-def process_raw_data(raw_data: List[Dict[str, Any]], item_type: str) -> Dict[str, Any]:
+def process_raw_data(
+    raw_data: List[Dict[str, Any]],
+    item_type: str,
+    date_verify_func=None,
+) -> Dict[str, Any]:
     """
     处理原始数据：过滤 → 去重 → 聚合 → 排序
     
@@ -1660,6 +2167,7 @@ def process_raw_data(raw_data: List[Dict[str, Any]], item_type: str) -> Dict[str
     fingerprint_db = load_historical_events(days=HISTORY_DEDUP_DAYS)
     policy_db = load_policy_database()
     history_entries = _load_history_index()
+    sent_url_registry = _load_sent_url_registry()
     
     approved = []
     rejected = []
@@ -1683,16 +2191,31 @@ def process_raw_data(raw_data: List[Dict[str, Any]], item_type: str) -> Dict[str
                 "action": "排除",
             })
             continue
-        
+
+        # 0.25 内容类型识别：市场研究/规模预测报告不进入日报主内容
+        content_type, content_reason = classify_content_type(item, item_type)
+        item["content_type"] = content_type
+        if should_exclude_content_type(content_type):
+            rejected.append({
+                "item": item,
+                "reason": f"[内容类型] {content_reason}",
+                "action": "排除",
+            })
+            continue
+
         # 0.5 跨天历史索引去重（基于 history_index.json 的持久化去重）
-        if _is_historical_duplicate(item, history_entries):
+        if _is_historical_duplicate(item, history_entries, sent_url_registry):
             rejected.append({
                 "item": item,
                 "reason": "[历史索引去重] 与已发送历史记录重复",
                 "action": "排除",
             })
             continue
-        
+
+        # 0.75 搜索日期二次验证：搜索引擎日期不作为最终时效性依据
+        if date_verify_func and should_verify_page_date(item):
+            item = verify_item_page_date(item, date_verify_func=date_verify_func)
+
         # 1. 时效性检查
         timely, reason = check_timeliness(item, item_type)
         if not timely:
@@ -1768,6 +2291,7 @@ def process_raw_data(raw_data: List[Dict[str, Any]], item_type: str) -> Dict[str
         "rejected": len(rejected),
         "timeliness_rejected": len([r for r in rejected if "时效性" in r["reason"]]),
         "duplicate_rejected": len([r for r in rejected if "去重" in r["reason"] or "政策库" in r["reason"]]),
+        "content_type_rejected": len([r for r in rejected if "内容类型" in r["reason"]]),
         "schema_rejected": len([r for r in rejected if "[schema]" in r["reason"]]),
         "avg_score": sum(a.get("value_score", 0) for a in approved) / max(len(approved), 1),
     }
@@ -2647,8 +3171,10 @@ def build_approved_from_raw(
     output_dir: Path | None = None,
     check_url_health_enabled: bool = True,
     check_title_match_enabled: bool = True,
+    check_page_date_enabled: bool = True,
     url_check_func=check_url_health,
     title_check_func=check_url_title_match,
+    date_verify_func=fetch_and_verify_date,
     llm_relevance_mode: str = "auto",
     llm_judge_func=judge_item_relevance,
     search_log: Any | None = None,
@@ -2680,7 +3206,11 @@ def build_approved_from_raw(
 
     for item_type in sorted(VALID_ITEM_TYPES):
         raw_items = normalize_raw_input(raw_obj, item_type)
-        result = process_raw_data(raw_items, item_type)
+        result = process_raw_data(
+            raw_items,
+            item_type,
+            date_verify_func=date_verify_func if check_page_date_enabled else None,
+        )
         processed[item_type] = result
         all_approved.extend(result.get("approved", []))
         for rejected in result.get("rejected", []):
@@ -3148,6 +3678,7 @@ def main():
     parser.add_argument("--skip-url-health", action="store_true", help="仅离线测试/受限网络临时使用：跳过build-approved链接健康检查")
     parser.add_argument("--check-title-match", action="store_true", help="兼容旧命令；build-approved默认已开启标题-URL匹配")
     parser.add_argument("--skip-title-match", action="store_true", help="仅离线测试/受限网络临时使用：跳过build-approved标题-URL匹配")
+    parser.add_argument("--skip-page-date-check", action="store_true", help="仅离线测试/受限网络临时使用：跳过原页面日期验证")
     parser.add_argument("--llm-relevance-mode", choices=["auto", "llm", "heuristic", "off"], default="auto", help="领域相关性审计模式：auto默认有LLM配置则调用，否则本地语义fallback")
     parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验五轮搜索证据")
     parser.add_argument("--search-strategy", type=str, help="LLM动态搜索策略JSON路径，用于校验动态query执行证据")
@@ -3264,6 +3795,7 @@ def main():
             output_dir=output_dir,
             check_url_health_enabled=not args.skip_url_health,
             check_title_match_enabled=not args.skip_title_match,
+            check_page_date_enabled=not args.skip_page_date_check,
             llm_relevance_mode=args.llm_relevance_mode,
             search_log=search_log,
             search_strategy=search_strategy,

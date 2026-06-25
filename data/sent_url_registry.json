@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "registry": {
+    "stic.sz.gov.cn/gkmlpt/content/12/12740/post_12740127.html": {
+      "first_sent_date": "2026-06-25",
+      "title": "市科技创新局等关于印发《深圳市推动合成生物创新引领生物制造产业高质量发展若干措施》的通知",
+      "date": "2026-06-24",
+      "dedup_key": "stic.sz.gov.cn/gkmlpt/content/12/12740/post_12740127.html"
+    },
+    "finance.sina.com.cn/stock/aigc/ggxg/gjslx/2026-06-23/doc-inieixxa2079799.shtml": {
+      "first_sent_date": "2026-06-25",
+      "title": "華恒生物：合成生物基產品研發生產商——通過港交所聆訊",
+      "date": "2026-06-23",
+      "dedup_key": "finance.sina.com.cn/stock/aigc/ggxg/gjslx/2026-06-23/doc-inieixxa2079799.shtml"
+    },
+    "36kr:p:3051114996943496": {
+      "first_sent_date": "2026-06-25",
+      "title": "从实验室到应用场！方昕博士解读生物制造产业落地与投资逻辑",
+      "date": "2026-06-21",
+      "dedup_key": "36kr:p:3051114996943496"
+    },
+    "szgm.gov.cn/gkmlpt/content/12/12357/post_12357505.html": {
+      "first_sent_date": "2026-06-25",
+      "title": "深圳立法助力合成生物产业抢占全球制高点",
+      "date": "2026-06-24",
+      "dedup_key": "szgm.gov.cn/gkmlpt/content/12/12357/post_12357505.html"
+    },
+    "ebrun.com/20260624/684502.shtml": {
+      "first_sent_date": "2026-06-25",
+      "title": "华熙生物参展2026链博会开放30亿合成生物中试平台",
+      "date": "2026-06-24",
+      "dedup_key": "ebrun.com/20260624/684502.shtml"
+    },
+    "xj.chinanews.com.cn/dizhou/2026-06-24/detail-ihfftkrx9676840.shtml": {
+      "first_sent_date": "2026-06-25",
+      "title": "乌苏合成生物新产品将亮相第九届中国—亚欧博览会",
+      "date": "2026-06-24",
+      "dedup_key": "xj.chinanews.com.cn/dizhou/2026-06-24/detail-ihfftkrx9676840.shtml"
+    },
+    "sz.gov.cn/cn/xxgk/zfxxgj/yjzj/content/post_11478950.html": {
+      "first_sent_date": "2026-06-25",
+      "title": "深圳市光明区“合成生物”项目制招引企业在合成生物产业扎根“发展”",
+      "date": "2026-06-24",
+      "dedup_key": "sz.gov.cn/cn/xxgk/zfxxgj/yjzj/content/post_11478950.html"
+    },
+    "vbdata.cn/newsdetail/b2de3170663711f1ac4d00163e034e34": {
+      "first_sent_date": "2026-06-25",
+      "title": "湖北大学改造地衣芽孢杆菌高效合成血清素",
+      "date": "2026-06-12",
+      "dedup_key": "vbdata.cn/newsdetail/b2de3170663711f1ac4d00163e034e34"
+    }
+  }
+}

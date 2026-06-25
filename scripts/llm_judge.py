@@ -20,6 +20,31 @@ from typing import Any, Callable, Optional, Protocol, Tuple
 from urllib.request import Request, urlopen
 
 
+def _load_env() -> None:
+    """Load .env file from project root (standard-library only, no dotenv dep)."""
+    # resolve project root relative to this script: scripts/ -> repo root
+    script_dir = Path(__file__).resolve().parent
+    project_root = script_dir.parent
+    env_path = project_root / ".env"
+    if not env_path.is_file():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        # only set if not already present in the environment
+        if key and os.getenv(key) is None:
+            os.environ[key] = value
+
+
+_load_env()
+
+
 def _default_model() -> str:
     """Return default model based on the configured base URL."""
     base = os.getenv("ANTHROPIC_BASE_URL", "")

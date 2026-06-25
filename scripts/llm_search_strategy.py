@@ -32,6 +32,7 @@ CONFIG_DIR = ROOT / "config"
 DEFAULT_CONFIG_PATH = CONFIG_DIR / "llm_search_strategy.json"
 VALID_SECTIONS = {"news", "research", "funding", "policy", "events"}
 VALID_PRIORITIES = {"high", "medium", "low"}
+DEFAULT_STRATEGY_MAX_TOKENS = 3600
 
 
 class StrategyClient(Protocol):
@@ -86,9 +87,13 @@ class MessagesTextClient:
     def complete(self, prompt: str) -> str:
         if not self.llm_client.is_configured:
             raise RuntimeError("LLM provider is not configured")
+        try:
+            max_tokens = int(os.getenv("ANTHROPIC_SEARCH_STRATEGY_MAX_TOKENS") or DEFAULT_STRATEGY_MAX_TOKENS)
+        except ValueError:
+            max_tokens = DEFAULT_STRATEGY_MAX_TOKENS
         payload = {
             "model": self.llm_client.model,
-            "max_tokens": 1600,
+            "max_tokens": max_tokens,
             "temperature": 0,
             "messages": [{"role": "user", "content": prompt}],
         }
@@ -270,7 +275,7 @@ def build_strategy_prompt(
         "4. coverage_queries 是召回底座，不要用更窄的融资/公告词替代宽口径来源 query；\n"
         "5. 每条 query 必须有明确理由，不能凑数；\n"
         "6. 每条 query 只表达一个检索意图，最多包含两个重点企业名；不要把很多企业或很多 OR 条件揉进一条；\n"
-        "7. 输出纯 JSON，不要 Markdown。\n\n"
+        "7. 输出纯 JSON，不要 Markdown，不要 ```json 代码块；必须完整闭合 JSON 对象。\n\n"
         "schema:\n"
         "{"
         '"blindspots":["盲区"],'
@@ -519,15 +524,33 @@ def append_missing_coverage_queries(
     *,
     max_queries: int,
 ) -> list[StrategyQuery]:
-    """Append configured coverage-floor queries if the LLM omitted them."""
+    """Ensure configured coverage-floor queries are present.
+
+    ``max_queries`` limits discretionary LLM queries, not hard coverage. When
+    the model fills the list but omits a required source/theme floor, replace a
+    non-floor query from the end. If the configured floor itself is larger than
+    ``max_queries``, keep every floor query and exceed the advisory cap.
+    """
+    coverage_queries = iter_configured_coverage_queries(config)
+    coverage_keys = {normalize_query_text(query.query) for query in coverage_queries}
     seen = {normalize_query_text(query.query) for query in queries}
     result = list(queries)
-    for coverage_query in iter_configured_coverage_queries(config):
+    for coverage_query in coverage_queries:
         normalized = normalize_query_text(coverage_query.query)
         if normalized in seen:
             continue
         if len(result) >= max_queries:
-            break
+            remove_index = next(
+                (
+                    index
+                    for index in range(len(result) - 1, -1, -1)
+                    if normalize_query_text(result[index].query) not in coverage_keys
+                ),
+                None,
+            )
+            if remove_index is not None:
+                removed = result.pop(remove_index)
+                seen.discard(normalize_query_text(removed.query))
         result.append(coverage_query)
         seen.add(normalized)
     return result
