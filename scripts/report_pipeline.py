@@ -21,6 +21,9 @@ import re
 import hashlib
 import socket
 import ssl
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from html import unescape
 from html.parser import HTMLParser
 from difflib import SequenceMatcher
@@ -1310,7 +1313,7 @@ def remove_title_mismatch_items(
         if result.get("warning"):
             warnings.append(f"{item.get('title', '未命名信息')}: {result['warning']}")
         kept.append(item)
-    return kept, rejected, warnings
+    return kept, rejected, warnings, api_error
 
 
 def normalize_title(title: str) -> str:
@@ -2700,8 +2703,9 @@ def build_approved_from_raw(
         )
         all_rejected.extend(title_rejected)
     llm_relevance_warnings: list[str] = []
+    llm_api_error: str = ""
     if llm_relevance_mode != "off":
-        all_approved, llm_rejected, llm_relevance_warnings = remove_llm_rejected_items(
+        all_approved, llm_rejected, llm_relevance_warnings, llm_api_error = remove_llm_rejected_items(
             all_approved,
             mode=llm_relevance_mode,
             judge_func=llm_judge_func,
@@ -2730,6 +2734,7 @@ def build_approved_from_raw(
         "search_log_check": search_log_check,
         "title_match_warnings": title_match_warnings,
         "llm_relevance_warnings": llm_relevance_warnings,
+        "llm_api_error": llm_api_error,
     }
 
 
@@ -2820,14 +2825,28 @@ def remove_llm_rejected_items(
     items: List[Dict[str, Any]],
     mode: str = "auto",
     judge_func=judge_item_relevance,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
-    """Run the LLM/semantic relevance gate over approved candidates."""
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str], str]:
+    """Run the LLM/semantic relevance gate over approved candidates.
+
+    Returns (kept, rejected, warnings, api_error).
+    api_error is a non-empty string if the LLM API is unavailable and the
+    pipeline should be stopped and the user notified (fail-closed rule).
+    """
     kept: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     warnings: list[str] = []
+    api_error: str = ""
 
     for item in items:
-        decision = judge_func(item, mode=mode)
+        try:
+            decision = judge_func(item, mode=mode)
+        except RuntimeError as exc:
+            # RULE: If LLM API is unavailable, stop the pipeline and notify user.
+            error_msg = str(exc)
+            if not api_error:
+                api_error = error_msg
+            warnings.append(f"LLM API不可用: {error_msg}")
+            continue
         if not isinstance(decision, Decision):
             warnings.append(f"LLM领域审计返回非标准结果，已保守拒绝: {item.get('title', '')}")
             rejected.append({
@@ -2863,7 +2882,48 @@ def remove_llm_rejected_items(
             "action": "排除",
         })
 
-    return kept, rejected, warnings
+    return kept, rejected, warnings, api_error
+
+
+def notify_user_on_llm_error(error_msg: str, report_date: str) -> None:
+    """Send notification email when LLM API is unavailable (fail-closed rule).
+    
+    RULE: If the LLM API is unavailable during the semantic gate, the pipeline
+    must stop and notify the user. This prevents silent fallback to heuristic
+    mode which could degrade report quality.
+    """
+    try:
+        config_path = CONFIG_DIR / "email_config.json"
+        if not config_path.exists():
+            print(f"Warning: email config not found, cannot notify user: {config_path}")
+            return
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        
+        sender = config.get("sender_email", "noreply@example.com")
+        receiver = config.get("receiver_email", "admin@example.com")
+        server = config.get("smtp_server", "smtp.exmail.qq.com")
+        port = config.get("smtp_port", 465)
+        password = config.get("sender_password", "")
+        
+        msg = MIMEText(
+            f"合成生物日报流水线异常停止\n\n"
+            f"日期: {report_date}\n"
+            f"原因: LLM API 不可用\n"
+            f"错误信息: {error_msg}\n\n"
+            f"系统已按照 fail-closed 规则停止运行，请检查 LLM API 配置。\n",
+            "plain", "utf-8"
+        )
+        msg["Subject"] = f"[日报异常] LLM API 不可用 - {report_date}"
+        msg["From"] = sender
+        msg["To"] = receiver
+        
+        with smtplib.SMTP_SSL(server, port, timeout=30) as s:
+            s.login(sender, password)
+            s.send_message(msg)
+        print(f"Notification email sent to {receiver}")
+    except Exception as e:
+        print(f"Failed to send notification email: {e}")
 
 
 def markdown_cell(value: object) -> str:
@@ -3238,6 +3298,13 @@ def main():
             print(f"LLM领域审计警告: {len(result['llm_relevance_warnings'])}个")
             for warning in result["llm_relevance_warnings"][:10]:
                 print(f"  - {warning}")
+        # RULE: If LLM API is unavailable, stop pipeline and notify user.
+        if result.get("llm_api_error"):
+            error_msg = result["llm_api_error"]
+            print(f"\n[FAIL-CLOSED] LLM API 不可用: {error_msg}")
+            print("按照规则，系统已停止运行，正在发送通知邮件...")
+            notify_user_on_llm_error(error_msg, args.date)
+            sys.exit(1)
         if not result["approved_schema"]["is_valid"]:
             print(f"approved schema错误: {len(result['approved_schema']['errors'])}个")
             for error in result["approved_schema"]["errors"][:10]:
