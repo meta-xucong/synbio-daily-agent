@@ -3,7 +3,7 @@
   "description": "Seed memory for LLM-driven daily search strategy generation. This is not a fixed query checklist; it tells the LLM what dimensions must be considered before it writes dynamic queries.",
   "strategy_round_id": "llm_dynamic",
   "min_queries": 8,
-  "max_queries": 12,
+  "max_queries": 16,
   "base_rounds": ["r1", "r5"],
   "coverage_dimensions": [
     "policy",
@@ -39,7 +39,68 @@
     "细胞工厂",
     "生物制造放大"
   ],
+  "coverage_queries": [
+    {
+      "query": "site:stic.sz.gov.cn 合成生物",
+      "reason": "深圳科技创新部门政策是高价值政府源，不能依赖通用 query 召回",
+      "priority": "high",
+      "target_section": "policy",
+      "expected_source_type": "government"
+    },
+    {
+      "query": "site:kw.beijing.gov.cn 生物制造",
+      "reason": "北京科委/科创政策和征集通知需保留政府源定向覆盖",
+      "priority": "high",
+      "target_section": "policy",
+      "expected_source_type": "government"
+    },
+    {
+      "query": "site:sh.gov.cn 合成生物",
+      "reason": "上海政府源经常发布产业政策和园区落地信息",
+      "priority": "medium",
+      "target_section": "policy",
+      "expected_source_type": "government"
+    },
+    {
+      "query": "生物制造 政策 落地",
+      "reason": "主题定向覆盖政策解读、产业落地和非融资类高价值新闻",
+      "priority": "high",
+      "target_section": "news",
+      "expected_source_type": "mixed"
+    },
+    {
+      "query": "合成生物 签约 落地",
+      "reason": "主题定向覆盖项目签约、产业化和园区落地进展",
+      "priority": "medium",
+      "target_section": "news",
+      "expected_source_type": "mixed"
+    },
+    {
+      "query": "site:vbdata.cn 合成生物",
+      "reason": "中文垂直媒体宽口径覆盖，避免只搜融资漏掉聆讯、产业解读和企业进展",
+      "priority": "high",
+      "target_section": "news",
+      "expected_source_type": "media"
+    },
+    {
+      "query": "site:36kr.com 合成生物",
+      "reason": "中文科技媒体宽口径覆盖，避免融资限定漏掉产业分析和人物解读",
+      "priority": "medium",
+      "target_section": "news",
+      "expected_source_type": "media"
+    },
+    {
+      "query": "华恒生物 聆讯 上市",
+      "reason": "重点企业资本市场事件需用聆讯/上市等事件词补搜",
+      "priority": "high",
+      "target_section": "funding",
+      "expected_source_type": "media"
+    }
+  ],
   "source_hints": [
+    "site:vbdata.cn 合成生物",
+    "site:36kr.com 合成生物",
+    "site:pedaily.cn 合成生物",
     "site:vbdata.cn 合成生物 融资",
     "site:36kr.com 合成生物 融资",
     "site:pedaily.cn 合成生物 投资",

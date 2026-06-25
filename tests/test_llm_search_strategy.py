@@ -59,6 +59,29 @@ def test_heuristic_search_strategy_uses_seed_memory():
     assert all(item["required"] for item in strategy["queries"])
 
 
+def test_heuristic_search_strategy_keeps_coverage_floor_queries():
+    config = _strategy_config()
+    config["max_queries"] = 6
+    config["coverage_queries"] = [
+        {"query": "site:stic.sz.gov.cn 合成生物", "target_section": "policy"},
+        {"query": "生物制造 政策 落地", "target_section": "news"},
+        {"query": "site:vbdata.cn 合成生物", "target_section": "news"},
+        {"query": "华恒生物 聆讯 上市", "target_section": "funding"},
+    ]
+
+    strategy = llm_search_strategy.generate_search_strategy(
+        "2026-06-25",
+        config=config,
+        mode="heuristic",
+    )
+
+    queries = [item["query"] for item in strategy["queries"]]
+    assert "site:stic.sz.gov.cn 合成生物" in queries
+    assert "生物制造 政策 落地" in queries
+    assert "site:vbdata.cn 合成生物" in queries
+    assert "华恒生物 聆讯 上市" in queries
+
+
 def test_llm_search_strategy_normalizes_fake_client_response():
     class FakeClient:
         is_configured = True
@@ -97,6 +120,35 @@ def test_llm_search_strategy_normalizes_fake_client_response():
     assert strategy["queries"][0]["priority"] == "high"
     assert strategy["queries"][1]["target_section"] == "funding"
     assert strategy["blindspots"] == ["重点企业", "融资"]
+
+
+def test_llm_search_strategy_appends_missing_coverage_queries():
+    config = _strategy_config()
+    config["max_queries"] = 5
+    config["coverage_queries"] = [
+        {"query": "site:stic.sz.gov.cn 合成生物", "target_section": "policy"},
+        {"query": "site:vbdata.cn 合成生物", "target_section": "news"},
+    ]
+    strategy = llm_search_strategy.normalize_strategy_response(
+        {
+            "queries": [
+                {
+                    "query": "蓝晶微生物 最新 合成生物",
+                    "reason": "重点企业补搜",
+                    "target_section": "news",
+                }
+            ],
+        },
+        report_date="2026-06-25",
+        config=config,
+        provider="llm",
+        model="fake-model",
+    ).to_dict()
+
+    queries = [item["query"] for item in strategy["queries"]]
+    assert "蓝晶微生物 最新 合成生物" in queries
+    assert "site:stic.sz.gov.cn 合成生物" in queries
+    assert "site:vbdata.cn 合成生物" in queries
 
 
 def test_llm_search_strategy_splits_overpacked_company_query():

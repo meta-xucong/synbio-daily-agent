@@ -253,6 +253,7 @@ def build_strategy_prompt(
             "coverage_dimensions": config.get("coverage_dimensions", []),
             "tracked_entities": config.get("tracked_entities", []),
             "technology_topics": config.get("technology_topics", []),
+            "coverage_queries": config.get("coverage_queries", []),
             "source_hints": config.get("source_hints", []),
             "negative_guidance": config.get("negative_guidance", []),
         },
@@ -266,9 +267,10 @@ def build_strategy_prompt(
         "1. 优先补足基座搜索没有覆盖的盲区；\n"
         "2. 覆盖政策、融资、重点企业、研究突破、活动、国际动态、技术产品方向；\n"
         "3. 避免普通生物学、普通化学合成、医学信号通路等跑题方向；\n"
-        "4. 每条 query 必须有明确理由，不能凑数；\n"
-        "5. 每条 query 只表达一个检索意图，最多包含两个重点企业名；不要把很多企业或很多 OR 条件揉进一条；\n"
-        "6. 输出纯 JSON，不要 Markdown。\n\n"
+        "4. coverage_queries 是召回底座，不要用更窄的融资/公告词替代宽口径来源 query；\n"
+        "5. 每条 query 必须有明确理由，不能凑数；\n"
+        "6. 每条 query 只表达一个检索意图，最多包含两个重点企业名；不要把很多企业或很多 OR 条件揉进一条；\n"
+        "7. 输出纯 JSON，不要 Markdown。\n\n"
         "schema:\n"
         "{"
         '"blindspots":["盲区"],'
@@ -361,6 +363,14 @@ def heuristic_search_strategy(
             expected_source_type=source_type,
         ))
 
+    for coverage_query in iter_configured_coverage_queries(config):
+        add(
+            coverage_query.query,
+            coverage_query.reason,
+            coverage_query.priority,
+            coverage_query.target_section,
+            coverage_query.expected_source_type,
+        )
     for entity in config.get("tracked_entities", []) or []:
         add(
             f"{entity} 最新 合成生物",
@@ -451,6 +461,7 @@ def normalize_strategy_response(
             ))
         if len(normalized) >= max_queries:
             break
+    normalized = append_missing_coverage_queries(normalized, config, max_queries=max_queries)
     if len(normalized) < min_queries:
         raise ValueError(f"LLM search strategy returned {len(normalized)} queries, below min_queries={min_queries}")
 
@@ -467,6 +478,59 @@ def normalize_strategy_response(
         blindspots=[str(item).strip()[:120] for item in blindspots if str(item).strip()][:10],
         queries=normalized,
     )
+
+
+def iter_configured_coverage_queries(config: dict[str, Any]) -> list[StrategyQuery]:
+    """Return configured coverage-floor queries in normalized StrategyQuery form."""
+    queries: list[StrategyQuery] = []
+    for entry in config.get("coverage_queries", []) or []:
+        if isinstance(entry, str):
+            query = normalize_query_text(entry)
+            reason = "配置化覆盖底座查询"
+            priority = "high"
+            section = infer_section_from_query(query)
+            source_type = "mixed"
+        elif isinstance(entry, dict):
+            query = normalize_query_text(entry.get("query") or entry.get("q") or "")
+            reason = str(entry.get("reason") or "配置化覆盖底座查询").strip()[:300]
+            priority = str(entry.get("priority") or "high").lower()
+            if priority not in VALID_PRIORITIES:
+                priority = "high"
+            section = str(entry.get("target_section") or entry.get("section") or infer_section_from_query(query)).lower()
+            if section not in VALID_SECTIONS:
+                section = infer_section_from_query(query)
+            source_type = str(entry.get("expected_source_type") or "mixed").strip()[:80] or "mixed"
+        else:
+            continue
+        if query:
+            queries.append(StrategyQuery(
+                query=query,
+                reason=reason,
+                priority=priority,
+                target_section=section,
+                expected_source_type=source_type,
+            ))
+    return queries
+
+
+def append_missing_coverage_queries(
+    queries: list[StrategyQuery],
+    config: dict[str, Any],
+    *,
+    max_queries: int,
+) -> list[StrategyQuery]:
+    """Append configured coverage-floor queries if the LLM omitted them."""
+    seen = {normalize_query_text(query.query) for query in queries}
+    result = list(queries)
+    for coverage_query in iter_configured_coverage_queries(config):
+        normalized = normalize_query_text(coverage_query.query)
+        if normalized in seen:
+            continue
+        if len(result) >= max_queries:
+            break
+        result.append(coverage_query)
+        seen.add(normalized)
+    return result
 
 
 def expand_overpacked_query(entry: Any, config: dict[str, Any]) -> list[Any]:
