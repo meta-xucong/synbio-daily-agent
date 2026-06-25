@@ -59,6 +59,46 @@ def test_heuristic_search_strategy_uses_seed_memory():
     assert all(item["required"] for item in strategy["queries"])
 
 
+def test_heuristic_search_strategy_keeps_all_tracked_entities_with_high_max_queries():
+    config = _strategy_config()
+    config["max_queries"] = 20
+    config["coverage_queries"] = [
+        {"query": "site:stic.sz.gov.cn 合成生物", "target_section": "policy"},
+        {"query": "site:kw.beijing.gov.cn 生物制造", "target_section": "policy"},
+        {"query": "site:sh.gov.cn 合成生物", "target_section": "policy"},
+        {"query": "生物制造 政策 落地", "target_section": "news"},
+        {"query": "合成生物 签约 落地", "target_section": "news"},
+        {"query": "site:vbdata.cn 合成生物", "target_section": "news"},
+        {"query": "site:36kr.com 合成生物", "target_section": "news"},
+        {"query": "华恒生物 聆讯 上市", "target_section": "funding"},
+    ]
+    config["tracked_entities"] = [
+        "蓝晶微生物", "华恒生物", "凯赛生物", "华熙生物",
+        "引航生物", "川宁生物", "和晨生物", "微远生物",
+        "虹摹生物", "微元合成",
+    ]
+
+    strategy = llm_search_strategy.generate_search_strategy(
+        "2026-06-25",
+        config=config,
+        mode="heuristic",
+    )
+
+    queries = [item["query"] for item in strategy["queries"]]
+    assert len(queries) == 20
+    assert any("蓝晶微生物" in q for q in queries)
+    assert any("凯赛生物" in q for q in queries)
+    assert any("华熙生物" in q for q in queries)
+    assert any("引航生物" in q for q in queries)
+    assert any("川宁生物" in q for q in queries)
+    assert any("和晨生物" in q for q in queries)
+    assert any("微远生物" in q for q in queries)
+    assert any("虹摹生物" in q for q in queries)
+    assert any("微元合成" in q for q in queries)
+    assert any("site:stic.sz.gov.cn" in q for q in queries)
+    assert any("生物制造 政策 落地" in q for q in queries)
+
+
 def test_heuristic_search_strategy_keeps_coverage_floor_queries():
     config = _strategy_config()
     config["max_queries"] = 6

@@ -3,7 +3,7 @@
   "description": "Seed memory for LLM-driven daily search strategy generation. This is not a fixed query checklist; it tells the LLM what dimensions must be considered before it writes dynamic queries.",
   "strategy_round_id": "llm_dynamic",
   "min_queries": 8,
-  "max_queries": 16,
+  "max_queries": 20,
   "base_rounds": ["r1", "r5"],
   "coverage_dimensions": [
     "policy",

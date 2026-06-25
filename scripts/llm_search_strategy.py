@@ -379,7 +379,7 @@ def heuristic_search_strategy(
             "news",
             "company_or_media",
         )
-        if len(queries) >= max(4, max_queries // 2):
+        if len(queries) >= max_queries:
             break
     for hint in config.get("source_hints", []) or []:
         add(str(hint), "高价值来源定向补搜", "high", infer_section_from_query(str(hint)), "mixed")
