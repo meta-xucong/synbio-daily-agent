@@ -1088,6 +1088,8 @@ def validate_approved_not_previously_sent(
 
     errors: list[str] = []
     checked: list[dict[str, Any]] = []
+    duplicate_indices: set[int] = set()
+    duplicate_records: list[dict[str, Any]] = []
     for index, item in enumerate(approved_data, 1):
         title = str(item.get("title") or "未命名信息")
         for key in sorted(_item_url_dedup_keys(item)):
@@ -1095,8 +1097,16 @@ def validate_approved_not_previously_sent(
             previous = sent_keys.get(key)
             if not previous:
                 continue
+            duplicate_indices.add(index)
             first_sent = previous.get("first_sent_date") or previous.get("date") or "unknown"
             prev_title = previous.get("title") or "历史记录"
+            duplicate_records.append({
+                "index": index,
+                "title": title,
+                "dedup_key": key,
+                "first_sent_date": first_sent,
+                "previous_title": prev_title,
+            })
             errors.append(
                 f"{label}第{index}项URL已发送过: {title} "
                 f"(dedup_key={key}, first_sent_date={first_sent}, previous_title={prev_title})"
@@ -1107,6 +1117,9 @@ def validate_approved_not_previously_sent(
         "errors": errors,
         "checked": checked,
         "total_checked": len(checked),
+        "duplicate_indices": sorted(duplicate_indices),
+        "duplicate_records": duplicate_records,
+        "sent_dedup_keys": sorted(sent_keys.keys()),
     }
 
 

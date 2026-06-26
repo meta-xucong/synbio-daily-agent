@@ -162,6 +162,39 @@ def test_llm_search_strategy_normalizes_fake_client_response():
     assert strategy["blindspots"] == ["重点企业", "融资"]
 
 
+def test_messages_text_client_uses_search_strategy_token_budget(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "content": [{"text": '{"queries": []}'}],
+            }).encode("utf-8")
+
+    def fake_opener(request, timeout=45):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setenv("ANTHROPIC_SEARCH_STRATEGY_MAX_TOKENS", "4200")
+    client = llm_search_strategy.MessagesTextClient(
+        llm_search_strategy.LLMClient(
+            base_url="https://example.invalid",
+            auth_token="test-token",
+            opener=fake_opener,
+        )
+    )
+
+    client.complete("prompt")
+
+    assert captured["payload"]["max_tokens"] == 4200
+
+
 def test_llm_search_strategy_appends_missing_coverage_queries():
     config = _strategy_config()
     config["max_queries"] = 5
@@ -189,6 +222,39 @@ def test_llm_search_strategy_appends_missing_coverage_queries():
     assert "蓝晶微生物 最新 合成生物" in queries
     assert "site:stic.sz.gov.cn 合成生物" in queries
     assert "site:vbdata.cn 合成生物" in queries
+
+
+def test_llm_search_strategy_coverage_floor_displaces_full_llm_response():
+    config = _strategy_config()
+    config["max_queries"] = 4
+    config["coverage_queries"] = [
+        {"query": "site:stic.sz.gov.cn 合成生物", "target_section": "policy"},
+        {"query": "生物制造 政策 落地", "target_section": "news"},
+        {"query": "site:vbdata.cn 合成生物", "target_section": "news"},
+        {"query": "华恒生物 聆讯 上市", "target_section": "funding"},
+    ]
+
+    strategy = llm_search_strategy.normalize_strategy_response(
+        {
+            "queries": [
+                {"query": f"LLM 临时查询 {index}", "reason": "模型补搜"}
+                for index in range(1, 5)
+            ],
+        },
+        report_date="2026-06-25",
+        config=config,
+        provider="llm",
+        model="fake-model",
+    ).to_dict()
+
+    queries = [item["query"] for item in strategy["queries"]]
+    assert len(queries) == 4
+    assert queries == [
+        "site:stic.sz.gov.cn 合成生物",
+        "生物制造 政策 落地",
+        "site:vbdata.cn 合成生物",
+        "华恒生物 聆讯 上市",
+    ]
 
 
 def test_llm_search_strategy_splits_overpacked_company_query():

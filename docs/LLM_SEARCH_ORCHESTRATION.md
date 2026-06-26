@@ -89,6 +89,7 @@ Rules:
 - `target_section` is one of `news`, `research`, `funding`, `policy`, or `events`.
 - `required` defaults to `true`; required queries must appear as executed in `search_log`.
 - The LLM should generate 8-12 dynamic queries by default.
+- `config/llm_search_strategy.json` `coverage_queries` are hard floors, not suggestions. If the LLM returns a full query list but omits a floor query such as a government source or broad vertical-media query, normalization replaces discretionary LLM queries so every coverage floor remains in the final strategy. `max_queries` limits discretionary queries and may be exceeded only when the configured floor itself is larger than the cap.
 
 ## Daily Workflow
 
@@ -106,6 +107,8 @@ python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --da
 ```
 
 Use `--mode llm` in production strategy generation. `--mode auto` can fall back to heuristic planning only when no provider is configured; if a provider is configured and fails, it fails closed.
+
+Strategy generation needs a larger output budget than single-item relevance review because it returns blind spots plus many structured queries. `scripts/llm_search_strategy.py` defaults to `ANTHROPIC_SEARCH_STRATEGY_MAX_TOKENS=3600` and accepts an environment override. If production sees truncated JSON or unterminated arrays, increase this value rather than falling back to manual query editing.
 
 ## Why This Is Not Another Keyword List
 

@@ -626,6 +626,54 @@ def test_history_index_duplicate_checks_secondary_urls(monkeypatch):
     assert "[历史索引去重]" in result["rejected"][0]["reason"]
 
 
+def test_history_duplicate_uses_article_url_identity_for_36kr(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {"version": 1, "registry": {}})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [{
+        "url": "https://36kr.com/p/3051114996943496",
+        "title": "旧标题",
+        "fingerprint": "unrelated",
+        "first_sent_date": "2026-06-09",
+    }])
+
+    result = report_pipeline.process_raw_data([
+        _item(
+            title="方昕博士解读生物制造产业落地：四城市政策对比",
+            summary="方昕博士讨论合成生物与生物制造产业落地。",
+            url="https://www.36kr.com/p/3051114996943496?utm_source=newsletter",
+        ),
+    ], "news")
+
+    assert result["stats"]["approved"] == 0
+    assert result["stats"]["duplicate_rejected"] == 1
+    assert "[历史索引去重]" in result["rejected"][0]["reason"]
+
+
+def test_sent_url_registry_blocks_changed_title_duplicate(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {
+        "version": 1,
+        "registry": {
+            "36kr:p:3051114996943496": {
+                "first_sent_date": "2026-06-09",
+                "title": "从实验室到应用场！方昕博士解读生物制造产业落地与投资逻辑",
+            }
+        },
+    })
+
+    result = report_pipeline.process_raw_data([
+        _item(
+            title="方昕博士解读生物制造产业落地：四城市政策对比",
+            summary="合成生物和生物制造产业落地相关内容。",
+            url="https://www.36kr.com/p/3051114996943496",
+        ),
+    ], "news")
+
+    assert result["stats"]["approved"] == 0
+    assert result["stats"]["duplicate_rejected"] == 1
+
+
 def test_process_raw_data_deduplicates_current_batch(monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     result = report_pipeline.process_raw_data([
@@ -644,6 +692,24 @@ def test_value_score_is_normalized_to_0_10(monkeypatch):
     assert result["approved"]
     assert 0 <= result["approved"][0]["value_score"] <= 10
     assert "raw_score" in result["approved"][0]
+
+
+def test_process_raw_data_rejects_market_report_from_main_news(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {"version": 1, "registry": {}})
+
+    result = report_pipeline.process_raw_data([
+        _item(
+            title="Synthetic Biology Market Analysis Report 2026-2034",
+            summary="The market research report reviews 2024 market size, 2025 share and 2026-2034 CAGR forecast.",
+            url="https://www.polarismarketresearch.com/synthetic-biology-market",
+        ),
+    ], "news")
+
+    assert result["stats"]["approved"] == 0
+    assert result["stats"]["content_type_rejected"] == 1
+    assert "[内容类型]" in result["rejected"][0]["reason"]
 
 
 def test_report_pipeline_cli_process_accepts_full_raw_dict(tmp_path, monkeypatch):
@@ -931,6 +997,7 @@ def test_build_approved_checks_url_health_by_default(tmp_path, monkeypatch):
 
 
 def test_build_approved_can_skip_network_gates_explicitly(tmp_path, monkeypatch):
+    monkeypatch.setenv("SYNBIO_DAILY_NOW", "2026-06-11T12:00:00+08:00")
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
     raw = {
@@ -1265,6 +1332,153 @@ def test_extract_title_signals_reads_og_title_title_and_h1():
         "页面标题",
         "正文标题",
     ]
+
+
+def test_extract_page_verified_date_uses_earliest_page_date():
+    html = """
+    <html>
+      <head><meta property="article:published_time" content="2026-06-21T10:00:00+08:00"></head>
+      <body>2024年11月22日，方昕博士做客科大硅谷大讲堂，解读生物制造。</body>
+    </html>
+    """
+
+    result = report_pipeline.extract_page_verified_date(html, search_date="2026-06-21")
+
+    assert result["verified_date"] == "2024-11-22"
+    assert result["confidence"] == "high"
+
+
+def test_extract_page_verified_date_ignores_effective_and_noise_dates_when_publish_meta_exists():
+    html = """
+    <html>
+      <head><meta property="article:published_time" content="2026-06-24T09:00:00+08:00"></head>
+      <body>
+        深圳经济特区促进合成生物产业创新发展若干规定发布。
+        本规定自2025年10月1日起施行。
+        版权所有 2020 深圳市人民政府。
+      </body>
+    </html>
+    """
+
+    result = report_pipeline.extract_page_verified_date(html, search_date="2026-06-24")
+
+    assert result["verified_date"] == "2026-06-24"
+    assert result["confidence"] == "high"
+
+
+def test_extract_page_verified_date_uses_body_event_date_without_label():
+    html = """
+    <html><body>
+      2025年8月29日，经深圳市人民代表大会常务委员会审议通过合成生物产业创新发展规定。
+    </body></html>
+    """
+
+    result = report_pipeline.extract_page_verified_date(html, search_date="2026-06-24")
+
+    assert result["verified_date"] == "2025-08-29"
+    assert result["confidence"] == "high"
+
+
+def test_fetch_and_verify_date_extracts_body_date_without_network():
+    def opener(request, timeout=10):
+        return _FakeResponse("发布时间：2026年4月16日 深圳市合成生物研究设施开放共享若干措施".encode("utf-8"))
+
+    result = report_pipeline.fetch_and_verify_date(
+        "https://stic.sz.gov.cn/gkmlpt/content/12/12740/post_12740127.html",
+        "2026-06-24",
+        opener=opener,
+    )
+
+    assert result["verified_date"] == "2026-04-16"
+    assert result["source"] == "meta/body"
+
+
+def test_build_approved_rejects_old_item_after_page_date_verification(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {"version": 1, "registry": {}})
+    raw = {
+        "news": [_item(
+            title="方昕博士解读生物制造产业落地",
+            summary="方昕博士讨论合成生物和生物制造产业落地。",
+            date="2026-06-10",
+            search_date="2026-06-10",
+            date_source="search_result",
+            source_round="r1",
+            url="https://www.36kr.com/p/3051114996943496",
+        )],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def fake_date_verify(url, search_date):
+        return {
+            "verified_date": "2024-11-22",
+            "confidence": "high",
+            "source": "body",
+            "url": url,
+        }
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+        date_verify_func=fake_date_verify,
+        llm_relevance_mode="off",
+    )
+
+    assert result["approved"] == []
+    assert any("[时效性]" in item["reason"] for item in result["rejected"])
+    rejected_item = next(item["item"] for item in result["rejected"] if "[时效性]" in item["reason"])
+    assert rejected_item["verified_date"] == "2024-11-22"
+
+
+def test_build_approved_rejects_old_policy_file_after_page_date_verification(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {"version": 1, "registry": {}})
+    raw = {
+        "news": [],
+        "research": [],
+        "funding": [],
+        "policy": [_item(
+            title="深圳市推动合成生物创新引领生物制造产业高质量发展若干措施",
+            source="深圳市科技创新局",
+            summary="深圳市发布合成生物和生物制造产业若干措施。",
+            date="2026-06-24",
+            search_date="2026-06-24",
+            date_source="search_result",
+            source_round="r5",
+            type="policy",
+            url="https://stic.sz.gov.cn/gkmlpt/content/12/12740/post_12740127.html",
+        )],
+        "events": [],
+    }
+
+    def fake_date_verify(url, search_date):
+        return {
+            "verified_date": "2026-04-16",
+            "confidence": "high",
+            "source": "meta/body",
+            "url": url,
+        }
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-24",
+        output_dir=tmp_path,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+        date_verify_func=fake_date_verify,
+        llm_relevance_mode="off",
+    )
+
+    assert result["approved"] == []
+    assert any("[时效性]" in item["reason"] and "限制7天" in item["reason"] for item in result["rejected"])
 
 
 def test_check_url_title_match_rejects_mismatched_reachable_page():
