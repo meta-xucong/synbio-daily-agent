@@ -54,3 +54,50 @@ def test_post_check_accepts_string_urls_field(tmp_path, monkeypatch):
     result = post_check.post_check("2026-06-10")
 
     assert result["can_send"], result["errors"]
+
+
+def test_post_check_default_path_supports_report_directory(tmp_path, monkeypatch):
+    reports = tmp_path / "reports"
+    data = tmp_path / "data"
+    report_dir = reports / "2026-06-10"
+    report_dir.mkdir(parents=True)
+    data.mkdir()
+    (report_dir / "report.md").write_text(
+        "# 合成生物行业日报\n\n流水线追踪：approved=1\n\n"
+        "星河生物 https://example.com/news/xinghe\n",
+        encoding="utf-8",
+    )
+    approved = [{"title": "星河生物", "url": "https://example.com/news/xinghe"}]
+    (data / "approved_2026-06-10.json").write_text(json.dumps(approved, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(post_check, "REPORTS_DIR", reports)
+    monkeypatch.setattr(post_check, "DATA_DIR", data)
+
+    result = post_check.post_check("2026-06-10")
+
+    assert result["can_send"], result["errors"]
+
+
+def test_post_check_accepts_markdown_escaped_pipe_titles(tmp_path, monkeypatch):
+    reports = tmp_path / "reports"
+    data = tmp_path / "data"
+    reports.mkdir()
+    data.mkdir()
+    (reports / "2026-06-10.md").write_text(
+        "# 合成生物行业日报\n\n流水线追踪：approved=1\n\n"
+        "Nucleic Acids Research \\| 合成生物工具进展 https://example.com/news/nar\n",
+        encoding="utf-8",
+    )
+    approved = [{
+        "title": "Nucleic Acids Research | 合成生物工具进展",
+        "url": "https://example.com/news/nar",
+    }]
+    (data / "approved_2026-06-10.json").write_text(json.dumps(approved, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(post_check, "REPORTS_DIR", reports)
+    monkeypatch.setattr(post_check, "DATA_DIR", data)
+
+    result = post_check.post_check("2026-06-10")
+
+    assert result["can_send"], result["errors"]
+    assert not result["warnings"]

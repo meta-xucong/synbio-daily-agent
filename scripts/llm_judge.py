@@ -22,6 +22,8 @@ from urllib.request import Request, urlopen
 
 def _load_env() -> None:
     """Load .env file from project root (standard-library only, no dotenv dep)."""
+    if os.getenv("SYNBIO_SKIP_DOTENV") in {"1", "true", "TRUE", "yes", "YES"}:
+        return
     # resolve project root relative to this script: scripts/ -> repo root
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent

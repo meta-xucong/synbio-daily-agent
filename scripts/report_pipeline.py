@@ -585,18 +585,30 @@ def build_raw_from_search_log(search_log: Any, report_date: str | None = None) -
 
 
 def validate_search_coverage(search_log: Any, raw_obj: Any) -> Dict[str, Any]:
-    """Compare search candidates with raw items so search results cannot silently disappear."""
+    """Compare search candidates with raw items in both directions.
+
+    Search results must not silently disappear before raw, and raw candidates
+    must not be hand-added without matching search-log evidence.
+    """
     search_urls = _search_candidate_urls(search_log)
     raw_urls = _raw_candidate_urls(raw_obj)
     missing_urls = sorted(search_urls - raw_urls)
+    untraced_raw_urls = sorted(raw_urls - search_urls)
+    errors = []
+    if missing_urls:
+        errors.append(f"搜索结果有{len(missing_urls)}条URL未进入raw数据")
+    if untraced_raw_urls:
+        errors.append(f"raw数据有{len(untraced_raw_urls)}条URL缺少search_log候选证据")
     return {
-        "is_valid": len(missing_urls) == 0,
-        "errors": [f"搜索结果有{len(missing_urls)}条URL未进入raw数据"] if missing_urls else [],
+        "is_valid": len(errors) == 0,
+        "errors": errors,
         "warnings": [],
         "search_candidate_count": len(search_urls),
         "raw_url_count": len(raw_urls),
         "missing_urls": missing_urls,
+        "untraced_raw_urls": untraced_raw_urls,
         "coverage_ratio": 1.0 if not search_urls else round(len(search_urls & raw_urls) / len(search_urls), 3),
+        "raw_trace_ratio": 1.0 if not raw_urls else round(len(search_urls & raw_urls) / len(raw_urls), 3),
     }
 
 
@@ -3155,11 +3167,12 @@ def validate_search_log(
         if unused_rounds:
             warnings.append(f"以下搜索轮次执行过但未产生raw候选: {', '.join(unused_rounds)}")
         coverage_check = validate_search_coverage(search_log, raw_obj)
-        if coverage_check["search_candidate_count"] and not coverage_check["is_valid"]:
+        if not coverage_check["is_valid"]:
             message = (
-                f"搜索覆盖率不足: search_log候选{coverage_check['search_candidate_count']}条, "
+                f"搜索覆盖率不足/溯源不足: search_log候选{coverage_check['search_candidate_count']}条, "
                 f"raw收录{coverage_check['raw_url_count']}条, "
-                f"缺失{len(coverage_check['missing_urls'])}条"
+                f"搜索结果缺失{len(coverage_check['missing_urls'])}条, "
+                f"raw无搜索证据{len(coverage_check['untraced_raw_urls'])}条"
             )
             if strict_coverage:
                 errors.append(message)

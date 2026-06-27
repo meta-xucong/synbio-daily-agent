@@ -47,7 +47,9 @@ def post_check(date_str: str, report_path: str = None) -> dict:
     warnings = []
     
     if report_path is None:
-        report_path = REPORTS_DIR / f"{date_str}.md"
+        report_dir_report = REPORTS_DIR / date_str / "report.md"
+        legacy_report = REPORTS_DIR / f"{date_str}.md"
+        report_path = report_dir_report if report_dir_report.exists() else legacy_report
     else:
         report_path = Path(report_path)
     
@@ -84,8 +86,14 @@ def post_check(date_str: str, report_path: str = None) -> dict:
     # 检查2: approved中的每个信息都在报告中体现
     for item in approved:
         title = item.get("title", "")
+        escaped_title = title.replace("|", r"\|")
         # 检查标题或标题前30字是否在报告中
-        if title not in report and title[:30] not in report:
+        if (
+            title not in report
+            and title[:30] not in report
+            and escaped_title not in report
+            and escaped_title[:30] not in report
+        ):
             warnings.append(f"⚠️ approved信息可能未在报告中体现: {title[:50]}")
     
     # 检查3: 报告头部是否有流水线追踪标记
@@ -123,10 +131,13 @@ def post_check(date_str: str, report_path: str = None) -> dict:
 if __name__ == "__main__":
     import sys
     
+    report_path = None
     if len(sys.argv) > 1:
         date_str = sys.argv[1]
+        if len(sys.argv) > 2:
+            report_path = sys.argv[2]
     else:
         date_str = current_date_str()
     
-    result = post_check(date_str)
+    result = post_check(date_str, report_path)
     sys.exit(0 if result["can_send"] else 1)

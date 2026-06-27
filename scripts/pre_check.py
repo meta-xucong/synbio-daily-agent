@@ -9,11 +9,11 @@ import json
 try:
     from .settings import DATA_DIR, date_str as current_date_str
     from .console_utils import ensure_utf8_console
-    from .report_pipeline import LOW_APPROVED_COUNT_WARNING, validate_search_log
+    from .report_pipeline import LOW_APPROVED_COUNT_WARNING, find_default_search_strategy_path, validate_search_log
 except ImportError:
     from settings import DATA_DIR, date_str as current_date_str
     from console_utils import ensure_utf8_console
-    from report_pipeline import LOW_APPROVED_COUNT_WARNING, validate_search_log
+    from report_pipeline import LOW_APPROVED_COUNT_WARNING, find_default_search_strategy_path, validate_search_log
 
 ensure_utf8_console()
 
@@ -54,7 +54,17 @@ def pre_check(date_str: str) -> dict:
         try:
             with open(search_log_path, 'r', encoding='utf-8') as f:
                 search_log = json.load(f)
-            search_log_result = validate_search_log(search_log, raw_data, strict_coverage=True)
+            search_strategy = None
+            strategy_path = find_default_search_strategy_path(date_str, search_log_path)
+            if strategy_path:
+                with open(strategy_path, 'r', encoding='utf-8') as f:
+                    search_strategy = json.load(f)
+            search_log_result = validate_search_log(
+                search_log,
+                raw_data,
+                strict_coverage=True,
+                search_strategy=search_strategy,
+            )
             if not search_log_result["is_valid"]:
                 errors.extend([f"❌ 搜索日志不合规: {e}" for e in search_log_result["errors"]])
             else:
@@ -63,6 +73,13 @@ def pre_check(date_str: str) -> dict:
                     f"{len(search_log_result['rounds_seen'])} 轮, "
                     f"{search_log_result['total_queries']} 个query"
                 )
+                if search_strategy:
+                    strategy_check = search_log_result.get("strategy_check") or {}
+                    print(
+                        "✅ LLM搜索策略已审计: "
+                        f"{strategy_check.get('executed_required_count', 0)}/"
+                        f"{strategy_check.get('required_total', 0)} 个required query"
+                    )
             warnings.extend([f"⚠️ 搜索日志提示: {w}" for w in search_log_result["warnings"]])
         except Exception as e:
             errors.append(f"❌ 搜索日志JSON格式错误: {search_log_path} ({e})")

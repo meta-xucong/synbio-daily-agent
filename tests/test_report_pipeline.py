@@ -316,6 +316,35 @@ def test_validate_search_coverage_warns_when_search_result_missing_from_raw():
     assert any("搜索覆盖率不足" in error for error in strict_result["errors"])
 
 
+def test_validate_search_coverage_blocks_raw_without_search_evidence():
+    log = _search_log()
+    log["rounds"][0]["candidates"] = []
+    raw = {
+        "news": [
+            _item(
+                type="news",
+                source_round="r1",
+                url="https://example.com/news/manual-only",
+            )
+        ],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    result = report_pipeline.validate_search_log(log, raw)
+    strict_result = report_pipeline.validate_search_log(log, raw, strict_coverage=True)
+
+    assert result["is_valid"]
+    assert any("raw无搜索证据1条" in warning for warning in result["warnings"])
+    assert not strict_result["is_valid"]
+    assert any("raw无搜索证据1条" in error for error in strict_result["errors"])
+    assert strict_result["coverage_check"]["untraced_raw_urls"] == [
+        "https://example.com/news/manual-only"
+    ]
+
+
 def test_build_approved_blocks_search_coverage_gap(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
