@@ -235,6 +235,126 @@ def test_search_query_config_covers_sciencenet_policy_terms():
     assert "site:sciencenet.cn 合成生物 国家重点研发计划" in queries
 
 
+def test_search_query_config_covers_audited_company_and_vbdata_blindspots():
+    config = report_pipeline.load_search_query_config()
+    queries = {
+        query
+        for round_cfg in config["rounds"]
+        for query in round_cfg.get("required_queries", [])
+    }
+
+    assert "site:vbdata.cn 生物制造" in queries
+    assert "site:vbdata.cn 元英进" in queries
+    assert "动脉网 生物制造 死亡谷" in queries
+    assert "生物制造 死亡谷 落地" in queries
+    assert "上市公司 生物制造 项目 公告" in queries
+    assert "发酵 辅酶Q10 项目 公告" in queries
+
+
+def test_extract_page_verified_date_uses_search_date_to_ignore_related_story_dates():
+    html = """
+    <html><body>
+      <h1>元英进院士：跨越“死亡谷”，生物制造拼的不再是概念而是落地</h1>
+      高康平 2026-06-26 21:53
+      <p>在2026生物制造大赛启动仪式上发布产业化观察。</p>
+      <aside>从规模优势到系统破局：中国生物制造为何需要一场大赛？ 2026-06-01</aside>
+    </body></html>
+    """
+
+    result = report_pipeline.extract_page_verified_date(html, search_date="2026-06-26")
+
+    assert result["verified_date"] == "2026-06-26"
+    assert result["source"] == "body_context"
+
+
+def test_extract_page_verified_date_falls_back_when_page_dates_do_not_match_search_date():
+    html = """
+    <html><body>
+      <h1>金河生物5.5亿元新项目落地</h1>
+      <aside>金河生物子公司获得新兽药注册证书 2026-01-13</aside>
+      <aside>金河生物发布业绩预告 2026-01-31</aside>
+    </body></html>
+    """
+
+    result = report_pipeline.extract_page_verified_date(html, search_date="2026-06-26")
+
+    assert result["verified_date"] == "2026-06-26"
+    assert result["source"] == "search_fallback"
+    assert result["confidence"] == "low"
+    assert "warning" in result
+
+
+def test_validate_report_structure_forbidden_section_check_only_scans_headings(tmp_path):
+    report = tmp_path / "report.md"
+    report.write_text(
+        """# 合成生物行业日报 — 2026-06-27
+
+## 📌 执行摘要
+
+1. **华恒生物动态**：公司尚未知悉调查的进展。（2026-06-25）
+
+## 📰 行业热点新闻
+
+| 标题 | 来源 | 时间 | 摘要 | 链接 |
+|------|------|------|------|------|
+| 华恒生物动态 | STCN | 2026-06-25 | 公司尚未知悉调查的进展。 | https://example.com/a |
+
+## 🔬 最新研究成果
+
+| 标题 | 期刊/机构 | 核心发现 | 链接 |
+|------|----------|----------|------|
+| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — |
+
+## 💰 融资与投资动态
+
+| 公司 | 轮次 | 金额 | 投资方 | 时间 | 链接 |
+|------|------|------|--------|------|------|
+| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — | — | — |
+
+## 🏛️ 政策与监管
+
+### 国内政策
+
+| 政策/法规 | 发布机构 | 时间 | 核心内容 | 链接 |
+|-----------|----------|------|----------|------|
+| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — | — |
+
+### 国际监管动态
+
+经五轮检索，本周期暂无相关新信息收录。
+
+## 📅 行业活动预告
+
+| 活动名称 | 时间 | 地点 | 亮点 | 链接 |
+|----------|------|------|------|------|
+| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — | — |
+
+## 🤖 AI 深度分析
+
+### 趋势研判
+
+仅基于正文已收录信息进行归纳。
+
+### 竞争格局变化
+
+仅基于正文已收录信息进行归纳。
+
+### 风险提示
+
+1. 链接可访问性仍需验证。
+
+## 📎 附录
+
+1. https://example.com/a
+""",
+        encoding="utf-8",
+    )
+
+    result = report_pipeline.validate_report_structure(str(report))
+
+    assert not any("禁止的额外板块" in error for error in result["errors"])
+
+
 def test_build_raw_from_search_log_keeps_whitepaper_result():
     log = _search_log()
     log["rounds"][0]["queries"] = [{
@@ -1363,7 +1483,7 @@ def test_extract_title_signals_reads_og_title_title_and_h1():
     ]
 
 
-def test_extract_page_verified_date_uses_earliest_page_date():
+def test_extract_page_verified_date_prefers_publish_meta_over_old_body_event_date():
     html = """
     <html>
       <head><meta property="article:published_time" content="2026-06-21T10:00:00+08:00"></head>
@@ -1373,7 +1493,7 @@ def test_extract_page_verified_date_uses_earliest_page_date():
 
     result = report_pipeline.extract_page_verified_date(html, search_date="2026-06-21")
 
-    assert result["verified_date"] == "2024-11-22"
+    assert result["verified_date"] == "2026-06-21"
     assert result["confidence"] == "high"
 
 

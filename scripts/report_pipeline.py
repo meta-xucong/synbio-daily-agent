@@ -247,6 +247,7 @@ DATE_EFFECTIVE_CONTEXT_KEYWORDS = (
 DATE_NOISE_CONTEXT_KEYWORDS = (
     "copyright", "版权所有", "备案", "沪icp", "粤icp", "京icp",
 )
+DATE_VERIFY_SEARCH_TOLERANCE_DAYS = 7
 
 # 板块名称映射
 SECTION_MAP = {
@@ -1227,6 +1228,57 @@ def _contextual_date_candidates_from_text(text: str) -> list[datetime]:
     return candidates
 
 
+def _unique_dates(candidates: list[datetime]) -> list[datetime]:
+    seen: set[str] = set()
+    unique: list[datetime] = []
+    for candidate in candidates:
+        key = candidate.strftime("%Y-%m-%d")
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _select_verified_date(
+    candidates: list[datetime],
+    search_date: str = "",
+    *,
+    allow_unanchored: bool = True,
+) -> Optional[datetime]:
+    """Pick a page date without letting related-story dates override news dates.
+
+    Article pages often contain related links or market-history widgets with
+    older dates. When a search/result date is available, use it only as a
+    disambiguation anchor among page-visible candidates.
+    """
+    unique = _unique_dates([candidate for candidate in candidates if candidate])
+    if not unique:
+        return None
+
+    search_dt = parse_date(search_date)
+    if search_dt:
+        if len(unique) == 1 and allow_unanchored:
+            return unique[0]
+        search_day = search_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        anchored = sorted(
+            unique,
+            key=lambda candidate: (
+                abs((candidate.replace(hour=0, minute=0, second=0, microsecond=0) - search_day).days),
+                -candidate.timestamp(),
+            ),
+        )
+        best = anchored[0]
+        delta_days = abs((best.replace(hour=0, minute=0, second=0, microsecond=0) - search_day).days)
+        if delta_days <= DATE_VERIFY_SEARCH_TOLERANCE_DAYS:
+            return best
+        return None
+
+    if not allow_unanchored and len(unique) > 1:
+        return None
+    return min(unique)
+
+
 def extract_page_verified_date(html: str, search_date: str = "") -> Dict[str, Any]:
     """Extract a conservative original date from a fetched page."""
     parser = PageDateParser()
@@ -1255,24 +1307,51 @@ def extract_page_verified_date(html: str, search_date: str = "") -> Dict[str, An
         if parsed:
             context_dates.append(parsed)
 
+    structured_dates = meta_dates + context_dates
+    if structured_dates:
+        verified = _select_verified_date(structured_dates, search_date)
+        if verified:
+            return {
+                "verified_date": verified.strftime("%Y-%m-%d"),
+                "confidence": "high",
+                "source": "meta/body",
+                "date_count": len(_unique_dates(structured_dates)),
+            }
+
     event_dates = _contextual_date_candidates_from_text(text)
+    if event_dates:
+        verified = _select_verified_date(event_dates, search_date, allow_unanchored=True)
+        if verified:
+            return {
+                "verified_date": verified.strftime("%Y-%m-%d"),
+                "confidence": "high",
+                "source": "body_context",
+                "date_count": len(_unique_dates(event_dates)),
+            }
+
     # If no structured or contextual signal exists, fall back to generic body
-    # dates with only medium confidence. This keeps legacy pages usable while
-    # preventing effective/copyright dates from overriding a real publish date.
-    generic_dates = [] if (meta_dates or context_dates or event_dates) else [
-        candidate
-        for candidate in _date_candidates_from_text(text)
-    ]
-    all_dates = meta_dates + context_dates + event_dates + generic_dates
+    # dates only when they are unambiguous or line up with the collected search
+    # date. This keeps legacy pages usable without letting related-story dates
+    # override the article's actual publish date.
+    if not (structured_dates or event_dates):
+        generic_dates = _date_candidates_from_text(text)
+        verified = _select_verified_date(generic_dates, search_date, allow_unanchored=False)
+        if verified:
+            return {
+                "verified_date": verified.strftime("%Y-%m-%d"),
+                "confidence": "medium",
+                "source": "body",
+                "date_count": len(_unique_dates(generic_dates)),
+            }
+
+    all_dates = structured_dates + event_dates
     if all_dates:
-        verified = min(all_dates)
-        source = "meta/body" if meta_dates or context_dates or event_dates else "body"
-        confidence = "high" if meta_dates or context_dates or event_dates else "medium"
         return {
-            "verified_date": verified.strftime("%Y-%m-%d"),
-            "confidence": confidence,
-            "source": source,
-            "date_count": len(all_dates),
+            "verified_date": search_date,
+            "confidence": "low",
+            "source": "search_fallback",
+            "date_count": len(_unique_dates(all_dates)),
+            "warning": "页面含多个日期但无与搜索日期相符的发布/事件日期，回退搜索日期",
         }
 
     return {
@@ -2375,8 +2454,12 @@ def validate_report_structure(report_path: str) -> Dict[str, Any]:
         r"## [^#]*公司[^#]*进展",
         r"## [^#]*产品[^#]*动态",
     ]
+    heading_lines = "\n".join(
+        line for line in content.splitlines()
+        if re.match(r"^##\s+", line)
+    )
     for pattern in forbidden_patterns:
-        if re.search(pattern, content, re.IGNORECASE):
+        if re.search(pattern, heading_lines, re.IGNORECASE):
             errors.append(f"发现禁止的额外板块，匹配模式: {pattern}")
     
     # 3. 检查执行摘要格式（日期标注 + 降序排列）

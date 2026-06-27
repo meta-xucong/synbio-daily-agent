@@ -122,6 +122,19 @@ def test_heuristic_search_strategy_keeps_coverage_floor_queries():
     assert "华恒生物 聆讯 上市" in queries
 
 
+def test_current_strategy_config_covers_audited_blindspots():
+    config = llm_search_strategy.load_strategy_config(ROOT / "config" / "llm_search_strategy.json")
+    coverage_queries = [
+        item.get("query")
+        for item in config.get("coverage_queries", [])
+    ]
+    assert "site:vbdata.cn 生物制造" in coverage_queries
+    assert "华恒生物 实际控制人 刑事拘留" in coverage_queries
+    assert "生物制造 死亡谷 落地" in coverage_queries
+    assert "金河生物 辅酶Q10 发酵项目 公告" in coverage_queries
+    assert "site:stcn.com 生物制造 项目" in coverage_queries
+
+
 def test_llm_search_strategy_normalizes_fake_client_response():
     class FakeClient:
         is_configured = True
@@ -162,6 +175,18 @@ def test_llm_search_strategy_normalizes_fake_client_response():
     assert strategy["blindspots"] == ["重点企业", "融资"]
 
 
+def test_strategy_prompt_ascii_safe_encodes_chinese_context():
+    prompt = llm_search_strategy.build_strategy_prompt(
+        "2026-06-25",
+        _strategy_config(),
+        ascii_safe=True,
+    )
+
+    assert all(ord(ch) < 128 for ch in prompt)
+    assert "\\u84dd\\u6676\\u5fae\\u751f\\u7269" in prompt
+    assert "context_json" in prompt
+
+
 def test_messages_text_client_uses_search_strategy_token_budget(monkeypatch):
     captured = {}
 
@@ -193,6 +218,47 @@ def test_messages_text_client_uses_search_strategy_token_budget(monkeypatch):
     client.complete("prompt")
 
     assert captured["payload"]["max_tokens"] == 4200
+
+
+def test_messages_text_client_uses_ascii_prompt_for_aiself(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "content": [{"text": '{"queries": []}'}],
+            }).encode("utf-8")
+
+    def fake_opener(request, timeout=45):
+        captured["payload_text"] = request.data.decode("utf-8")
+        captured["payload"] = json.loads(captured["payload_text"])
+        return FakeResponse()
+
+    monkeypatch.setenv("ANTHROPIC_SEARCH_STRATEGY_MAX_TOKENS", "4200")
+    llm_client = llm_search_strategy.LLMClient(
+        base_url="https://aiself.vip",
+        auth_token="test-token",
+        model="kimi-for-coding",
+        opener=fake_opener,
+    )
+    client = llm_search_strategy.MessagesTextClient(llm_client)
+    prompt = llm_search_strategy.build_strategy_prompt(
+        "2026-06-25",
+        _strategy_config(),
+        ascii_safe=True,
+    )
+
+    client.complete(prompt)
+
+    assert llm_client.use_ascii_prompts
+    assert all(ord(ch) < 128 for ch in captured["payload_text"])
+    assert "\\u84dd\\u6676\\u5fae\\u751f\\u7269" in captured["payload"]["messages"][0]["content"]
 
 
 def test_llm_search_strategy_appends_missing_coverage_queries():

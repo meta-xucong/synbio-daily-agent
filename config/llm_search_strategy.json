@@ -83,6 +83,13 @@
       "expected_source_type": "media"
     },
     {
+      "query": "site:vbdata.cn 生物制造",
+      "reason": "动脉网/蛋壳研究院常用生物制造表述发布产业化访谈和大赛观察，仅搜合成生物会漏采",
+      "priority": "high",
+      "target_section": "news",
+      "expected_source_type": "media"
+    },
+    {
       "query": "site:36kr.com 合成生物",
       "reason": "中文科技媒体宽口径覆盖，避免融资限定漏掉产业分析和人物解读",
       "priority": "medium",
@@ -95,13 +102,44 @@
       "priority": "high",
       "target_section": "funding",
       "expected_source_type": "media"
+    },
+    {
+      "query": "华恒生物 实际控制人 刑事拘留",
+      "reason": "重点合成生物上市公司重大风险公告不能被合成生物关键词过滤漏掉",
+      "priority": "high",
+      "target_section": "news",
+      "expected_source_type": "company_or_media"
+    },
+    {
+      "query": "生物制造 死亡谷 落地",
+      "reason": "产业化访谈和中试熟化内容常用死亡谷/落地表述，需覆盖非融资非政策类高价值观察",
+      "priority": "high",
+      "target_section": "news",
+      "expected_source_type": "media"
+    },
+    {
+      "query": "金河生物 辅酶Q10 发酵项目 公告",
+      "reason": "上市公司发酵产能和生物制造项目公告需用项目物料与公告词定向补搜",
+      "priority": "high",
+      "target_section": "news",
+      "expected_source_type": "company_or_media"
+    },
+    {
+      "query": "site:stcn.com 生物制造 项目",
+      "reason": "证券时报等公告转写源能补足交易所/巨潮检索不稳定时的上市公司项目事件",
+      "priority": "medium",
+      "target_section": "news",
+      "expected_source_type": "media"
     }
   ],
   "source_hints": [
     "site:vbdata.cn 合成生物",
+    "site:vbdata.cn 生物制造",
     "site:36kr.com 合成生物",
     "site:pedaily.cn 合成生物",
     "site:vbdata.cn 合成生物 融资",
+    "site:cninfo.com.cn 华恒生物 公告",
+    "site:stcn.com 生物制造 项目",
     "site:36kr.com 合成生物 融资",
     "site:pedaily.cn 合成生物 投资",
     "site:cninfo.com.cn 合成生物 公告",

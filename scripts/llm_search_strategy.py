@@ -32,7 +32,7 @@ CONFIG_DIR = ROOT / "config"
 DEFAULT_CONFIG_PATH = CONFIG_DIR / "llm_search_strategy.json"
 VALID_SECTIONS = {"news", "research", "funding", "policy", "events"}
 VALID_PRIORITIES = {"high", "medium", "low"}
-DEFAULT_STRATEGY_MAX_TOKENS = 3600
+DEFAULT_STRATEGY_MAX_TOKENS = 6000
 
 
 class StrategyClient(Protocol):
@@ -99,9 +99,9 @@ class MessagesTextClient:
         }
         request = Request(
             self.llm_client.messages_url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            data=json.dumps(payload, ensure_ascii=self.llm_client.use_ascii_prompts).encode("utf-8"),
             headers={
-                "Content-Type": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
                 "x-api-key": self.llm_client.auth_token or "",
                 "Authorization": f"Bearer {self.llm_client.auth_token or ''}",
                 "anthropic-version": "2023-06-01",
@@ -248,12 +248,15 @@ def build_strategy_prompt(
     config: dict[str, Any],
     recent_titles: list[dict[str, str]] | None = None,
     base_search_summary: dict[str, Any] | None = None,
+    ascii_safe: bool = False,
 ) -> str:
+    min_queries = int(config.get("min_queries", 8) or 8)
+    max_queries = int(config.get("max_queries", 12) or 12)
     compact = {
         "report_date": report_date,
         "config": {
-            "min_queries": config.get("min_queries", 8),
-            "max_queries": config.get("max_queries", 12),
+            "min_queries": min_queries,
+            "max_queries": max_queries,
             "base_rounds": config.get("base_rounds", []),
             "coverage_dimensions": config.get("coverage_dimensions", []),
             "tracked_entities": config.get("tracked_entities", []),
@@ -265,6 +268,44 @@ def build_strategy_prompt(
         "recent_approved_titles": recent_titles or [],
         "base_search_summary": base_search_summary or {},
     }
+    if ascii_safe:
+        return (
+            "You are the search commander for a synthetic-biology daily report. "
+            "Your job is to generate high-recall, auditable web-search queries for today; "
+            "you are not deciding final inclusion.\n"
+            "Important: the context JSON below uses JSON unicode escape sequences such as "
+            "\\u5408\\u6210\\u751f\\u7269. Decode them semantically before planning queries.\n"
+            "Rules:\n"
+            "1. Fill gaps left by the base search rounds.\n"
+            "2. Cover policy, funding, key companies, research breakthroughs, events, "
+            "international news, and technology/product directions.\n"
+            "3. Avoid generic biology, pure chemical synthesis, and ordinary medical "
+            "pathway news unless there is engineered-biology or biomanufacturing evidence.\n"
+            "4. coverage_queries are mandatory recall floors; do not replace broad source "
+            "queries with narrower funding/announcement-only queries.\n"
+            "5. Every query needs a clear reason and should not be filler.\n"
+            "6. Each query must express one search intent and include at most two key "
+            "company names.\n"
+            f"7. Return between {min_queries} and {max_queries} queries. Do not exceed {max_queries}.\n"
+            "8. Use only target_section values: news, research, funding, policy, events. "
+            "Company and product updates are news unless they are clearly funding or research.\n"
+            "9. Keep blindspots to at most 5 short strings. Keep each reason under 90 characters.\n"
+            "10. Return strict compact JSON only, no Markdown, no code fences, and fully closed JSON.\n\n"
+            "Schema:\n"
+            "{"
+            '"blindspots":["blindspot"],'
+            '"queries":[{'
+            '"query":"search query",'
+            '"reason":"why this should be searched today",'
+            '"priority":"high|medium|low",'
+            '"target_section":"news|research|funding|policy|events",'
+            '"expected_source_type":"company|media|government|academic|investor|mixed",'
+            '"iteration":1,'
+            '"required":true'
+            "}]}\n\n"
+            "context_json:\n"
+            f"{json.dumps(compact, ensure_ascii=True)}"
+        )
     return (
         "你是合成生物日报的信息检索指挥官。你的任务不是判断最终收录，"
         "而是为今天生成高召回、可审计的动态搜索 query。\n"
@@ -275,7 +316,10 @@ def build_strategy_prompt(
         "4. coverage_queries 是召回底座，不要用更窄的融资/公告词替代宽口径来源 query；\n"
         "5. 每条 query 必须有明确理由，不能凑数；\n"
         "6. 每条 query 只表达一个检索意图，最多包含两个重点企业名；不要把很多企业或很多 OR 条件揉进一条；\n"
-        "7. 输出纯 JSON，不要 Markdown，不要 ```json 代码块；必须完整闭合 JSON 对象。\n\n"
+        f"7. 输出 {min_queries} 到 {max_queries} 条 query，绝对不要超过 {max_queries} 条；\n"
+        "8. target_section 只能使用 news、research、funding、policy、events；企业/产品动态归 news，融资归 funding，论文归 research；\n"
+        "9. blindspots 最多 5 条短句；每条 reason 控制在 90 字以内；\n"
+        "10. 输出紧凑纯 JSON，不要 Markdown，不要 ```json 代码块；必须完整闭合 JSON 对象。\n\n"
         "schema:\n"
         "{"
         '"blindspots":["盲区"],'
@@ -312,7 +356,13 @@ def generate_search_strategy(
 
     strategy_client = _ensure_strategy_client(client)
     if selected_mode == "llm" or strategy_client.is_configured:
-        prompt = build_strategy_prompt(report_date, cfg, recent_titles=recent_titles, base_search_summary=base_summary)
+        prompt = build_strategy_prompt(
+            report_date,
+            cfg,
+            recent_titles=recent_titles,
+            base_search_summary=base_summary,
+            ascii_safe=_strategy_client_uses_ascii_prompts(strategy_client),
+        )
         try:
             raw_text = strategy_client.complete(prompt)
             data = _extract_json_object(raw_text)
@@ -341,6 +391,12 @@ def _client_model(client: StrategyClient) -> str | None:
     if isinstance(client, MessagesTextClient):
         return client.llm_client.model
     return str(getattr(client, "model", "") or "") or None
+
+
+def _strategy_client_uses_ascii_prompts(client: StrategyClient) -> bool:
+    if isinstance(client, MessagesTextClient):
+        return client.llm_client.use_ascii_prompts
+    return bool(getattr(client, "use_ascii_prompts", False))
 
 
 def heuristic_search_strategy(

@@ -108,6 +108,71 @@ def test_anthropic_client_parses_messages_response_without_logging_secret():
     assert decision.provider == "llm"
 
 
+def test_aiself_client_sends_ascii_safe_prompt_for_chinese_candidate():
+    response_payload = {
+        "content": [{
+            "type": "text",
+            "text": json.dumps({
+                "decision": "include",
+                "domain_relevance": "core_synbio",
+                "confidence": 0.92,
+                "reason": "decoded Chinese candidate contains PHA cell-factory evidence",
+                "evidence_spans": ["蓝晶微生物PHA产业化", "细胞工厂"],
+                "section": "news",
+                "reject_reason": None,
+            }, ensure_ascii=False),
+        }]
+    }
+    seen = {}
+
+    def fake_opener(request, timeout=45):
+        body = json.loads(request.data.decode("utf-8"))
+        seen["content"] = body["messages"][0]["content"]
+        seen["content_type"] = request.headers.get("Content-type") or request.headers.get("Content-Type")
+        return _FakeResponse(json.dumps(response_payload).encode("utf-8"))
+
+    client = llm_judge.AnthropicRelevanceClient(
+        base_url="https://aiself.vip",
+        auth_token="test-token",
+        model="kimi-for-coding",
+        opener=fake_opener,
+    )
+    decision = client.judge({
+        "title": "蓝晶微生物PHA产业化",
+        "summary": "工程菌株和发酵放大。",
+        "type": "news",
+    })
+
+    assert client.use_ascii_prompts
+    assert all(ord(ch) < 128 for ch in seen["content"])
+    assert "\\u84dd\\u6676\\u5fae\\u751f\\u7269" in seen["content"]
+    assert "application/json" in seen["content_type"]
+    assert decision.is_approved
+
+
+def test_ascii_prompt_can_be_disabled_for_aiself(monkeypatch):
+    monkeypatch.setenv("SYNBIO_LLM_ASCII_PROMPTS", "0")
+    client = llm_judge.AnthropicRelevanceClient(
+        base_url="https://aiself.vip",
+        auth_token="test-token",
+    )
+
+    assert not client.use_ascii_prompts
+
+
+def test_ccswitch_local_proxy_defaults_to_kimi_and_utf8(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:15721")
+    client = llm_judge.AnthropicRelevanceClient(
+        base_url="http://127.0.0.1:15721",
+        auth_token="PROXY_MANAGED",
+        model=llm_judge._default_model(),
+    )
+
+    assert client.model == "kimi-for-coding"
+    assert not client.use_ascii_prompts
+
+
 def test_anthropic_client_does_not_duplicate_v1_path():
     response_payload = {
         "content": json.dumps({
@@ -164,6 +229,36 @@ def test_judge_item_relevance_llm_failure_raises():
         llm_judge.judge_item_relevance({}, mode="llm", client=BrokenClient())
 
     assert "LLM领域审计失败" in str(exc_info.value)
+
+
+def test_material_biomanufacturing_company_event_overrides_llm_rejection():
+    class RejectingClient:
+        is_configured = True
+
+        def judge(self, item):
+            return llm_judge.Decision(
+                is_approved=False,
+                domain_relevance="out_of_scope",
+                confidence=0.82,
+                reason="ordinary corporate news",
+                reject_reason="no technical synthetic biology content",
+                section="news",
+                provider="llm-test",
+            )
+
+    decision = llm_judge.judge_item_relevance({
+        "title": "688639，实控人被刑拘！紧急辞职！",
+        "summary": (
+            "华恒生物公告称，公司实控人、董事长因涉嫌非法吸收公众存款罪被刑事拘留。"
+            "公司主营业务为生物制造，不涉及上述事项。"
+        ),
+        "type": "news",
+    }, mode="llm", client=RejectingClient())
+
+    assert decision.is_approved
+    assert decision.domain_relevance == "adjacent"
+    assert decision.provider == "llm-test+material_event_rule"
+    assert any("生物制造" in span for span in decision.evidence_spans)
 
 
 def test_judge_item_relevance_auto_configured_failure_raises():

@@ -49,8 +49,8 @@ _load_env()
 
 def _default_model() -> str:
     """Return default model based on the configured base URL."""
-    base = os.getenv("ANTHROPIC_BASE_URL", "")
-    if "aiself.vip" in base:
+    base = os.getenv("ANTHROPIC_BASE_URL", "").lower()
+    if "aiself.vip" in base or "127.0.0.1:15721" in base or "localhost:15721" in base:
         return "kimi-for-coding"
     return "claude-3-5-sonnet-20241022"
 
@@ -59,6 +59,74 @@ DEFAULT_MODEL = _default_model()
 MIN_APPROVAL_CONFIDENCE = 0.70
 ALLOWED_RELEVANCE = {"core_synbio", "adjacent", "out_of_scope", "uncertain"}
 ALLOWED_SECTIONS = {"news", "research", "funding", "policy", "events"}
+_TRUE_VALUES = {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+_FALSE_VALUES = {"0", "false", "FALSE", "no", "NO", "off", "OFF"}
+_MATERIAL_COMPANY_EVENT_TERMS = frozenset([
+    "实控人", "实际控制人", "董事长", "总经理", "高管", "刑事拘留", "被刑拘", "被拘留",
+    "立案", "证监会", "监管", "处罚", "问询函", "停牌", "重大事项", "公告", "辞职",
+])
+_COMPANY_BIOMFG_TERMS = frozenset([
+    "主营业务为生物制造", "主营业务是生物制造", "合成生物", "生物制造",
+    "biomanufacturing", "synthetic biology", "precision fermentation",
+])
+
+
+def provider_uses_ascii_prompts(base_url: str | None) -> bool:
+    """Return whether prompts should stay ASCII on the provider wire.
+
+    Some Anthropic-compatible gateways accept UTF-8 JSON but forward the message
+    text to the upstream model through a non-UTF-8 path, turning Chinese into
+    question marks.  Keeping the prompt ASCII and embedding Chinese as literal
+    JSON unicode escapes preserves the information for those gateways.
+    """
+    setting = (os.getenv("SYNBIO_LLM_ASCII_PROMPTS") or "auto").strip()
+    if setting in _TRUE_VALUES:
+        return True
+    if setting in _FALSE_VALUES:
+        return False
+    return "aiself.vip" in (base_url or "").lower()
+
+
+def _material_company_event_override(item: dict[str, Any], decision: Decision) -> Decision:
+    """Keep material events for explicitly synbio/biomanufacturing companies.
+
+    The daily report is an industry-intelligence product.  A criminal detention,
+    regulatory action, or other material event at a company whose candidate text
+    explicitly identifies its synthetic-biology/biomanufacturing business can be
+    important even when the article itself is not a technical R&D story.
+    """
+    if decision.is_approved:
+        return decision
+    text = " ".join(
+        str(item.get(key, "") or "")
+        for key in ("title", "summary", "page_title", "page_text", "source_query")
+    ).lower()
+    if not any(term.lower() in text for term in _COMPANY_BIOMFG_TERMS):
+        return decision
+    if not any(term.lower() in text for term in _MATERIAL_COMPANY_EVENT_TERMS):
+        return decision
+    evidence = [
+        str(item.get("title") or item.get("summary") or item.get("url") or "material event")[:180]
+    ]
+    for term in _COMPANY_BIOMFG_TERMS:
+        if term.lower() in text:
+            evidence.append(term)
+            break
+    for term in _MATERIAL_COMPANY_EVENT_TERMS:
+        if term.lower() in text:
+            evidence.append(term)
+            break
+    return Decision(
+        is_approved=True,
+        domain_relevance="adjacent",
+        confidence=max(decision.confidence, 0.78),
+        reason="Material event at a company explicitly tied to synthetic biology or biomanufacturing.",
+        evidence_spans=evidence,
+        section="news",
+        provider=f"{decision.provider}+material_event_rule",
+        raw_response=decision.raw_response,
+        decision="include",
+    )
 
 
 @dataclass
@@ -398,7 +466,7 @@ def heuristic_relevance_decision(item: dict[str, Any]) -> Decision:
     )
 
 
-def _build_prompt(item: dict[str, Any]) -> str:
+def _build_prompt(item: dict[str, Any], *, ascii_safe: bool = False) -> str:
     compact = {
         "title": str(item.get("title", ""))[:300],
         "source": str(item.get("source", ""))[:120],
@@ -409,11 +477,45 @@ def _build_prompt(item: dict[str, Any]) -> str:
         "page_title": str(item.get("page_title", ""))[:300],
         "page_text": str(item.get("page_text", ""))[:2500],
     }
+    if ascii_safe:
+        return (
+            "You are the semantic review gate for a synthetic-biology daily report.\n"
+            "Judge whether the candidate should be included. Use only the fields in "
+            "candidate_json; do not add outside facts.\n"
+            "Important: candidate_json contains JSON unicode escape sequences such as "
+            "\\u5408\\u6210\\u751f\\u7269. Decode them semantically before judging.\n"
+            "Core scope includes engineered biological systems, cell factories, "
+            "metabolic engineering, genetic circuits or editing, chassis cells, "
+            "precision fermentation, biomanufacturing, enzyme/protein engineering, "
+            "and artificial metabolic pathways.\n"
+            "Also include material company events as adjacent industry news when "
+            "the candidate explicitly says the company is in synthetic biology or "
+            "biomanufacturing and the event is material, such as a controller or "
+            "chairperson detention, regulatory investigation, major penalty, IPO, "
+            "or major announcement.\n"
+            "Reject ordinary clinical news, basic natural biology, pure chemical "
+            "synthesis, generic materials, and traditional pharma news when there is "
+            "no engineered-biology or biomanufacturing evidence.\n"
+            "Return strict JSON only, no Markdown and no code fences. Schema:\n"
+            "{"
+            '"is_approved":true,'
+            '"domain_relevance":"core_synbio|adjacent|out_of_scope|uncertain",'
+            '"confidence":0.0,'
+            '"reason":"short reason",'
+            '"evidence_spans":["evidence copied or decoded from candidate_json"],'
+            '"section":"news|research|funding|policy|events",'
+            '"reject_reason":null'
+            "}\n"
+            "candidate_json:\n"
+            f"{json.dumps(compact, ensure_ascii=True)}"
+        )
     return (
         "你是合成生物行业日报的审稿人。判断候选信息是否应收录。\n"
         "只根据给定标题、摘要、页面标题/正文判断，不要引入外部知识。\n"
         "合成生物核心包括：工程化改造生物系统、细胞工厂、代谢工程、基因线路/编辑、"
         "底盘细胞、精准发酵、生物制造、酶/蛋白工程、人工代谢途径等。\n"
+        "若候选明确说明公司属于合成生物/生物制造业务，且事件是实控人/董事长刑拘、"
+        "监管立案、重大处罚、IPO、重大公告等公司重大事项，可作为 adjacent 行业新闻收录。\n"
         "普通临床、基础生物学自然机制、纯化学合成、材料、传统医药新闻应拒绝。\n"
         "必须输出纯 JSON，不要 Markdown。schema:\n"
         "{"
@@ -500,6 +602,10 @@ class LLMClient:
         return bool(self.base_url and self.auth_token)
 
     @property
+    def use_ascii_prompts(self) -> bool:
+        return provider_uses_ascii_prompts(self.base_url)
+
+    @property
     def messages_url(self) -> str:
         if self.base_url.endswith("/v1"):
             return f"{self.base_url}/messages"
@@ -512,13 +618,13 @@ class LLMClient:
             "model": self.model,
             "max_tokens": 600,
             "temperature": 0,
-            "messages": [{"role": "user", "content": _build_prompt(item)}],
+            "messages": [{"role": "user", "content": _build_prompt(item, ascii_safe=self.use_ascii_prompts)}],
         }
         request = Request(
             self.messages_url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            data=json.dumps(payload, ensure_ascii=self.use_ascii_prompts).encode("utf-8"),
             headers={
-                "Content-Type": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
                 "x-api-key": self.auth_token or "",
                 "Authorization": f"Bearer {self.auth_token or ''}",
                 "anthropic-version": "2023-06-01",
@@ -565,7 +671,8 @@ def relevance_decision(
     """Judge relevance with LLM first, then fallback to local heuristic."""
     if use_llm:
         try:
-            return llm_relevance_decision(item, client=client)
+            decision = llm_relevance_decision(item, client=client)
+            return _material_company_event_override(item, decision)
         except Exception:
             pass
     return heuristic_relevance_decision(item)
@@ -593,7 +700,8 @@ def judge_item_relevance(
     client_instance = client or LLMClient()
     if selected_mode == "llm" or (selected_mode == "auto" and client_instance.is_configured):
         try:
-            return llm_relevance_decision(item, client=client_instance)
+            decision = llm_relevance_decision(item, client=client_instance)
+            return _material_company_event_override(item, decision)
         except Exception as exc:
             if selected_mode == "llm":
                 # Fail closed: when LLM is explicitly required, any API failure
