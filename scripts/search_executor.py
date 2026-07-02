@@ -10,9 +10,12 @@ query was executed. Downstream gates can then trust `executed: true`.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
+import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,13 +24,20 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 try:
+    import winreg
+except ImportError:  # pragma: no cover - non-Windows
+    winreg = None
+
+try:
     from .console_utils import ensure_utf8_console
     from .settings import CONFIG_DIR, DATA_DIR
     from .llm_judge import LLMClient
+    from .llm_search_strategy import _llm_client_supports_thinking_disable
 except ImportError:
     from console_utils import ensure_utf8_console
     from settings import CONFIG_DIR, DATA_DIR
     from llm_judge import LLMClient
+    from llm_search_strategy import _llm_client_supports_thinking_disable
 
 
 ensure_utf8_console()
@@ -37,7 +47,11 @@ DEFAULT_STRATEGY_CONFIG = CONFIG_DIR / "llm_search_strategy.json"
 DEFAULT_LIMIT = 15
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_RETRIES = 2
+DEFAULT_MAX_WORKERS = 5
+DEFAULT_TAVILY_DEVELOPMENT_RPM = 90
 HIGH_RECALL_ROUND_IDS = ("llm_discovery", "llm_gap_audit")
+VALID_HIGH_RECALL_EVIDENCE_MODES = {"strict", "compatible"}
+DEFAULT_HIGH_RECALL_EVIDENCE_MODE = "compatible"
 DEFAULT_LLM_DISCOVERY_QUERIES = [
     "近48小时 合成生物 生物制造 政府 高校 科协 地方媒体 发布",
     "近48小时 合成生物 生物制造 垂直媒体 融资 政策 活动 科研",
@@ -66,6 +80,28 @@ class SearchProviderError(RuntimeError):
 
 class NoSearchProviderConfigured(RuntimeError):
     """Raised when production search would otherwise be silently skipped."""
+
+
+class QueryRateLimiter:
+    """Simple start-rate limiter for provider requests."""
+
+    def __init__(self, rpm: int | None = None):
+        self.rpm = _positive_int(rpm, 0) if rpm is not None else 0
+        self._interval = 60.0 / self.rpm if self.rpm > 0 else 0.0
+        self._lock = threading.Lock()
+        self._next_allowed_at = 0.0
+
+    def acquire(self) -> None:
+        if self._interval <= 0:
+            return
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                if now >= self._next_allowed_at:
+                    self._next_allowed_at = now + self._interval
+                    return
+                sleep_for = self._next_allowed_at - now
+            time.sleep(sleep_for)
 
 
 def _read_json(path: Path) -> Any:
@@ -133,10 +169,124 @@ def _http_json(
             return parsed
         except Exception as exc:
             last_error = exc
+            retry_after = None
+            if getattr(exc, "code", None) == 429:
+                headers = getattr(exc, "headers", None)
+                if headers is not None:
+                    retry_after = headers.get("retry-after") or headers.get("Retry-After")
             if attempt >= retries:
                 break
+            if retry_after is not None:
+                try:
+                    time.sleep(max(0.0, float(retry_after)))
+                    continue
+                except (TypeError, ValueError):
+                    pass
             time.sleep(min(2, attempt))
     raise SearchProviderError(str(last_error or "provider request failed"))
+
+
+def _parse_api_keys(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    return [part.strip() for part in re.split(r"[\r\n,;]+", text) if part.strip()]
+
+
+def _configured_api_keys(provider: str) -> list[str]:
+    normalized = str(provider or "").strip().lower()
+    if normalized == "tavily":
+        merged: list[str] = []
+        for value in (
+            os.getenv("TAVILY_API_KEY"),
+            _read_windows_env_var("TAVILY_API_KEY"),
+            os.getenv("TAVILY_API_KEYS"),
+        ):
+            for key in _parse_api_keys(value):
+                if key not in merged:
+                    merged.append(key)
+        if merged:
+            return merged
+    env_key = PROVIDER_ENV_KEYS.get(normalized)
+    if not env_key:
+        return []
+    return _parse_api_keys(os.getenv(env_key))
+
+
+def _read_windows_env_var(name: str) -> str | None:
+    if os.getenv("SYNBIO_SKIP_DOTENV") in {"1", "true", "TRUE", "yes", "YES"}:
+        return None
+    if winreg is None or os.name != "nt":
+        return None
+    locations = [
+        (winreg.HKEY_CURRENT_USER, r"Environment"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+    ]
+    for hive, subkey in locations:
+        try:
+            with winreg.OpenKey(hive, subkey) as key:
+                value, _ = winreg.QueryValueEx(key, name)
+        except OSError:
+            continue
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _should_failover_key(error: str) -> bool:
+    message = str(error or "").lower()
+    if not message:
+        return False
+    if any(
+        token in message
+        for token in (
+            "http error 401",
+            "http error 403",
+            "http error 429",
+            "http error 500",
+            "http error 502",
+            "http error 503",
+            "http error 504",
+        )
+    ):
+        return True
+    return any(
+        token in message
+        for token in (
+            "rate limit",
+            "too many requests",
+            "quota",
+            "credit",
+            "credits",
+            "exhaust",
+            "unauthorized",
+            "forbidden",
+        )
+    )
+
+
+def configured_high_recall_evidence_mode() -> str:
+    mode = str(os.getenv("SYNBIO_HIGH_RECALL_EVIDENCE_MODE") or "").strip().lower()
+    if mode in VALID_HIGH_RECALL_EVIDENCE_MODES:
+        return mode
+    return DEFAULT_HIGH_RECALL_EVIDENCE_MODE
+
+
+def default_llm_discovery_provider() -> str:
+    configured = str(os.getenv("SYNBIO_LLM_DISCOVERY_PROVIDER") or "").strip().lower()
+    if configured in {"llm_web", "fixture", "same"}:
+        return configured
+    return "same" if configured_high_recall_evidence_mode() == "compatible" else "llm_web"
 
 
 def _domain(url: str) -> str:
@@ -301,15 +451,32 @@ class BingSearchProvider:
 class TavilySearchProvider:
     name = "tavily"
 
-    def __init__(self, api_key: str, *, opener: Callable[..., Any] = urlopen, timeout: int = DEFAULT_TIMEOUT_SECONDS, retries: int = DEFAULT_RETRIES):
-        self.api_key = api_key
+    def __init__(self, api_key: str | list[str], *, opener: Callable[..., Any] = urlopen, timeout: int = DEFAULT_TIMEOUT_SECONDS, retries: int = DEFAULT_RETRIES):
+        self.api_keys = _parse_api_keys(api_key)
+        if not self.api_keys:
+            raise NoSearchProviderConfigured("tavily provider requires at least one API key")
         self.opener = opener
         self.timeout = timeout
         self.retries = retries
+        self._lock = threading.Lock()
+        self._active_index = 0
 
-    def search(self, query: str, *, limit: int) -> list[dict[str, Any]]:
+    def _ordered_keys(self) -> list[str]:
+        with self._lock:
+            start = self._active_index
+        return self.api_keys[start:] + self.api_keys[:start]
+
+    def _promote_key(self, api_key: str) -> None:
+        with self._lock:
+            try:
+                self._active_index = self.api_keys.index(api_key)
+            except ValueError:
+                return
+
+    def _search_with_key(self, api_key: str, query: str, *, limit: int) -> list[dict[str, Any]]:
+        key_suffix = api_key[-6:] if len(api_key) >= 6 else api_key
         payload = {
-            "api_key": self.api_key,
+            "api_key": api_key,
             "query": query,
             "max_results": limit,
             "search_depth": os.getenv("TAVILY_SEARCH_DEPTH", "basic"),
@@ -321,9 +488,27 @@ class TavilySearchProvider:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        data = _http_json(request, opener=self.opener, timeout=self.timeout, retries=self.retries)
+        try:
+            data = _http_json(request, opener=self.opener, timeout=self.timeout, retries=self.retries)
+        except SearchProviderError as exc:
+            raise SearchProviderError(f"{exc} [tavily_key_suffix={key_suffix}]") from exc
         items = data.get("results") or []
         return _normalize_provider_results(items, query=query, provider=self.name, limit=limit)
+
+    def search(self, query: str, *, limit: int) -> list[dict[str, Any]]:
+        last_error: Exception | None = None
+        ordered_keys = self._ordered_keys()
+        for index, api_key in enumerate(ordered_keys):
+            try:
+                results = self._search_with_key(api_key, query, limit=limit)
+                if index > 0:
+                    self._promote_key(api_key)
+                return results
+            except SearchProviderError as exc:
+                last_error = exc
+                if index >= len(ordered_keys) - 1 or not _should_failover_key(str(exc)):
+                    break
+        raise last_error or SearchProviderError("tavily provider request failed")
 
 
 class LLMWebSearchProvider:
@@ -374,7 +559,13 @@ class LLMWebSearchProvider:
                 "name": "web_search",
                 "max_uses": 1,
             }],
+            "tool_choice": {
+                "type": "tool",
+                "name": "web_search",
+            },
         }
+        if _llm_client_supports_thinking_disable(self.client):
+            payload["thinking"] = {"type": "disabled"}
         request = Request(
             self.client.messages_url,
             data=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
@@ -486,17 +677,17 @@ def make_provider(
             if not llm_client.is_configured:
                 continue
             return LLMWebSearchProvider(llm_client, opener=opener, timeout=timeout, retries=retries)
-        api_key = os.getenv(env_key)
-        if not api_key:
+        api_keys = _configured_api_keys(candidate)
+        if not api_keys:
             continue
         if candidate == "serper":
-            return SerperSearchProvider(api_key, opener=opener, timeout=timeout, retries=retries)
+            return SerperSearchProvider(api_keys[0], opener=opener, timeout=timeout, retries=retries)
         if candidate == "brave":
-            return BraveSearchProvider(api_key, opener=opener, timeout=timeout, retries=retries)
+            return BraveSearchProvider(api_keys[0], opener=opener, timeout=timeout, retries=retries)
         if candidate == "bing":
-            return BingSearchProvider(api_key, opener=opener, timeout=timeout, retries=retries)
+            return BingSearchProvider(api_keys[0], opener=opener, timeout=timeout, retries=retries)
         if candidate == "tavily":
-            return TavilySearchProvider(api_key, opener=opener, timeout=timeout, retries=retries)
+            return TavilySearchProvider(api_keys, opener=opener, timeout=timeout, retries=retries)
 
     if selected == "auto" and not allow_llm_web_auto:
         expected = ", ".join(
@@ -583,17 +774,26 @@ def execute_search_plan(
     limit: int = DEFAULT_LIMIT,
     allow_query_failures: bool = False,
     llm_provider: Any | None = None,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+    rpm: int | None = None,
 ) -> tuple[dict[str, Any], bool]:
+    worker_count = _positive_int(max_workers, DEFAULT_MAX_WORKERS)
+    base_rate_limiter = QueryRateLimiter(rpm)
     failed = False
     log_rounds: list[dict[str, Any]] = []
     for round_cfg in rounds:
         round_id = str(round_cfg.get("round") or "").strip()
         round_provider = llm_provider if round_cfg.get("requires_llm_web") and llm_provider is not None else provider
-        query_entries = []
-        for query in round_cfg.get("queries", []) or []:
-            query_text = _normalize_query(query)
-            if not query_text:
-                continue
+        round_queries = [
+            _normalize_query(query)
+            for query in round_cfg.get("queries", []) or []
+        ]
+        round_queries = [query_text for query_text in round_queries if query_text]
+        query_entries: list[dict[str, Any]] = [{} for _ in round_queries]
+        round_rate_limiter = base_rate_limiter if round_provider is provider else QueryRateLimiter(None)
+
+        def run_query(query_text: str) -> dict[str, Any]:
+            round_rate_limiter.acquire()
             entry = {
                 "query": query_text,
                 "executed": False,
@@ -610,9 +810,28 @@ def execute_search_plan(
                 if round_provider.name == "llm_web":
                     entry["web_search_tool_result"] = True
             except Exception as exc:
-                failed = True
                 entry["error"] = str(exc)[:500]
-            query_entries.append(entry)
+            return entry
+
+        if round_provider is provider and worker_count > 1 and len(round_queries) > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(worker_count, len(round_queries))) as executor:
+                future_map = {
+                    executor.submit(run_query, query_text): index
+                    for index, query_text in enumerate(round_queries)
+                }
+                for future in concurrent.futures.as_completed(future_map):
+                    index = future_map[future]
+                    entry = future.result()
+                    if entry.get("executed") is not True:
+                        failed = True
+                    query_entries[index] = entry
+        else:
+            for index, query_text in enumerate(round_queries):
+                entry = run_query(query_text)
+                if entry.get("executed") is not True:
+                    failed = True
+                query_entries[index] = entry
+
         log_rounds.append({
             "round": round_id,
             "theme": round_cfg.get("theme", ""),
@@ -627,14 +846,38 @@ def execute_search_plan(
         "llm_discovery_provider": llm_provider.name if llm_provider is not None else None,
         "high_recall_enabled": any(round_entry.get("round") in HIGH_RECALL_ROUND_IDS for round_entry in rounds),
         "required_high_recall_rounds": list(HIGH_RECALL_ROUND_IDS),
+        "high_recall_evidence_mode": configured_high_recall_evidence_mode(),
         "limit": limit,
         "rounds": log_rounds,
     }
+    diagnostics: list[str] = []
+    if llm_provider is not None and llm_provider.name == "llm_web":
+        high_recall_errors = [
+            str(query_entry.get("error") or "")
+            for round_entry in log_rounds
+            if round_entry.get("round") in HIGH_RECALL_ROUND_IDS
+            for query_entry in round_entry.get("queries", [])
+            if isinstance(query_entry, dict) and query_entry.get("executed") is not True
+        ]
+        if high_recall_errors and all("400" in error or "web_search_tool_result" in error for error in high_recall_errors):
+            diagnostics.append(
+                "llm_web high-recall rounds failed consistently; the configured Anthropic-compatible gateway may not support "
+                "server-side web_search_tool_result for this request shape. Verify gateway compatibility before production sends."
+            )
+    if diagnostics:
+        search_log["diagnostics"] = diagnostics
     return search_log, (not failed or allow_query_failures)
 
 
 def default_strategy_path(date: str) -> Path:
     return DATA_DIR / f"search_strategy_{date}.json"
+
+
+def default_rpm_for_provider(provider_name: str) -> int | None:
+    normalized = str(provider_name or "").strip().lower()
+    if normalized == "tavily":
+        return DEFAULT_TAVILY_DEVELOPMENT_RPM
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -646,11 +889,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strategy", type=Path, help="Same-day search_strategy JSON path")
     parser.add_argument("--allow-missing-strategy", action="store_true", help="Only for diagnostics; production should not use this")
     parser.add_argument("--provider", default=os.getenv("SYNBIO_SEARCH_PROVIDER", "auto"), choices=["auto", "fixture", "serper", "brave", "bing", "tavily", "llm_web"])
-    parser.add_argument("--llm-discovery-provider", default=os.getenv("SYNBIO_LLM_DISCOVERY_PROVIDER", "llm_web"), choices=["llm_web", "fixture", "same"], help="Provider for llm_discovery and llm_gap_audit rounds; production default is llm_web")
+    parser.add_argument("--llm-discovery-provider", default=default_llm_discovery_provider(), choices=["llm_web", "fixture", "same"], help="Provider for llm_discovery and llm_gap_audit rounds; compatible mode defaults to same/base provider")
     parser.add_argument("--fixture", type=Path, help="Offline fixture mapping queries to results")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES)
+    parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS, help="Bounded query concurrency for base provider rounds")
+    parser.add_argument("--rpm", type=int, help="Optional request-per-minute cap for the base provider; Tavily defaults to a conservative free-plan-safe value")
     parser.add_argument("--allow-query-failures", action="store_true", help="Write failed queries but exit 0; not for production sends")
     parser.add_argument("--disable-high-recall", action="store_true", help="Diagnostics only: do not append llm_discovery/llm_gap_audit rounds")
     parser.add_argument(
@@ -704,6 +949,8 @@ def main(argv: list[str] | None = None) -> int:
             limit=_positive_int(args.limit, DEFAULT_LIMIT),
             allow_query_failures=args.allow_query_failures,
             llm_provider=llm_provider,
+            max_workers=_positive_int(args.max_workers, DEFAULT_MAX_WORKERS),
+            rpm=args.rpm if args.rpm is not None else default_rpm_for_provider(provider.name),
         )
         _write_json(args.output, search_log)
     except NoSearchProviderConfigured as exc:

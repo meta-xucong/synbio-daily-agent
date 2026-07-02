@@ -78,6 +78,8 @@ MAX_RAW_SCORE = 30
 REQUIRED_SEARCH_ROUNDS = {"r1", "r1b", "r2", "r3", "r4", "r5", "r6"}
 REQUIRED_SEARCH_LOG_GENERATOR = "search_executor"
 REQUIRED_HIGH_RECALL_ROUNDS = {"llm_discovery", "llm_gap_audit"}
+VALID_HIGH_RECALL_EVIDENCE_MODES = {"strict", "compatible"}
+DEFAULT_HIGH_RECALL_EVIDENCE_MODE = "compatible"
 PRODUCTION_SEARCH_MIN_LIMIT = 15
 SEARCH_QUERY_CONFIG_FILENAME = "search_queries.json"
 URL_HEALTH_TIMEOUT_SECONDS = 10
@@ -871,12 +873,37 @@ def configured_required_search_rounds() -> set[str]:
     return round_ids or set(REQUIRED_SEARCH_ROUNDS)
 
 
+def configured_high_recall_evidence_mode(search_log: Any | None = None) -> str:
+    if isinstance(search_log, dict):
+        mode = str(search_log.get("high_recall_evidence_mode") or "").strip().lower()
+        if mode in VALID_HIGH_RECALL_EVIDENCE_MODES:
+            return mode
+    env_mode = str(os.getenv("SYNBIO_HIGH_RECALL_EVIDENCE_MODE") or "").strip().lower()
+    if env_mode in VALID_HIGH_RECALL_EVIDENCE_MODES:
+        return env_mode
+    return DEFAULT_HIGH_RECALL_EVIDENCE_MODE
+
+
+def _has_structured_high_recall_evidence(query_entry: dict[str, Any]) -> bool:
+    results = query_entry.get("results")
+    if not isinstance(results, list):
+        return False
+    if not query_entry.get("searched_at"):
+        return False
+    try:
+        result_count = int(query_entry.get("result_count", len(results)))
+    except (TypeError, ValueError):
+        return False
+    return result_count >= 0 and result_count == len(results)
+
+
 def validate_high_recall_search_log(search_log: Any, rounds_seen: set[str]) -> Dict[str, Any]:
     """Validate production provenance and high-recall LLM discovery evidence."""
     errors: list[str] = []
     warnings: list[str] = []
     if not isinstance(search_log, dict):
         return {"is_valid": False, "errors": ["search_log必须是对象"], "warnings": warnings}
+    evidence_mode = configured_high_recall_evidence_mode(search_log)
 
     if search_log.get("generated_by") != REQUIRED_SEARCH_LOG_GENERATOR:
         errors.append(
@@ -914,15 +941,25 @@ def validate_high_recall_search_log(search_log: Any, rounds_seen: set[str]) -> D
                 query_provider = str(query_entry.get("provider") or "")
                 if query_provider == "fixture" or provider == "fixture":
                     warnings.append(f"{round_id}使用fixture provider，仅允许离线测试，不得用于正式发送")
-                elif query_provider != "llm_web":
-                    errors.append(f"{round_id}必须使用llm_web/Kimi web_search，当前provider={query_provider or '<missing>'}")
-                elif query_entry.get("web_search_tool_result") is not True:
-                    errors.append(f"{round_id}缺少web_search_tool_result证据: {query}")
+                elif evidence_mode == "strict":
+                    if query_provider != "llm_web":
+                        errors.append(f"{round_id}必须使用llm_web/Kimi web_search，当前provider={query_provider or '<missing>'}")
+                    elif query_entry.get("web_search_tool_result") is not True:
+                        errors.append(f"{round_id}缺少web_search_tool_result证据: {query}")
+                else:
+                    if query_provider == "llm_web" and query_entry.get("web_search_tool_result") is not True:
+                        errors.append(f"{round_id}缺少web_search_tool_result证据: {query}")
+                    elif query_provider != "llm_web" and not _has_structured_high_recall_evidence(query_entry):
+                        errors.append(
+                            f"{round_id}缺少结构化搜索证据: {query or '<empty>'} "
+                            f"(provider={query_provider or '<missing>'})"
+                        )
 
     return {
         "is_valid": len(errors) == 0,
         "errors": errors,
         "warnings": warnings,
+        "evidence_mode": evidence_mode,
     }
 
 
@@ -1113,7 +1150,7 @@ def validate_approved_date_verification(approved_data: List[Dict[str, Any]]) -> 
         verified_date = str(verification.get("verified_date") or item.get("verified_date") or "").strip()
         if not parse_date(verified_date):
             errors.append(f"{DATE_VERIFICATION_ERROR}: 第{index}项 {title} verified_date无效")
-        if source == "search_fallback" or confidence == "low":
+        if is_low_confidence_date_verification(verification):
             errors.append(
                 f"{DATE_VERIFICATION_ERROR}: 第{index}项 {title} 仅有搜索日期兜底，source={source or 'missing'}, confidence={confidence or 'missing'}"
             )
@@ -1677,6 +1714,14 @@ def should_verify_page_date(item: Dict[str, Any]) -> bool:
         or bool(item.get("source_round"))
         or bool(item.get("source_query"))
     )
+
+
+def is_low_confidence_date_verification(verification: Any) -> bool:
+    if not isinstance(verification, dict):
+        return False
+    source = str(verification.get("source") or "").strip().lower()
+    confidence = str(verification.get("confidence") or "").strip().lower()
+    return source == "search_fallback" or confidence == "low"
 
 
 def verify_item_page_date(
@@ -2585,6 +2630,19 @@ def process_raw_data(
         # 0.75 搜索日期二次验证：搜索引擎日期不作为最终时效性依据
         if date_verify_func and should_verify_page_date(item):
             item = verify_item_page_date(item, date_verify_func=date_verify_func)
+            verification = item.get("date_verification")
+            if is_low_confidence_date_verification(verification):
+                source = str((verification or {}).get("source") or "").strip() if isinstance(verification, dict) else ""
+                confidence = str((verification or {}).get("confidence") or "").strip().lower() if isinstance(verification, dict) else ""
+                rejected.append({
+                    "item": item,
+                    "reason": (
+                        f"[页面日期] 仅有搜索日期兜底，source={source or 'missing'}, "
+                        f"confidence={confidence or 'missing'}"
+                    ),
+                    "action": "排除",
+                })
+                continue
 
         # 1. 时效性检查
         timely, reason = check_timeliness(item, effective_item_type)
@@ -2660,6 +2718,7 @@ def process_raw_data(
         "approved": len(approved),
         "rejected": len(rejected),
         "timeliness_rejected": len([r for r in rejected if "时效性" in r["reason"]]),
+        "date_verification_rejected": len([r for r in rejected if "页面日期" in r["reason"]]),
         "duplicate_rejected": len([r for r in rejected if "去重" in r["reason"] or "政策库" in r["reason"]]),
         "content_type_rejected": len([r for r in rejected if "内容类型" in r["reason"]]),
         "schema_rejected": len([r for r in rejected if "[schema]" in r["reason"]]),
@@ -3893,6 +3952,20 @@ def markdown_cell(value: object) -> str:
     return str(value or "").replace("|", "\\|").replace("\n", " ").strip()
 
 
+_URL_PATTERN = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
+
+
+def markdown_summary_cell(value: object, *, max_length: int = 1200) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    if not text:
+        return ""
+    text = _URL_PATTERN.sub("", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" .|")
+    if len(text) > max_length:
+        text = text[: max_length - 1].rstrip() + "…"
+    return text.replace("|", "\\|").strip()
+
+
 def markdown_link(url: str) -> str:
     safe_url(str(url or ""))
     return str(url)
@@ -3935,7 +4008,7 @@ def render_markdown_report(
         for index, item in enumerate(summary_items, 1):
             lines.append(
                 f"{index}. **{markdown_cell(item.get('title', '未命名信息'))}**："
-                f"{markdown_cell(item.get('summary', ''))}（{markdown_cell(item.get('date', report_date))}）"
+                f"{markdown_summary_cell(item.get('summary', ''))}（{markdown_cell(item.get('date', report_date))}）"
             )
     else:
         lines.append(f"1. 经完整检索，本周期暂无可发送信息收录。（{report_date}）")
@@ -4057,7 +4130,10 @@ def append_item_rows(lines: List[str], items: List[Dict[str, Any]], fields: List
             if field == "url":
                 cells.append(markdown_link(str(item.get("url", ""))))
             else:
-                cells.append(markdown_cell(item.get(field, "")))
+                if field == "summary":
+                    cells.append(markdown_summary_cell(item.get(field, "")))
+                else:
+                    cells.append(markdown_cell(item.get(field, "")))
         lines.append("| " + " | ".join(cells) + " |")
 
 
@@ -4086,7 +4162,7 @@ def append_event_rows(lines: List[str], items: List[Dict[str, Any]]) -> None:
             markdown_cell(item.get("title", "")),
             markdown_cell(item.get("date", "")),
             markdown_cell(item.get("location", "")),
-            markdown_cell(item.get("summary", "")),
+            markdown_summary_cell(item.get("summary", "")),
             markdown_link(str(item.get("url", ""))),
         ]
         lines.append("| " + " | ".join(cells) + " |")

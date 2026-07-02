@@ -12,6 +12,7 @@ reports/*.md
 .env
 config/email_config.json
 config/feishu_config.json
+config/runtime_secrets.local.json
 scripts/config/
 scripts/*.bak*
 

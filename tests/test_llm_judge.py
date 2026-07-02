@@ -173,6 +173,43 @@ def test_ccswitch_local_proxy_defaults_to_kimi_and_utf8(monkeypatch):
     assert not client.use_ascii_prompts
 
 
+def test_kimi_official_client_disables_thinking_for_json_judging():
+    response_payload = {
+        "content": [{
+            "type": "text",
+            "text": json.dumps({
+                "decision": "include",
+                "domain_relevance": "core_synbio",
+                "confidence": 0.90,
+                "reason": "含合成生物学直接证据",
+                "evidence_spans": ["synthetic biology"],
+                "section": "news",
+                "reject_reason": None,
+            }, ensure_ascii=False),
+        }]
+    }
+    seen = {}
+
+    def fake_opener(request, timeout=45):
+        seen["body"] = json.loads(request.data.decode("utf-8"))
+        return _FakeResponse(json.dumps(response_payload).encode("utf-8"))
+
+    client = llm_judge.AnthropicRelevanceClient(
+        base_url="https://api.kimi.com/coding",
+        auth_token="test-token",
+        model="kimi-for-coding",
+        opener=fake_opener,
+    )
+    decision = client.judge({
+        "title": "Synthetic biology update",
+        "summary": "Synthetic biology and biomanufacturing progress.",
+        "type": "news",
+    })
+
+    assert seen["body"]["thinking"] == {"type": "disabled"}
+    assert decision.is_approved
+
+
 def test_anthropic_client_does_not_duplicate_v1_path():
     response_payload = {
         "content": json.dumps({

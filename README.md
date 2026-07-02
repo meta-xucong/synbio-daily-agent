@@ -95,21 +95,21 @@ Step 9: 邮件推送（send gate通过后才发送）
 推荐生产命令使用统一入口，避免 Kimiwork/人工逐步执行时跳过搜索与审计门禁:
 
 ```powershell
-python scripts\run_daily_pipeline.py --date YYYY-MM-DD --provider auto --send --send-mode auto
+python scripts\run_daily_pipeline.py --date YYYY-MM-DD --provider auto --timeout 30 --max-workers 5 --send --send-mode auto
 ```
 
 只做 dry-run 验证时去掉 `--send`。以下分步命令仅供人工排障对照，正式日报不要手工拆开执行:
 
 ```powershell
 python scripts\llm_search_strategy.py --date YYYY-MM-DD --output data\search_strategy_YYYY-MM-DD.json --mode llm
-python scripts\search_executor.py --date YYYY-MM-DD --strategy data\search_strategy_YYYY-MM-DD.json --output data\search_log_YYYY-MM-DD.json --provider auto --limit 15
+python scripts\search_executor.py --date YYYY-MM-DD --strategy data\search_strategy_YYYY-MM-DD.json --output data\search_log_YYYY-MM-DD.json --provider auto --limit 15 --timeout 30 --max-workers 5
 python scripts\report_pipeline.py --build-raw-from-search data\search_log_YYYY-MM-DD.json --date YYYY-MM-DD --output data\raw_YYYY-MM-DD.json
 python scripts\audit_search_log.py data\search_log_YYYY-MM-DD.json --raw data\raw_YYYY-MM-DD.json --search-strategy data\search_strategy_YYYY-MM-DD.json
 python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --search-log data\search_log_YYYY-MM-DD.json --search-strategy data\search_strategy_YYYY-MM-DD.json
 python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --raw data\raw_YYYY-MM-DD.json --output reports\YYYY-MM-DD.md
 ```
 
-`search_executor.py` 是唯一推荐的生产搜索日志入口。它会读取 `config/search_queries.json` 的 r1-r6 基座必搜 query、同日 `search_strategy` 的 LLM 动态 query，并强制追加 `llm_discovery` 与 `llm_gap_audit` 两个高召回轮次。生产环境必须同时配置至少一个 fast search provider（Serper、Brave、Bing 或 Tavily）和 Kimi/Anthropic-compatible LLM：基础搜索由 fast provider 执行，Kimi/`llm_web` 只用于 LLM 策略、相关性判断和少量高召回补盲。没有 fast search provider 或 LLM web_search 未真实返回工具结果时脚本会返回非 0，不会生成伪造的 `executed: true`。
+`search_executor.py` 是唯一推荐的生产搜索日志入口。它会读取 `config/search_queries.json` 的 r1-r6 基座必搜 query、同日 `search_strategy` 的 LLM 动态 query，并强制追加 `llm_discovery` 与 `llm_gap_audit` 两个高召回轮次。生产环境必须同时配置至少一个 fast search provider（Serper、Brave、Bing 或 Tavily）和 Kimi/Anthropic-compatible LLM：基础搜索由 fast provider 执行，Kimi 用于 LLM 策略和相关性判断。当前仓库默认启用兼容模式，高召回轮次默认复用基础 provider（`same`）并保留结构化搜索证据；如果未来切回 `strict` 模式，则高召回轮次必须由 `llm_web` 产出真实工具证据。
 
 可配置的搜索 provider 环境变量：
 
@@ -121,7 +121,9 @@ $env:TAVILY_API_KEY = "<tavily key>"
 $env:ANTHROPIC_AUTH_TOKEN = "<kimi/anthropic-compatible key>" # required for LLM + llm_web high-recall rounds
 ```
 
-默认 `--provider auto` 只按 Serper → Brave → Bing → Tavily 顺序选择基础搜索 provider，不会把 r1-r6 的几十上百条查询 fallback 到慢速 `llm_web`。`llm_web` 使用 Anthropic-compatible `web_search_20250305` server tool，可复用 Kimi/Claude-code 兼容 API，但只用于 `llm_discovery` / `llm_gap_audit`；如果模型没有真实返回 `web_search_tool_result`，脚本会非 0 退出。离线测试可用 `--provider fixture --fixture tests/fixtures/search_results.json`，人工诊断可显式加 `--allow-llm-web-base`，正式发送不得使用 fixture 或 `--allow-llm-web-base`。
+默认 `--provider auto` 只按 Serper → Brave → Bing → Tavily 顺序选择基础搜索 provider，不会把 r1-r6 的几十上百条查询 fallback 到慢速 `llm_web`。当前默认高召回证据模式为 `compatible`，所以 `--llm-discovery-provider` 默认是 `same`；若显式切换 `SYNBIO_HIGH_RECALL_EVIDENCE_MODE=strict`，高召回轮次应改回 `llm_web` 并要求 `web_search_tool_result`。离线测试可用 `--provider fixture --fixture tests/fixtures/search_results.json`，人工诊断可显式加 `--allow-llm-web-base`，正式发送不得使用 fixture 或 `--allow-llm-web-base`。
+
+如果基础 provider 是 Tavily 免费 key，建议保持 1 credit 的 Tavily 深度，并用 `--timeout 30 --max-workers 5 --rpm 90` 运行基础搜索轮次。项目默认使用 `search_depth=basic`，避免自动落到 2 credits 的 `advanced` 深度。这样可以把请求速率控制在 Tavily Development key 官方 100 RPM 之下，同时把 80+ 条必搜 query 从串行几十分钟压缩到几分钟级。
 
 搜索日志必须记录 `config/search_queries.json` 中 r1-r6 的全部 `required_queries`，并包含 `generated_by=search_executor`、`limit>=15`、`llm_discovery`、`llm_gap_audit`。raw 中每条候选必须带 `source_round`，例如：
 

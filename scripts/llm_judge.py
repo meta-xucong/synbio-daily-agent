@@ -27,6 +27,23 @@ def _load_env() -> None:
     # resolve project root relative to this script: scripts/ -> repo root
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent
+
+    secrets_path = project_root / "config" / "runtime_secrets.local.json"
+    if secrets_path.is_file():
+        try:
+            payload = json.loads(secrets_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                key = str(key).strip()
+                if not key or os.getenv(key) is not None:
+                    continue
+                if isinstance(value, list):
+                    os.environ[key] = json.dumps(value, ensure_ascii=False)
+                elif value is not None:
+                    os.environ[key] = str(value)
+
     env_path = project_root / ".env"
     if not env_path.is_file():
         return
@@ -50,7 +67,12 @@ _load_env()
 def _default_model() -> str:
     """Return default model based on the configured base URL."""
     base = os.getenv("ANTHROPIC_BASE_URL", "").lower()
-    if "aiself.vip" in base or "127.0.0.1:15721" in base or "localhost:15721" in base:
+    if (
+        "api.kimi.com" in base
+        or "aiself.vip" in base
+        or "127.0.0.1:15721" in base
+        or "localhost:15721" in base
+    ):
         return "kimi-for-coding"
     return "claude-3-5-sonnet-20241022"
 
@@ -85,6 +107,19 @@ def provider_uses_ascii_prompts(base_url: str | None) -> bool:
     if setting in _FALSE_VALUES:
         return False
     return "aiself.vip" in (base_url or "").lower()
+
+
+def provider_supports_thinking_disable(base_url: str | None, model: str | None = None) -> bool:
+    """Return whether the provider expects explicit thinking disable for stable JSON output."""
+    base = (base_url or "").lower()
+    model_name = (model or "").lower()
+    return (
+        "api.kimi.com" in base
+        or "aiself.vip" in base
+        or "127.0.0.1:15721" in base
+        or "localhost:15721" in base
+        or "kimi" in model_name
+    )
 
 
 def _material_company_event_override(item: dict[str, Any], decision: Decision) -> Decision:
@@ -620,6 +655,8 @@ class LLMClient:
             "temperature": 0,
             "messages": [{"role": "user", "content": _build_prompt(item, ascii_safe=self.use_ascii_prompts)}],
         }
+        if provider_supports_thinking_disable(self.base_url, self.model):
+            payload["thinking"] = {"type": "disabled"}
         request = Request(
             self.messages_url,
             data=json.dumps(payload, ensure_ascii=self.use_ascii_prompts).encode("utf-8"),

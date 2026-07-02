@@ -70,7 +70,7 @@ python scripts\llm_search_strategy.py --date $DATE --output "data\search_strateg
 if ($LASTEXITCODE -ne 0) { throw "LLM search strategy failed" }
 
 # 3. 执行搜索（正式路径必须保留高召回轮次，不得使用 --disable-high-recall）
-python scripts\search_executor.py --date $DATE --strategy "data\search_strategy_$DATE.json" --output "data\search_log_$DATE.json" --provider auto --limit 15 --timeout 120 --retries 2
+python scripts\search_executor.py --date $DATE --strategy "data\search_strategy_$DATE.json" --output "data\search_log_$DATE.json" --provider auto --limit 15 --timeout 30 --retries 2 --max-workers 5
 if ($LASTEXITCODE -ne 0) { throw "Search executor failed" }
 
 # 4. 从搜索日志构建 raw
@@ -139,7 +139,7 @@ python scripts\pre_check.py $DATE
 ## 关键说明
 
 - **LLM 使用点**：`llm_health_check` → `llm_search_strategy --mode llm` → `build-approved` 的 LLM relevance gate
-- **搜索 provider 分层**：`--provider auto` 只会为 r1-r6 基础搜索选择 Serper/Brave/Bing/Tavily 这类 fast provider；没有 fast provider 会 fail-closed。Kimi 的 `llm_web` 只用于 `llm_discovery` / `llm_gap_audit` 少量高召回补盲。`--allow-llm-web-base` 只允许人工诊断使用，正式日报严禁使用。
+- **搜索 provider 分层**：`--provider auto` 只会为 r1-r6 基础搜索选择 Serper/Brave/Bing/Tavily 这类 fast provider；没有 fast provider 会 fail-closed。当前默认高召回证据模式为 `compatible`，`llm_discovery` / `llm_gap_audit` 默认复用基础 provider（`same`）并保留结构化结果证据；只有 `strict` 模式才要求 Kimi `llm_web`。`--allow-llm-web-base` 只允许人工诊断使用，正式日报严禁使用。
 - **只要严格按脚本链路跑，LLM 会被强制使用，搜索日志会被审计，空日报/假搜索/漏 LLM 都会被挡住**
 
 ## 常见失败处理

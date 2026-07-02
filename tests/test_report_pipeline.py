@@ -118,7 +118,21 @@ def test_validate_search_log_blocks_missing_round_and_untraced_raw_item():
 
 
 def test_validate_search_log_allows_empty_raw_when_rounds_have_queries():
-    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+    raw = {
+        "news": [
+            _item(
+                type="news",
+                source_round="llm_discovery",
+                source_query="broad discovery",
+                url="https://example.com/discovery",
+                title="Discovery",
+            )
+        ],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
 
     result = report_pipeline.validate_search_log(_search_log(), raw)
 
@@ -241,7 +255,26 @@ def test_validate_search_log_blocks_required_query_marked_true_but_note_says_une
         "executed": True,
         "notes": "原始原因: 未执行（时间/资源限制）",
     }]
-    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+    raw = {
+        "news": [
+            _item(
+                type="news",
+                source_round="r1",
+                source_query="synthetic biology funding",
+            ),
+            _item(
+                type="news",
+                title="Discovery",
+                url="https://example.com/discovery",
+                source_round="llm_discovery",
+                source_query="broad discovery",
+            )
+        ],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
 
     result = report_pipeline.validate_search_log(log, raw, strict_coverage=True)
 
@@ -255,7 +288,21 @@ def test_validate_search_log_strict_blocks_manual_log_even_with_queries(monkeypa
     })
     log = _search_log()
     log.pop("generated_by")
-    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+    raw = {
+        "news": [
+            _item(
+                type="news",
+                title="Discovery",
+                url="https://example.com/discovery",
+                source_round="llm_discovery",
+                source_query="broad discovery",
+            )
+        ],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
 
     result = report_pipeline.validate_search_log(
         log,
@@ -274,7 +321,21 @@ def test_validate_search_log_strict_blocks_missing_high_recall_rounds(monkeypatc
     })
     log = _search_log()
     log["rounds"] = [round_entry for round_entry in log["rounds"] if not round_entry["round"].startswith("llm_")]
-    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+    raw = {
+        "news": [
+            _item(
+                type="news",
+                title="Discovery",
+                url="https://example.com/discovery",
+                source_round="llm_discovery",
+                source_query="broad discovery",
+            )
+        ],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
 
     result = report_pipeline.validate_search_log(
         log,
@@ -285,6 +346,81 @@ def test_validate_search_log_strict_blocks_missing_high_recall_rounds(monkeypatc
 
     assert not result["is_valid"]
     assert any("高召回LLM搜索轮次" in error for error in result["errors"])
+
+
+def test_validate_search_log_compatible_high_recall_accepts_tavily_structured_evidence(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r1", "required_queries": ["synthetic biology funding"]}]
+    })
+    monkeypatch.setattr(report_pipeline, "validate_search_coverage", lambda *a, **k: {
+        "is_valid": True,
+        "errors": [],
+        "warnings": [],
+    })
+    log = _search_log()
+    log["high_recall_evidence_mode"] = "compatible"
+    _round(log, "llm_discovery")["queries"] = [{
+        "query": "broad discovery",
+        "executed": True,
+        "provider": "tavily",
+        "searched_at": "2026-06-10T10:00:00+08:00",
+        "results": [{"title": "Discovery", "url": "https://example.com/discovery"}],
+        "result_count": 1,
+    }]
+    _round(log, "llm_gap_audit")["queries"] = [{
+        "query": "gap audit",
+        "executed": True,
+        "provider": "tavily",
+        "searched_at": "2026-06-10T10:00:05+08:00",
+        "results": [],
+        "result_count": 0,
+    }]
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(
+        log,
+        raw,
+        strict_coverage=True,
+        search_strategy={"queries": [{"query": "synthetic biology funding", "required": True}]},
+    )
+
+    assert result["is_valid"], result["errors"]
+    assert result["high_recall_check"]["evidence_mode"] == "compatible"
+
+
+def test_validate_search_log_strict_high_recall_blocks_tavily_structured_evidence(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r1", "required_queries": ["synthetic biology funding"]}]
+    })
+    log = _search_log()
+    log["high_recall_evidence_mode"] = "strict"
+    _round(log, "llm_discovery")["queries"] = [{
+        "query": "broad discovery",
+        "executed": True,
+        "provider": "tavily",
+        "searched_at": "2026-06-10T10:00:00+08:00",
+        "results": [{"title": "Discovery", "url": "https://example.com/discovery"}],
+        "result_count": 1,
+    }]
+    _round(log, "llm_gap_audit")["queries"] = [{
+        "query": "gap audit",
+        "executed": True,
+        "provider": "tavily",
+        "searched_at": "2026-06-10T10:00:05+08:00",
+        "results": [],
+        "result_count": 0,
+    }]
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(
+        log,
+        raw,
+        strict_coverage=True,
+        search_strategy={"queries": [{"query": "synthetic biology funding", "required": True}]},
+    )
+
+    assert not result["is_valid"]
+    assert any("必须使用llm_web" in error for error in result["errors"])
 
 
 def test_validate_search_log_warns_when_required_query_config_missing(monkeypatch):
@@ -1825,6 +1961,49 @@ def test_build_approved_rejects_old_item_after_page_date_verification(tmp_path, 
     assert rejected_item["verified_date"] == "2024-11-22"
 
 
+def test_build_approved_rejects_search_fallback_date_verification(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {"version": 1, "registry": {}})
+    raw = {
+        "news": [_item(
+            title="未来实验室合成生物",
+            summary="未来实验室报道合成生物产业观察。",
+            date="2026-07-03",
+            search_date="2026-07-03",
+            date_source="search_result",
+            source_round="r1",
+            url="https://example.com/fallback-date",
+        )],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def fake_date_verify(url, search_date):
+        return {
+            "verified_date": search_date,
+            "confidence": "low",
+            "source": "search_fallback",
+            "url": url,
+        }
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-07-03",
+        output_dir=tmp_path,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+        date_verify_func=fake_date_verify,
+        llm_relevance_mode="off",
+    )
+
+    assert result["approved"] == []
+    assert any("[页面日期]" in item["reason"] for item in result["rejected"])
+    assert result["stats"]["news"]["date_verification_rejected"] == 1
+
+
 def test_build_approved_rejects_old_policy_file_after_page_date_verification(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
@@ -2029,6 +2208,25 @@ def test_render_markdown_report_funding_defaults_missing_fields():
     ], "2026-06-17", raw_count=1)
 
     assert "| 天津大学天大系硬科技项目加速IPO，合成生物成优势方向 | — | 未披露 | — | 2026-06-15 | https://example.com/funding/tianda |" in report
+
+
+def test_render_markdown_report_strips_extra_urls_from_summary():
+    report = report_pipeline.render_markdown_report([
+        {
+            "title": "生物制造大赛通知",
+            "source": "Example",
+            "date": "2026-07-03",
+            "summary": "报名入口 https://www.chinasme.cn/bioCompetition/home 以及更多信息 https://mp.weixin.qq.com/s/abc",
+            "url": "https://example.com/news/competition",
+            "type": "news",
+            "raw_score": 10,
+            "value_score": 3.3,
+        }
+    ], "2026-07-03")
+
+    assert "https://www.chinasme.cn/bioCompetition/home" not in report
+    assert "https://mp.weixin.qq.com/s/abc" not in report
+    assert "https://example.com/news/competition" in report
 
 
 def test_run_compliance_check_includes_ai_grounding_errors():

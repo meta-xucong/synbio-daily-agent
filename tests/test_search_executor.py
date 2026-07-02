@@ -1,6 +1,8 @@
 import json
+import threading
 import subprocess
 import sys
+from urllib.error import HTTPError
 from pathlib import Path
 
 
@@ -280,6 +282,166 @@ def test_execute_search_plan_uses_llm_provider_for_high_recall_rounds():
     assert search_log["rounds"][2]["queries"][0]["provider"] == "llm_web"
 
 
+def test_query_rate_limiter_spaces_acquire_calls(monkeypatch):
+    timeline = {"now": 0.0}
+
+    monkeypatch.setattr(search_executor.time, "monotonic", lambda: timeline["now"])
+    monkeypatch.setattr(
+        search_executor.time,
+        "sleep",
+        lambda seconds: timeline.__setitem__("now", timeline["now"] + seconds),
+    )
+
+    limiter = search_executor.QueryRateLimiter(60)
+    limiter.acquire()
+    limiter.acquire()
+    limiter.acquire()
+
+    assert timeline["now"] == 2.0
+
+
+def test_default_rpm_for_tavily_is_free_plan_safe():
+    assert search_executor.default_rpm_for_provider("tavily") == 90
+    assert search_executor.default_rpm_for_provider("serper") is None
+
+
+def test_default_llm_discovery_provider_uses_same_in_compatible_mode(monkeypatch):
+    monkeypatch.delenv("SYNBIO_LLM_DISCOVERY_PROVIDER", raising=False)
+    monkeypatch.delenv("SYNBIO_HIGH_RECALL_EVIDENCE_MODE", raising=False)
+    assert search_executor.default_llm_discovery_provider() == "same"
+
+    monkeypatch.setenv("SYNBIO_HIGH_RECALL_EVIDENCE_MODE", "strict")
+    assert search_executor.default_llm_discovery_provider() == "llm_web"
+
+
+def test_parse_api_keys_supports_json_and_csv_formats():
+    assert search_executor._parse_api_keys('["k1", "k2"]') == ["k1", "k2"]
+    assert search_executor._parse_api_keys("k1,k2;k3") == ["k1", "k2", "k3"]
+
+
+def test_configured_tavily_api_keys_merge_primary_and_fallback(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEYS", '["fallback-1", "fallback-2"]')
+    monkeypatch.setenv("TAVILY_API_KEY", "primary-1")
+    monkeypatch.setattr(search_executor, "_read_windows_env_var", lambda name: "primary-1" if name == "TAVILY_API_KEY" else None)
+
+    keys = search_executor._configured_api_keys("tavily")
+
+    assert keys == ["primary-1", "fallback-1", "fallback-2"]
+
+
+def test_tavily_provider_fails_over_to_backup_key():
+    seen_suffixes = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"results": [{"title": "Recovered", "url": "https://example.com/recovered"}]}).encode("utf-8")
+
+    def fake_opener(request, timeout=30):
+        payload = json.loads(request.data.decode("utf-8"))
+        api_key = payload["api_key"]
+        seen_suffixes.append(api_key[-2:])
+        if api_key == "key-1":
+            raise search_executor.SearchProviderError("HTTP Error 429: Too Many Requests")
+        return FakeResponse()
+
+    provider = search_executor.TavilySearchProvider(["key-1", "key-2"], opener=fake_opener, retries=1)
+    results = provider.search("synthetic biology", limit=5)
+
+    assert seen_suffixes == ["-1", "-2"]
+    assert results[0]["title"] == "Recovered"
+
+
+def test_execute_search_plan_parallelizes_base_queries_and_preserves_order():
+    calls = []
+
+    class Provider:
+        name = "tavily"
+
+        def search(self, query, *, limit):
+            calls.append((query, threading.current_thread().name))
+            if query == "q1":
+                search_executor.time.sleep(0.05)
+            return [{"title": f"Result for {query}", "url": f"https://example.com/{query}"}]
+
+    search_log, ok = search_executor.execute_search_plan(
+        [{"round": "r1", "queries": ["q1", "q2", "q3"]}],
+        Provider(),
+        date="2026-07-02",
+        max_workers=3,
+    )
+
+    assert ok
+    assert [entry["query"] for entry in search_log["rounds"][0]["queries"]] == ["q1", "q2", "q3"]
+    assert len({thread_name for _, thread_name in calls}) >= 2
+
+
+def test_http_json_respects_retry_after_for_rate_limits(monkeypatch):
+    calls = {"count": 0}
+    sleeps = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"ok": True}).encode("utf-8")
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    def fake_opener(request, timeout=30):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                hdrs={"retry-after": "3"},
+                fp=None,
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr(search_executor.time, "sleep", fake_sleep)
+
+    request = search_executor.Request("https://example.com")
+    payload = search_executor._http_json(request, opener=fake_opener, retries=2)
+
+    assert payload == {"ok": True}
+    assert sleeps == [3.0]
+
+
+def test_tavily_provider_defaults_to_basic_search_depth():
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"results": []}).encode("utf-8")
+
+    def fake_opener(request, timeout=30):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    provider = search_executor.TavilySearchProvider("test-key", opener=fake_opener)
+    provider.search("synthetic biology news", limit=5)
+
+    assert captured["payload"]["search_depth"] == "basic"
+
+
 def test_llm_web_search_provider_extracts_server_tool_results():
     captured = {}
 
@@ -329,6 +491,8 @@ def test_llm_web_search_provider_extracts_server_tool_results():
     results = provider.search("synthetic biology news", limit=5)
 
     assert captured["payload"]["tools"][0]["type"] == "web_search_20250305"
+    assert captured["payload"]["tool_choice"] == {"type": "tool", "name": "web_search"}
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
     assert captured["timeout"] == 90
     assert results == [{
         "title": "Synthetic biology news item",

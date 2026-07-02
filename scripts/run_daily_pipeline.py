@@ -56,8 +56,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--date", default=current_date_str(), help="Report date YYYY-MM-DD")
     parser.add_argument("--provider", default="auto", help="Base search provider for search_executor")
     parser.add_argument("--limit", type=int, default=15, help="Search result limit per query")
-    parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--timeout", type=int, default=30)
     parser.add_argument("--retries", type=int, default=2)
+    parser.add_argument("--max-workers", type=int, default=5, help="Bounded query concurrency for base search provider rounds")
+    parser.add_argument("--rpm", type=int, help="Optional request-per-minute cap for the base search provider")
     parser.add_argument("--send", action="store_true", help="Actually send email after dry-run gate passes")
     parser.add_argument("--send-mode", default="auto")
     args = parser.parse_args(argv)
@@ -80,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             "--output", str(strategy_path),
             "--mode", "llm",
         ])
-        run_step("High-recall search executor", [
+        search_executor_args = [
             "scripts/search_executor.py",
             "--date", date,
             "--strategy", str(strategy_path),
@@ -89,7 +91,11 @@ def main(argv: list[str] | None = None) -> int:
             "--limit", str(args.limit),
             "--timeout", str(args.timeout),
             "--retries", str(args.retries),
-        ])
+            "--max-workers", str(args.max_workers),
+        ]
+        if args.rpm is not None:
+            search_executor_args.extend(["--rpm", str(args.rpm)])
+        run_step("High-recall search executor", search_executor_args)
         run_step("Build raw from search", [
             "scripts/report_pipeline.py",
             "--build-raw-from-search", str(search_log_path),
