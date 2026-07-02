@@ -193,20 +193,21 @@ def resolve_runtime_context(
                 f"[数据路径] 已根据报告路径自动切换运行目录: {root}"
             )
 
-    shadow_roots = sorted(
-        {
-            candidate
-            for candidate in candidate_roots
-            if candidate != root and _root_has_runtime_activity(candidate, date_str)
-        }
-    )
-    if shadow_roots:
-        warnings.append(
-            "[数据路径] 检测到多个活跃运行目录，当前使用 "
-            f"{root}；其余目录也存在当日数据或发送历史: "
-            + ", ".join(str(candidate) for candidate in shadow_roots)
-            + "。建议统一设置 SYNBIO_DAILY_HOME 或显式传入 --project-root。"
+    if not project_root:
+        shadow_roots = sorted(
+            {
+                candidate
+                for candidate in candidate_roots
+                if candidate != root and _root_has_runtime_activity(candidate, date_str)
+            }
         )
+        if shadow_roots:
+            warnings.append(
+                "[数据路径] 检测到多个活跃运行目录，当前使用 "
+                f"{root}；其余目录也存在当日数据或发送历史: "
+                + ", ".join(str(candidate) for candidate in shadow_roots)
+                + "。建议统一设置 SYNBIO_DAILY_HOME 或显式传入 --project-root。"
+            )
 
     resolved_data_dir = Path(data_dir).resolve() if data_dir else root / "data"
     if config_dir:

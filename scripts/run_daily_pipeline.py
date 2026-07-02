@@ -148,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
             str(email_path),
             "--dry-run",
             "--send-mode", args.send_mode,
+            "--project-root", str(ROOT),
         ])
         if args.send:
             run_step("Real send", [
@@ -157,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
                 str(h5_path),
                 str(email_path),
                 "--send-mode", args.send_mode,
+                "--project-root", str(ROOT),
             ])
         run_step("Post-send search audit", [
             "scripts/audit_search_log.py",
