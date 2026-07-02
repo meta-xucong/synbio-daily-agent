@@ -104,6 +104,46 @@
       "first_sent_date": "2026-06-27",
       "last_seen_date": "2026-06-27",
       "sent_count": 2
+    },
+    "m.10jqka.com.cn/20260618/c677569597.shtml": {
+      "url": "https://m.10jqka.com.cn/20260618/c677569597.shtml",
+      "dedup_key": "m.10jqka.com.cn/20260618/c677569597.shtml",
+      "title": "华宝股份新增合成生物概念，首个合成生物原料项目落地",
+      "first_sent_date": "2026-06-28",
+      "last_seen_date": "2026-06-28",
+      "sent_count": 1
+    },
+    "cj.sina.cn/articles/view/1698921891/65437da300101w122": {
+      "url": "https://cj.sina.cn/articles/view/1698921891/65437da300101w122?finpagefr=p_103&vt=4",
+      "dedup_key": "cj.sina.cn/articles/view/1698921891/65437da300101w122",
+      "title": "郭恒华涉15年前非吸旧案被刑拘 华恒生物港股IPO梦碎三重压力何解",
+      "first_sent_date": "2026-06-29",
+      "last_seen_date": "2026-06-29",
+      "sent_count": 1
+    },
+    "jfdaily.com/sgh/detail": {
+      "url": "https://www.jfdaily.com/sgh/detail?id=4012177",
+      "dedup_key": "jfdaily.com/sgh/detail",
+      "title": "未来健康产业大会暨合成生物学创新产业峰会主论坛在沪举行",
+      "first_sent_date": "2026-06-29",
+      "last_seen_date": "2026-06-29",
+      "sent_count": 1
+    },
+    "finance.sina.com.cn/jjxw/2026-06-29/doc-inieyvrk5869338.shtml": {
+      "url": "https://finance.sina.com.cn/jjxw/2026-06-29/doc-inieyvrk5869338.shtml",
+      "dedup_key": "finance.sina.com.cn/jjxw/2026-06-29/doc-inieyvrk5869338.shtml",
+      "title": "未来健康产业大会暨合成生物学创新产业峰会主论坛在沪举行",
+      "first_sent_date": "2026-06-29",
+      "last_seen_date": "2026-06-29",
+      "sent_count": 1
+    },
+    "stcn.com/article/detail/3982938.html": {
+      "url": "https://www.stcn.com/article/detail/3982938.html",
+      "dedup_key": "stcn.com/article/detail/3982938.html",
+      "title": "金河生物5.5亿元新项目落地 拓宽合成生物增长新赛道",
+      "first_sent_date": "2026-06-29",
+      "last_seen_date": "2026-06-29",
+      "sent_count": 1
     }
   }
 }

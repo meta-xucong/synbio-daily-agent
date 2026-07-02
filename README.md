@@ -12,7 +12,7 @@
 这是一个基于 Kimi Work (Daimon) 的自动化日报生成 Agent，每天自动搜索合成生物行业最新资讯，经过**脚本强制过滤、去重、价值排序**后，生成 Markdown + H5 HTML 双版本报告，并推送到指定邮箱。
 
 **关键特性**:
-- **五轮搜索法**: 通用 → 定向 → 英文补充 → 生成前复查 → 政府/会议强制搜索
+- **高召回混合搜索**: r1-r6 基座必搜 → LLM 动态 query → Kimi/LLM `llm_discovery` → `llm_gap_audit`
 - **脚本强制去重**: 基于历史报告指纹库，严禁手动绕过
 - **防偏差机制**: 9步完整流水线，任何情况下不得跳过
 - **AI分析防幻觉**: AI深度分析只能引用正文已收录的信息
@@ -35,6 +35,7 @@ synbio-daily-agent/
 │   └── policy_database.json           # 已收录政策库
 ├── scripts/
 │   ├── settings.py                    # 路径、时区和环境变量配置
+│   ├── search_executor.py             # 执行基座+LLM动态搜索并生成search_log
 │   ├── report_pipeline.py             # 核心过滤/去重/验证脚本
 │   ├── generate_from_template.py       # 生产级H5/邮件模板渲染器
 │   ├── send_email.py                  # 邮件发送脚本
@@ -81,6 +82,8 @@ Step 9: 邮件推送（send gate通过后才发送）
 | 第三轮 | 英文补充 | `synthetic biology breakthrough 2026` |
 | 第四轮 | 生成前复查 | `合成生物 今日 最新 白皮书 报告 发布 签约` |
 | 第五轮 | 政府/会议强制搜索 | `site:gov.cn 合成生物 政策` |
+| 第六轮 | 生物制造独立主题搜索 | `生物制造 产业化 项目` |
+| LLM高召回 | 泛搜与缺口审计 | `llm_discovery` / `llm_gap_audit` |
 
 `config/search_queries.json` 是每日基座必搜 query 的权威清单；`config/llm_search_strategy.json` 是 LLM 搜索中枢的种子记忆，不是固定 query 清单。每天先生成 `data/search_strategy_YYYY-MM-DD.json`，再执行基座 query 和策略里的动态 query。每个 query 建议 limit ≥ 15；即使无结果也必须记录 `executed: true, results_count: 0`。搜索日志应保留结构化结果（title/url/snippet/source/date），不要只保存人工挑选后的 URL。
 
@@ -89,18 +92,38 @@ Step 9: 邮件推送（send gate通过后才发送）
 **输入**: `data/raw_YYYY-MM-DD.json` + `data/search_log_YYYY-MM-DD.json`
 **输出**: `data/approved_YYYY-MM-DD.json` + `data/rejected_YYYY-MM-DD.json`
 
-推荐生产命令:
+推荐生产命令使用统一入口，避免 Kimiwork/人工逐步执行时跳过搜索与审计门禁:
+
+```powershell
+python scripts\run_daily_pipeline.py --date YYYY-MM-DD --provider auto --send --send-mode auto
+```
+
+只做 dry-run 验证时去掉 `--send`。以下分步命令仅供人工排障对照，正式日报不要手工拆开执行:
 
 ```powershell
 python scripts\llm_search_strategy.py --date YYYY-MM-DD --output data\search_strategy_YYYY-MM-DD.json --mode llm
-# 执行 config/search_queries.json 基座 query + data\search_strategy_YYYY-MM-DD.json 动态 query，保存 search_log 后继续：
+python scripts\search_executor.py --date YYYY-MM-DD --strategy data\search_strategy_YYYY-MM-DD.json --output data\search_log_YYYY-MM-DD.json --provider auto --limit 15
 python scripts\report_pipeline.py --build-raw-from-search data\search_log_YYYY-MM-DD.json --date YYYY-MM-DD --output data\raw_YYYY-MM-DD.json
 python scripts\audit_search_log.py data\search_log_YYYY-MM-DD.json --raw data\raw_YYYY-MM-DD.json --search-strategy data\search_strategy_YYYY-MM-DD.json
 python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --date YYYY-MM-DD --output data --search-log data\search_log_YYYY-MM-DD.json --search-strategy data\search_strategy_YYYY-MM-DD.json
 python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --date YYYY-MM-DD --raw data\raw_YYYY-MM-DD.json --output reports\YYYY-MM-DD.md
 ```
 
-搜索日志必须记录 `config/search_queries.json` 中 r1-r5 的全部 `required_queries`，raw 中每条候选必须带 `source_round`，例如：
+`search_executor.py` 是唯一推荐的生产搜索日志入口。它会读取 `config/search_queries.json` 的 r1-r6 基座必搜 query、同日 `search_strategy` 的 LLM 动态 query，并强制追加 `llm_discovery` 与 `llm_gap_audit` 两个高召回轮次。生产环境必须同时配置至少一个 fast search provider（Serper、Brave、Bing 或 Tavily）和 Kimi/Anthropic-compatible LLM：基础搜索由 fast provider 执行，Kimi/`llm_web` 只用于 LLM 策略、相关性判断和少量高召回补盲。没有 fast search provider 或 LLM web_search 未真实返回工具结果时脚本会返回非 0，不会生成伪造的 `executed: true`。
+
+可配置的搜索 provider 环境变量：
+
+```powershell
+$env:SERPER_API_KEY = "<serper key>"              # google.serper.dev
+$env:BRAVE_SEARCH_API_KEY = "<brave search key>" # api.search.brave.com
+$env:BING_SEARCH_API_KEY = "<bing web search key>"
+$env:TAVILY_API_KEY = "<tavily key>"
+$env:ANTHROPIC_AUTH_TOKEN = "<kimi/anthropic-compatible key>" # required for LLM + llm_web high-recall rounds
+```
+
+默认 `--provider auto` 只按 Serper → Brave → Bing → Tavily 顺序选择基础搜索 provider，不会把 r1-r6 的几十上百条查询 fallback 到慢速 `llm_web`。`llm_web` 使用 Anthropic-compatible `web_search_20250305` server tool，可复用 Kimi/Claude-code 兼容 API，但只用于 `llm_discovery` / `llm_gap_audit`；如果模型没有真实返回 `web_search_tool_result`，脚本会非 0 退出。离线测试可用 `--provider fixture --fixture tests/fixtures/search_results.json`，人工诊断可显式加 `--allow-llm-web-base`，正式发送不得使用 fixture 或 `--allow-llm-web-base`。
+
+搜索日志必须记录 `config/search_queries.json` 中 r1-r6 的全部 `required_queries`，并包含 `generated_by=search_executor`、`limit>=15`、`llm_discovery`、`llm_gap_audit`。raw 中每条候选必须带 `source_round`，例如：
 
 ```json
 {
@@ -117,7 +140,7 @@ python scripts\report_pipeline.py --render-md data\approved_YYYY-MM-DD.json --da
 
 处理流程:
 1. **URL过滤**: 拒绝站点首页、分类/聚合页、黑名单域名和不安全URL
-2. **时效性过滤**: 新闻7天、研究14天、融资7天、政策30天、活动90天；日期无法解析直接拒绝
+2. **时效性过滤**: 新闻3天、研究14天、融资7天、政策7天、活动60天；日期无法解析直接拒绝
 3. **基座必搜 query 门禁**: build-approved 和 send gate 默认要求 search_log 覆盖 `config/search_queries.json` 的所有 required query；缺少 `site:` 定向查询会阻断
 4. **LLM动态 query 门禁**: 传入 `--search-strategy` 时，策略中的 required query 必须在 search_log 中成功执行；缺失或失败会阻断 build-approved
 5. **搜索覆盖率审计**: 强制要求 search_log 中的候选 URL 都进入 raw，防止搜索结果被人工挑选阶段静默丢弃

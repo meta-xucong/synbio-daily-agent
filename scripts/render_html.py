@@ -18,7 +18,7 @@ except ImportError:
     from render_utils import safe_link_attrs, safe_text, safe_url
 
 
-EMPTY_SECTION_TEXT = "经五轮检索，本周期暂无相关新信息收录。"
+EMPTY_SECTION_TEXT = "经完整检索，本周期暂无相关新信息收录。"
 
 
 SECTION_TITLES = {

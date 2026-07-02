@@ -33,13 +33,21 @@ def test_pre_check_auto_loads_search_strategy(tmp_path, monkeypatch):
         "events": [],
     }
     search_log = {
+        "version": 1,
         "date": "2026-06-10",
+        "generated_by": "search_executor",
+        "provider": "llm_web",
+        "llm_discovery_provider": "llm_web",
+        "high_recall_enabled": True,
+        "required_high_recall_rounds": ["llm_discovery", "llm_gap_audit"],
+        "limit": 15,
         "rounds": [
             {
                 "round": "r1",
                 "queries": [{
                     "query": "合成生物 最新新闻 今日",
                     "executed": True,
+                    "provider": "llm_web",
                     "results": [{
                         "title": "合成生物项目落地",
                         "url": "https://example.com/news/synbio-project",
@@ -50,6 +58,8 @@ def test_pre_check_auto_loads_search_strategy(tmp_path, monkeypatch):
             {"round": "r3", "queries": ["q3"], "candidates": []},
             {"round": "r4", "queries": ["q4"], "candidates": []},
             {"round": "r5", "queries": ["q5"], "candidates": []},
+            {"round": "llm_discovery", "queries": [{"query": "合成生物 高召回", "executed": True, "provider": "llm_web", "web_search_tool_result": True}], "candidates": []},
+            {"round": "llm_gap_audit", "queries": [{"query": "合成生物 缺口审计", "executed": True, "provider": "llm_web", "web_search_tool_result": True}], "candidates": []},
         ],
     }
     strategy = {"queries": [{"query": "蓝晶微生物 最新 生物制造", "required": True}]}

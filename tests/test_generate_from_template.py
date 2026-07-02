@@ -29,6 +29,26 @@ def _approved(**overrides):
         "location": "上海",
         "raw_score": 18,
         "value_score": 6,
+        "search_date": "2026-06-10",
+        "date_source": "page_verified",
+        "verified_date": "2026-06-10",
+        "date_verification": {
+            "verified_date": "2026-06-10",
+            "confidence": "high",
+            "source": "meta/body",
+            "url": "https://example.com/news/xinghe",
+        },
+        "llm_relevance": {
+            "is_approved": True,
+            "domain_relevance": "core_synbio",
+            "confidence": 0.9,
+            "reason": "含合成生物制造平台扩产证据",
+            "evidence_spans": ["合成生物制造平台扩产"],
+            "section": "news",
+            "provider": "llm-test",
+        },
+        "domain_relevance": "core_synbio",
+        "confidence": 0.9,
     }
     item.update(overrides)
     return item
@@ -162,16 +182,30 @@ def test_send_email_dry_run_passes_generated_template_output(tmp_path, monkeypat
     raw_path = tmp_path / "data" / "raw_2026-06-10.json"
     raw_path.write_text(json.dumps({"news": approved, "research": [], "funding": [], "policy": [], "events": []}, ensure_ascii=False), encoding="utf-8")
     search_log = {
+        "version": 1,
         "date": "2026-06-10",
+        "generated_by": "search_executor",
+        "provider": "llm_web",
+        "llm_discovery_provider": "llm_web",
+        "high_recall_enabled": True,
+        "required_high_recall_rounds": ["llm_discovery", "llm_gap_audit"],
+        "limit": 15,
         "rounds": [
-            {"round": "r1", "queries": ["synthetic biology funding 2026"], "candidates": ["https://example.com/news/xinghe"]},
-            {"round": "r2", "queries": ["synthetic biology research 2026"], "candidates": []},
-            {"round": "r3", "queries": ["synthetic biology policy 2026"], "candidates": []},
-            {"round": "r4", "queries": ["synthetic biology events 2026"], "candidates": []},
-            {"round": "r5", "queries": ["synthetic biology China 2026"], "candidates": []},
+            {"round": "r1", "queries": [{"query": "synthetic biology funding 2026", "executed": True, "provider": "llm_web"}], "candidates": ["https://example.com/news/xinghe"]},
+            {"round": "r2", "queries": [{"query": "synthetic biology research 2026", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "r3", "queries": [{"query": "synthetic biology policy 2026", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "r4", "queries": [{"query": "synthetic biology events 2026", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "r5", "queries": [{"query": "synthetic biology China 2026", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "llm_dynamic", "queries": [{"query": "synthetic biology dynamic validation 2026", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "llm_discovery", "queries": [{"query": "recent synthetic biology discovery", "executed": True, "provider": "llm_web", "web_search_tool_result": True}], "candidates": []},
+            {"round": "llm_gap_audit", "queries": [{"query": "synthetic biology gap audit", "executed": True, "provider": "llm_web", "web_search_tool_result": True}], "candidates": []},
         ],
     }
     (tmp_path / "data" / "search_log_2026-06-10.json").write_text(json.dumps(search_log, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "data" / "search_strategy_2026-06-10.json").write_text(
+        json.dumps({"queries": [{"query": "synthetic biology dynamic validation 2026", "required": True}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
     html_path = tmp_path / "reports" / "synbio_daily_2026-06-10.html"
     email_path = tmp_path / "reports" / "email_2026-06-10.html"
     generate_from_template.generate("2026-06-10", approved_path, md_path, html_path, email_path)

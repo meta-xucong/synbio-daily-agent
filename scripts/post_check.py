@@ -68,6 +68,11 @@ def post_check(date_str: str, report_path: str = None) -> dict:
         report = f.read()
     with open(approved_path, 'r', encoding='utf-8') as f:
         approved = json.load(f)
+    if not isinstance(approved, list):
+        errors.append("❌ approved数据格式错误：必须是列表")
+        approved = []
+    if not approved:
+        errors.append("❌ approved为空：本次没有任何可发送信息，禁止发送空日报")
     
     # 检查1: 报告中的每个链接都在approved中
     report_links = _extract_report_links(report)
@@ -80,7 +85,7 @@ def post_check(date_str: str, report_path: str = None) -> dict:
     # 排除占位链接和常见非信息链接
     excluded_patterns = ["example", "placeholder", "template", "demo", "test"]
     extra_links = {l for l in extra_links if not any(p in l.lower() for p in excluded_patterns)}
-    if extra_links:
+    if extra_links and approved:
         errors.append(f"❌ 报告包含未approved的链接: {extra_links}")
     
     # 检查2: approved中的每个信息都在报告中体现
@@ -94,7 +99,7 @@ def post_check(date_str: str, report_path: str = None) -> dict:
             and escaped_title not in report
             and escaped_title[:30] not in report
         ):
-            warnings.append(f"⚠️ approved信息可能未在报告中体现: {title[:50]}")
+            errors.append(f"❌ approved信息未在报告中体现: {title[:50]}")
     
     # 检查3: 报告头部是否有流水线追踪标记
     if "流水线追踪" not in report and "approved=" not in report:

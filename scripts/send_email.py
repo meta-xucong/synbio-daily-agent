@@ -26,10 +26,13 @@ try:
     from .post_check import post_check
     from . import report_pipeline as report_pipeline_module
     from .report_pipeline import (
+        EMPTY_APPROVED_ERROR,
         extract_http_urls,
         extract_plain_http_urls,
         run_full_validation,
         validate_email_mime_type,
+        validate_approved_date_verification,
+        validate_approved_llm_trace,
         validate_approved_schema,
         validate_approved_not_previously_sent,
         validate_url_health,
@@ -46,10 +49,13 @@ except ImportError:
     from post_check import post_check
     import report_pipeline as report_pipeline_module
     from report_pipeline import (
+        EMPTY_APPROVED_ERROR,
         extract_http_urls,
         extract_plain_http_urls,
         run_full_validation,
         validate_email_mime_type,
+        validate_approved_date_verification,
+        validate_approved_llm_trace,
         validate_approved_schema,
         validate_approved_not_previously_sent,
         validate_url_health,
@@ -725,6 +731,10 @@ def validate_send_gate(
         warnings.extend(pre_result.get("warnings", []))
 
         approved_data = prepared.effective_approved_data
+        # 空日报允许继续后续验证流程，不强制阻止
+        if not approved_data:
+            details["sent_url_registry"] = prepared.duplicate_check
+            details["skipped_after_empty_approved"] = True
 
         approved_schema = validate_approved_schema(approved_data) if approved_data else {
             "is_valid": True,
@@ -737,15 +747,19 @@ def validate_send_gate(
             errors.extend([f"[approved schema] {error}" for error in approved_schema["errors"]])
         warnings.extend(approved_schema.get("warnings", []))
 
+        approved_llm_trace = validate_approved_llm_trace(approved_data)
+        details["approved_llm_trace"] = approved_llm_trace
+        if not approved_llm_trace["is_valid"]:
+            errors.extend([f"[LLM审计] {error}" for error in approved_llm_trace["errors"]])
+        warnings.extend(approved_llm_trace.get("warnings", []))
+
+        approved_date_verification = validate_approved_date_verification(approved_data)
+        details["approved_date_verification"] = approved_date_verification
+        if not approved_date_verification["is_valid"]:
+            errors.extend([f"[页面日期] {error}" for error in approved_date_verification["errors"]])
+        warnings.extend(approved_date_verification.get("warnings", []))
+
         details["sent_url_registry"] = prepared.duplicate_check
-        if errors and not approved_data:
-            details["skipped_after_dedup"] = True
-            return {
-                "passed": False,
-                "errors": errors,
-                "warnings": warnings,
-                "details": details,
-            }
 
         files = read_report_files(prepared.md_path, prepared.html_path, prepared.email_html_path)
         html_safety = validate_html_safety(files["html_content"])
@@ -806,6 +820,8 @@ def validate_send_gate(
                 if instruction not in schema_errors
             )
 
+        if prepared.tempdir is not None:
+            post_check_module.DATA_DIR = prepared.md_path.parent
         post_result = post_check(date_str, str(prepared.md_path))
         details["post_check"] = post_result
         errors.extend(post_result.get("errors", []))
@@ -839,8 +855,8 @@ def validate_send_gate(
 
     return {
         "passed": len(errors) == 0,
-        "errors": errors,
-        "warnings": warnings,
+        "errors": list(dict.fromkeys(errors)),
+        "warnings": list(dict.fromkeys(warnings)),
         "details": details,
     }
 

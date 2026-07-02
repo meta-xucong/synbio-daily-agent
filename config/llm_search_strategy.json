@@ -14,6 +14,66 @@
     "international",
     "technology_products"
   ],
+  "required_coverage_dimensions": [
+    "news",
+    "research",
+    "funding",
+    "policy",
+    "events",
+    "company_announcement",
+    "china_local_sources",
+    "english_sources"
+  ],
+  "dimension_floor_queries": {
+    "news": {
+      "query": "合成生物 生物制造 最新动态 落地",
+      "reason": "新闻维度兜底，覆盖产业落地和非融资非政策动态",
+      "target_section": "news",
+      "expected_source_type": "mixed"
+    },
+    "research": {
+      "query": "合成生物 论文 研究 Nature Cell Science",
+      "reason": "科研维度兜底，覆盖论文和科研机构进展",
+      "target_section": "research",
+      "expected_source_type": "academic"
+    },
+    "funding": {
+      "query": "合成生物 融资 投资 IPO",
+      "reason": "融资维度兜底",
+      "target_section": "funding",
+      "expected_source_type": "media"
+    },
+    "policy": {
+      "query": "合成生物 生物制造 政策 通知 申报",
+      "reason": "政策维度兜底",
+      "target_section": "policy",
+      "expected_source_type": "government"
+    },
+    "events": {
+      "query": "合成生物 大会 峰会 论坛 赛事",
+      "reason": "活动维度兜底",
+      "target_section": "events",
+      "expected_source_type": "mixed"
+    },
+    "company_announcement": {
+      "query": "上市公司 生物制造 项目 公告",
+      "reason": "公司公告维度兜底",
+      "target_section": "news",
+      "expected_source_type": "company"
+    },
+    "china_local_sources": {
+      "query": "合成生物 生物制造 政府 高校 科协 地方媒体",
+      "reason": "中文地方源维度兜底",
+      "target_section": "news",
+      "expected_source_type": "government_academic_media"
+    },
+    "english_sources": {
+      "query": "synthetic biology biomanufacturing news funding research 2026",
+      "reason": "英文源维度兜底",
+      "target_section": "news",
+      "expected_source_type": "media"
+    }
+  },
   "tracked_entities": [
     "蓝晶微生物",
     "华恒生物",
@@ -118,6 +178,62 @@
       "expected_source_type": "media"
     },
     {
+      "query": "site:jfdaily.com 合成生物学创新产业峰会",
+      "reason": "上海主流媒体会发布合成生物产业峰会、未来健康大会和生物制造大赛等地方产业事件，通用垂直媒体 query 容易漏掉",
+      "priority": "high",
+      "target_section": "events",
+      "expected_source_type": "media"
+    },
+    {
+      "query": "未来健康产业大会 合成生物学创新产业峰会",
+      "reason": "覆盖非固定域名转载的上海合成生物产业峰会和未来健康大会报道",
+      "priority": "high",
+      "target_section": "events",
+      "expected_source_type": "mixed"
+    },
+    {
+      "query": "site:sciencenet.cn 合成生物 生物制造 大会 峰会",
+      "reason": "科学网会发布学术会议、产业峰会和科研项目动态，不能只搜通知/征集类词",
+      "priority": "high",
+      "target_section": "events",
+      "expected_source_type": "academic_media"
+    },
+    {
+      "query": "site:dg.gov.cn 合成生物 生物制造 产业园",
+      "reason": "东莞政府源可发布园区开园、产业落地和地方政策动态",
+      "priority": "high",
+      "target_section": "news",
+      "expected_source_type": "government"
+    },
+    {
+      "query": "site:rednet.cn 合成生物 生物制造 中国创新创业大赛",
+      "reason": "红网等地方媒体会发布国家级赛事地方落地信息",
+      "priority": "high",
+      "target_section": "events",
+      "expected_source_type": "media"
+    },
+    {
+      "query": "site:hbkx.org.cn 核酸合成生物学 中欧生命科学",
+      "reason": "湖北省科协会发布学术会议与合成生物学交流动态",
+      "priority": "medium",
+      "target_section": "events",
+      "expected_source_type": "academic"
+    },
+    {
+      "query": "site:ecust.edu.cn 生物制造 中试平台 璧山",
+      "reason": "高校官网会发布中试平台建成投用等产业转化进展",
+      "priority": "high",
+      "target_section": "news",
+      "expected_source_type": "academic"
+    },
+    {
+      "query": "site:siat.ac.cn 合成生物 金帆 Nature Cell",
+      "reason": "科研机构官网会发布定量合成生物学论文进展",
+      "priority": "high",
+      "target_section": "research",
+      "expected_source_type": "academic"
+    },
+    {
       "query": "金河生物 辅酶Q10 发酵项目 公告",
       "reason": "上市公司发酵产能和生物制造项目公告需用项目物料与公告词定向补搜",
       "priority": "high",
@@ -142,12 +258,39 @@
     "site:stcn.com 生物制造 项目",
     "site:36kr.com 合成生物 融资",
     "site:pedaily.cn 合成生物 投资",
+    "site:jfdaily.com 合成生物学创新产业峰会",
+    "site:sina.com.cn 合成生物学创新产业峰会",
+    "site:sciencenet.cn 合成生物 生物制造 大会 峰会",
+    "site:dg.gov.cn 合成生物 生物制造 产业园",
+    "site:rednet.cn 合成生物 生物制造 中国创新创业大赛",
+    "site:hbkx.org.cn 核酸合成生物学 中欧生命科学",
+    "site:ecust.edu.cn 生物制造 中试平台 璧山",
+    "site:siat.ac.cn 合成生物 金帆 Nature Cell",
     "site:cninfo.com.cn 合成生物 公告",
     "site:biorxiv.org synthetic biology",
     "site:techcrunch.com synthetic biology",
     "site:nature.com synthetic biology news",
     "site:fda.gov synthetic biology",
     "site:ec.europa.eu synthetic biology"
+  ],
+  "llm_discovery_queries": [
+    "近48小时 合成生物 生物制造 政府 高校 科协 地方媒体 发布",
+    "近48小时 合成生物 生物制造 垂直媒体 融资 政策 活动 科研",
+    "site:sciencenet.cn 合成生物 生物制造 大会 峰会 2026",
+    "site:dg.gov.cn 合成生物 生物制造 产业园 开园",
+    "site:rednet.cn 合成生物 生物制造 中国创新创业大赛",
+    "site:hbkx.org.cn 合成生物 核酸合成生物学 中欧生命科学",
+    "site:ecust.edu.cn 生物制造 中试平台 璧山",
+    "site:siat.ac.cn 合成生物 金帆 Nature Cell",
+    "recent synthetic biology biomanufacturing news funding policy research events"
+  ],
+  "llm_gap_audit_queries": [
+    "未来健康产业大会 合成生物学创新产业峰会 2026",
+    "中国创新创业大赛 合成生物 生物制造 专业赛 2026",
+    "石龙 诺赫 合成生物 产业园 开园",
+    "中欧生命科学 国际论坛 核酸合成生物学 会议 2026",
+    "华东理工 璧山 生物制造 中试平台 建成投用",
+    "深圳先进院 金帆 Nature Cell 定量合成生物学"
   ],
   "negative_guidance": [
     "不要把自然生物学、普通医学信号通路、普通化学合成或非工程化生物过程当成合成生物新闻",

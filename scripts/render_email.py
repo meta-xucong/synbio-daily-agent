@@ -28,7 +28,7 @@ def render_email_html(items: list[dict[str, Any]], date_str: str, limit: int = 5
             f'<p>{summary}</p></li>'
         )
     if not rows:
-        rows.append('<li>经五轮检索，本周期暂无相关新信息收录。</li>')
+        rows.append('<li>经完整检索，本周期暂无相关新信息收录。</li>')
     return (
         '<!doctype html><html lang="zh-CN"><body>'
         f"<h1>合成生物行业日报 - {safe_text(date_str)}</h1>"

@@ -15,14 +15,38 @@ $env:SYNBIO_DAILY_TZ = "Asia/Shanghai"
 
 ## 处理原始数据
 
-生产运行应先生成 LLM 动态搜索策略，执行基座 query + 动态 query 后，从结构化搜索日志自动生成 raw，避免人工挑选遗漏搜索结果；然后从完整 raw dict 生成 processed/approved/rejected，并在写出 approved 前剔除打不开或疑似删除的链接：
+生产运行应优先使用统一入口，避免人工或 Kimiwork 跳过任一 gate：
+
+```powershell
+python scripts\run_daily_pipeline.py --date 2026-06-11 --provider auto --send --send-mode auto
+```
+
+只做 dry-run 验证时去掉 `--send`。人工排障时才逐步执行下面命令：先生成 LLM 动态搜索策略，执行基座 query + 动态 query + `llm_discovery` + `llm_gap_audit` 后，从结构化搜索日志自动生成 raw，避免人工挑选遗漏搜索结果；然后从完整 raw dict 生成 processed/approved/rejected，并在写出 approved 前剔除打不开或疑似删除的链接：
 
 ```powershell
 python scripts\llm_search_strategy.py --date 2026-06-11 --output data\search_strategy_2026-06-11.json --mode llm
+python scripts\search_executor.py --date 2026-06-11 --strategy data\search_strategy_2026-06-11.json --output data\search_log_2026-06-11.json --provider auto --limit 15
 python scripts\report_pipeline.py --build-raw-from-search data\search_log_2026-06-11.json --date 2026-06-11 --output data\raw_2026-06-11.json
 python scripts\audit_search_log.py data\search_log_2026-06-11.json --raw data\raw_2026-06-11.json --search-strategy data\search_strategy_2026-06-11.json
 python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --date 2026-06-11 --output data --search-log data\search_log_2026-06-11.json --search-strategy data\search_strategy_2026-06-11.json
 ```
+
+`search_executor.py` 会实际执行 `config/search_queries.json` 的 r1-r6 基座 query、`search_strategy` 的 LLM 动态 query，并追加 `llm_discovery` / `llm_gap_audit` 两个高召回轮次；这两个高召回轮次默认必须使用 Kimi/Anthropic-compatible `llm_web`。生产环境必须同时配置：
+
+1. 至少一个 fast search provider，用于 r1-r6 基础搜索和 LLM 动态 query：Serper、Brave、Bing 或 Tavily。
+2. Kimi/Anthropic-compatible LLM，用于 health check、search_strategy、LLM relevance gate，以及 `llm_discovery` / `llm_gap_audit`。
+
+没有 fast search provider，`--provider auto` 会直接 fail-closed，不会把几十上百条基础查询 fallback 到慢速 `llm_web`。没有真实 LLM web_search 工具结果时也必须失败，不得手工把未执行的 query 标为 `executed: true`。
+
+```powershell
+$env:SERPER_API_KEY = "<serper key>"
+$env:BRAVE_SEARCH_API_KEY = "<brave search key>"
+$env:BING_SEARCH_API_KEY = "<bing web search key>"
+$env:TAVILY_API_KEY = "<tavily key>"
+$env:ANTHROPIC_AUTH_TOKEN = "<kimi/anthropic-compatible key>" # required for LLM + llm_web high-recall rounds
+```
+
+默认 `--provider auto` 只按 Serper → Brave → Bing → Tavily 选择基础搜索 provider。`llm_web` 使用 Anthropic-compatible `web_search_20250305` server tool，可复用 Kimi/Claude-code 兼容 API，但只用于 `llm_discovery` / `llm_gap_audit` 少量高召回补盲；如果模型没有真实返回 `web_search_tool_result`，脚本会非 0 退出。离线测试才允许 `--provider fixture --fixture <json>`；人工诊断才允许 `--allow-llm-web-base`，正式发送严禁使用。
 
 该命令会写出：
 
@@ -34,7 +58,7 @@ python scripts\report_pipeline.py --build-approved data\raw_2026-06-11.json --da
 - `data/approved_YYYY-MM-DD.json`
 - `data/rejected_YYYY-MM-DD.json`
 
-生产数据还必须包含 `data/search_log_YYYY-MM-DD.json`，记录 `config/search_queries.json` 中 `r1` 到 `r5` 的全部 required query 和候选证据。建议 search_log 中保留结构化搜索结果（`title/url/snippet/source/date`），并用 `--build-raw-from-search` 自动写入 raw。raw 中每条候选必须带 `source_round`，否则 `--search-log` 和发送前 `pre_check` 都会阻断。
+生产数据还必须包含 `data/search_log_YYYY-MM-DD.json`，记录 `config/search_queries.json` 中 `r1` 到 `r6` 的全部 required query、`llm_discovery` / `llm_gap_audit` 执行证据、`generated_by=search_executor` 和 `limit>=15`。建议 search_log 中保留结构化搜索结果（`title/url/snippet/source/date`），并用 `--build-raw-from-search` 自动写入 raw。raw 中每条候选必须带 `source_round`，否则 `--search-log` 和发送前 `pre_check` 都会阻断。
 
 `--process` 仍支持完整 raw dict 或单类别 list，但主要用于调试单个类别：
 
@@ -70,6 +94,7 @@ python scripts\report_pipeline.py --process data\raw_2026-06-11.json --type news
 - `value_score` 为 0-10，`raw_score` 保留原始分
 - approved schema 必须包含 `title/source/date/summary/url/type/raw_score/value_score`，日期、类别、URL和分数范围都会在发送前再次校验
 - 链接健康和标题-URL匹配在 `--build-approved` 默认开启；仅离线测试或临时排障可用 `--skip-url-health` / `--skip-title-match` 显式关闭
+- 页面日期验证在 `--build-approved` 默认开启；正式发送时 approved 必须带可信 `date_verification`，不能只使用搜索引擎日期或抓取日期兜底
 - LLM 领域审计在 `--build-approved` 默认以 `--llm-relevance-mode auto` 开启；当环境变量 `ANTHROPIC_BASE_URL` 与 `ANTHROPIC_AUTH_TOKEN` 存在时调用 Anthropic-compatible provider 做语义审稿，未配置时使用本地 fallback 拦截明显跑题信息
 - 正式运行不要使用 `--llm-relevance-mode off`；离线测试可临时使用 `heuristic` 或 `off`，但必须在测试记录中说明
 - 必搜 query 与 search_log 候选 URL 覆盖在 `--build-approved` 强制开启；如果需要人工丢弃某条结果，应先让它进入 raw，再由 rejected 记录拒绝原因。
@@ -112,7 +137,7 @@ python scripts\report_pipeline.py --full-validate reports\2026-06-11.md --email 
 必须满足：
 
 - 8 个固定板块全部保留
-- 无信息板块写明：`经五轮检索，本周期暂无相关新信息收录。`
+- 无信息板块写明：`经完整检索，本周期暂无相关新信息收录。`
 - AI 分析只引用正文已收录实体和数字
 - 附录链接来自 approved 数据
 

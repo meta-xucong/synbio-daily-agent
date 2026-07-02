@@ -14,6 +14,31 @@ import generate_from_template
 import report_pipeline
 
 
+def _add_llm_trace(item: dict) -> dict:
+    enriched = dict(item)
+    enriched.setdefault("search_date", enriched.get("date", "2026-06-10"))
+    enriched.setdefault("date_source", "page_verified")
+    enriched.setdefault("date_verification", {
+        "verified_date": enriched.get("date", "2026-06-10"),
+        "confidence": "high",
+        "source": "meta/body",
+        "url": enriched.get("url", ""),
+    })
+    enriched.setdefault("verified_date", enriched.get("date", "2026-06-10"))
+    enriched.setdefault("llm_relevance", {
+        "is_approved": True,
+        "domain_relevance": "core_synbio",
+        "confidence": 0.9,
+        "reason": "含合成生物/生物制造证据",
+        "evidence_spans": ["合成生物", "生物制造"],
+        "section": enriched.get("type", "news"),
+        "provider": "llm-test",
+    })
+    enriched.setdefault("domain_relevance", enriched["llm_relevance"]["domain_relevance"])
+    enriched.setdefault("confidence", enriched["llm_relevance"]["confidence"])
+    return enriched
+
+
 def _write_runtime_tree(
     tmp_path: Path,
     report_name: str = "valid_report.md",
@@ -47,20 +72,36 @@ def _write_runtime_tree(
             "value_score": 8,
         }
     ]
+    approved = [_add_llm_trace(item) for item in approved]
     (tmp_path / "data" / f"approved_{date_str}.json").write_text(json.dumps(approved, ensure_ascii=False), encoding="utf-8")
     raw = {"news": approved, "research": [], "funding": [], "policy": [], "events": []}
     (tmp_path / "data" / f"raw_{date_str}.json").write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    approved_urls = [item["url"] for item in approved]
     search_log = {
+        "version": 1,
         "date": date_str,
+        "generated_by": "search_executor",
+        "provider": "llm_web",
+        "llm_discovery_provider": "llm_web",
+        "high_recall_enabled": True,
+        "required_high_recall_rounds": ["llm_discovery", "llm_gap_audit"],
+        "limit": 15,
         "rounds": [
-            {"round": "r1", "queries": ["synthetic biology funding 2026"], "candidates": ["https://example.com/news/xinghe"]},
-            {"round": "r2", "queries": ["synthetic biology research 2026"], "candidates": []},
-            {"round": "r3", "queries": ["synthetic biology policy 2026"], "candidates": []},
-            {"round": "r4", "queries": ["synthetic biology events 2026"], "candidates": []},
-            {"round": "r5", "queries": ["synthetic biology China 2026"], "candidates": []},
+            {"round": "r1", "queries": [{"query": "synthetic biology funding 2026", "executed": True, "provider": "llm_web"}], "candidates": approved_urls},
+            {"round": "r2", "queries": [{"query": "synthetic biology research 2026", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "r3", "queries": [{"query": "synthetic biology policy 2026", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "r4", "queries": [{"query": "synthetic biology events 2026", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "r5", "queries": [{"query": "synthetic biology China 2026", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "llm_dynamic", "queries": [{"query": "synthetic biology dynamic validation 2026", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "llm_discovery", "queries": [{"query": "recent synthetic biology discovery", "executed": True, "provider": "llm_web", "web_search_tool_result": True}], "candidates": []},
+            {"round": "llm_gap_audit", "queries": [{"query": "synthetic biology gap audit", "executed": True, "provider": "llm_web", "web_search_tool_result": True}], "candidates": []},
         ],
     }
     (tmp_path / "data" / f"search_log_{date_str}.json").write_text(json.dumps(search_log, ensure_ascii=False), encoding="utf-8")
+    search_strategy = {
+        "queries": [{"query": "synthetic biology dynamic validation 2026", "required": True}]
+    }
+    (tmp_path / "data" / f"search_strategy_{date_str}.json").write_text(json.dumps(search_strategy, ensure_ascii=False), encoding="utf-8")
     query_config = {
         "rounds": [
             {"round_id": "r1", "required_queries": ["synthetic biology funding 2026"]},
@@ -283,6 +324,30 @@ def test_send_gate_blocks_missing_search_log(tmp_path, monkeypatch):
 
     assert not result["passed"]
     assert any("搜索日志不存在" in error for error in result["errors"])
+
+
+def test_send_gate_blocks_missing_search_strategy(tmp_path, monkeypatch):
+    md, html = _write_runtime_tree(tmp_path)
+    (tmp_path / "data" / "search_strategy_2026-06-10.json").unlink()
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+
+    result = send_email.validate_send_gate("2026-06-10", md, html, check_url_health=False)
+
+    assert not result["passed"]
+    assert any("LLM搜索策略缺失" in error for error in result["errors"])
+
+
+def test_send_gate_blocks_empty_approved(tmp_path, monkeypatch):
+    md, html = _write_runtime_tree(tmp_path)
+    (tmp_path / "data" / "approved_2026-06-10.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(send_email, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(send_email, "DATA_DIR", tmp_path / "data")
+
+    result = send_email.validate_send_gate("2026-06-10", md, html, check_url_health=False)
+
+    assert not result["passed"]
+    assert any("approved为空" in error for error in result["errors"])
 
 
 def test_send_gate_blocks_when_all_approved_urls_were_already_sent(tmp_path, monkeypatch):

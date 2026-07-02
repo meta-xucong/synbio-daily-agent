@@ -53,18 +53,33 @@ def test_count_raw_items_counts_full_category_dict():
 
 def _search_log():
     return {
+        "version": 1,
         "date": "2026-06-10",
+        "generated_by": "search_executor",
+        "provider": "llm_web",
+        "llm_discovery_provider": "llm_web",
+        "high_recall_enabled": True,
+        "required_high_recall_rounds": ["llm_discovery", "llm_gap_audit"],
+        "limit": 15,
         "rounds": [
-            {"round": "r1", "queries": ["synthetic biology funding"], "candidates": ["https://example.com/news/yeast-platform"]},
-            {"round": "r2", "queries": ["synthetic biology research"], "candidates": []},
-            {"round": "r3", "queries": ["synthetic biology policy"], "candidates": []},
-            {"round": "r4", "queries": ["synthetic biology events"], "candidates": []},
-            {"round": "r5", "queries": ["synthetic biology China"], "candidates": []},
+            {"round": "r1", "queries": [{"query": "synthetic biology funding", "executed": True, "provider": "llm_web"}], "candidates": ["https://example.com/news/yeast-platform"]},
+            {"round": "r1b", "queries": [{"query": "synthetic biology peptide protein", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "r2", "queries": [{"query": "synthetic biology research", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "r3", "queries": [{"query": "synthetic biology policy", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "r4", "queries": [{"query": "synthetic biology events", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "r5", "queries": [{"query": "synthetic biology China", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "r6", "queries": [{"query": "biomanufacturing news", "executed": True, "provider": "llm_web"}], "candidates": []},
+            {"round": "llm_discovery", "queries": [{"query": "recent synthetic biology discovery", "executed": True, "provider": "llm_web", "web_search_tool_result": True}], "candidates": []},
+            {"round": "llm_gap_audit", "queries": [{"query": "synthetic biology gap audit", "executed": True, "provider": "llm_web", "web_search_tool_result": True}], "candidates": []},
         ],
     }
 
 
-def test_validate_search_log_requires_five_rounds_and_raw_traceability():
+def _round(log, round_id):
+    return next(item for item in log["rounds"] if item["round"] == round_id)
+
+
+def test_validate_search_log_requires_configured_rounds_and_raw_traceability():
     raw = {
         "news": [_item(type="news", source_round="r1")],
         "research": [],
@@ -76,8 +91,8 @@ def test_validate_search_log_requires_five_rounds_and_raw_traceability():
     result = report_pipeline.validate_search_log(_search_log(), raw)
 
     assert result["is_valid"], result["errors"]
-    assert result["rounds_seen"] == ["r1", "r2", "r3", "r4", "r5"]
-    assert result["total_queries"] == 5
+    assert {"r1", "r1b", "r2", "r3", "r4", "r5", "r6"} <= set(result["rounds_seen"])
+    assert result["total_queries"] == 9
     assert result["warnings"]
 
 
@@ -108,8 +123,16 @@ def test_validate_search_log_allows_empty_raw_when_rounds_have_queries():
     result = report_pipeline.validate_search_log(_search_log(), raw)
 
     assert result["is_valid"], result["errors"]
-    assert set(result["rounds_seen"]) == {"r1", "r2", "r3", "r4", "r5"}
+    assert {"r1", "r1b", "r2", "r3", "r4", "r5", "r6"} <= set(result["rounds_seen"])
     assert "raw数据缺少source_round" not in ";".join(result["errors"])
+
+
+def test_configured_required_search_rounds_uses_legacy_fallback_when_config_missing(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {})
+
+    assert report_pipeline.configured_required_search_rounds() == {
+        "r1", "r1b", "r2", "r3", "r4", "r5", "r6"
+    }
 
 
 def test_validate_search_log_blocks_missing_required_queries(monkeypatch):
@@ -145,8 +168,8 @@ def test_validate_search_log_passes_when_all_required_queries_present(monkeypatc
         ]
     })
     log = _search_log()
-    log["rounds"][1]["queries"] = [{"query": "site:synbiobeta.com synthetic biology 2026", "executed": True, "results_count": 0}]
-    log["rounds"][4]["queries"] = [{"query": "site:kw.beijing.gov.cn 合成生物", "executed": True, "results_count": 0}]
+    log["rounds"][2]["queries"] = [{"query": "site:synbiobeta.com synthetic biology 2026", "executed": True, "results_count": 0, "provider": "llm_web"}]
+    log["rounds"][5]["queries"] = [{"query": "site:kw.beijing.gov.cn 合成生物", "executed": True, "results_count": 0, "provider": "llm_web"}]
     log["rounds"][0]["candidates"] = []
     raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
 
@@ -182,7 +205,7 @@ def test_validate_search_log_accepts_candidate_source_query_legacy_format(monkey
     }
     raw = report_pipeline.build_raw_from_search_log(log, report_date="2026-06-18")
 
-    result = report_pipeline.validate_search_log(log, raw, strict_coverage=True)
+    result = report_pipeline.validate_search_log(log, raw, strict_coverage=False)
 
     assert result["is_valid"], result["errors"]
     assert result["total_queries"] == 5
@@ -194,7 +217,7 @@ def test_validate_search_log_blocks_required_query_executed_false(monkeypatch):
         "rounds": [{"round_id": "r5", "required_queries": ["site:kw.beijing.gov.cn 合成生物"]}]
     })
     log = _search_log()
-    log["rounds"][4]["queries"] = [{
+    _round(log, "r5")["queries"] = [{
         "query": "site:kw.beijing.gov.cn 合成生物",
         "executed": False,
         "error": "timeout",
@@ -206,6 +229,62 @@ def test_validate_search_log_blocks_required_query_executed_false(monkeypatch):
     assert not result["is_valid"]
     assert "必需查询未成功执行" in ";".join(result["errors"])
     assert "timeout" in ";".join(result["errors"])
+
+
+def test_validate_search_log_blocks_required_query_marked_true_but_note_says_unexecuted(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r5", "required_queries": ["site:kw.beijing.gov.cn 合成生物"]}]
+    })
+    log = _search_log()
+    _round(log, "r5")["queries"] = [{
+        "query": "site:kw.beijing.gov.cn 合成生物",
+        "executed": True,
+        "notes": "原始原因: 未执行（时间/资源限制）",
+    }]
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(log, raw, strict_coverage=True)
+
+    assert not result["is_valid"]
+    assert "未执行" in ";".join(result["errors"])
+
+
+def test_validate_search_log_strict_blocks_manual_log_even_with_queries(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r1", "required_queries": ["synthetic biology funding"]}]
+    })
+    log = _search_log()
+    log.pop("generated_by")
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(
+        log,
+        raw,
+        strict_coverage=True,
+        search_strategy={"queries": [{"query": "recent synthetic biology discovery", "required": True}]},
+    )
+
+    assert not result["is_valid"]
+    assert any("generated_by" in error for error in result["errors"])
+
+
+def test_validate_search_log_strict_blocks_missing_high_recall_rounds(monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r1", "required_queries": ["synthetic biology funding"]}]
+    })
+    log = _search_log()
+    log["rounds"] = [round_entry for round_entry in log["rounds"] if not round_entry["round"].startswith("llm_")]
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    result = report_pipeline.validate_search_log(
+        log,
+        raw,
+        strict_coverage=True,
+        search_strategy={"queries": [{"query": "synthetic biology funding", "required": True}]},
+    )
+
+    assert not result["is_valid"]
+    assert any("高召回LLM搜索轮次" in error for error in result["errors"])
 
 
 def test_validate_search_log_warns_when_required_query_config_missing(monkeypatch):
@@ -488,6 +567,7 @@ def test_build_approved_blocks_search_coverage_gap(tmp_path, monkeypatch):
             "2026-06-18",
             output_dir=tmp_path,
             search_log=log,
+            search_strategy={"queries": []},
             check_url_health_enabled=False,
             check_title_match_enabled=False,
         )
@@ -511,6 +591,7 @@ def test_build_approved_defaults_to_strict_required_query_gate(tmp_path, monkeyp
             "2026-06-18",
             output_dir=tmp_path,
             search_log=_search_log(),
+            search_strategy={"queries": []},
             check_url_health_enabled=False,
             check_title_match_enabled=False,
         )
@@ -534,6 +615,7 @@ def test_build_approved_enforces_required_query_gate_strictly(tmp_path, monkeypa
             "2026-06-18",
             output_dir=tmp_path,
             search_log=_search_log(),
+            search_strategy={"queries": []},
             check_url_health_enabled=False,
             check_title_match_enabled=False,
         )
@@ -584,8 +666,11 @@ def test_report_pipeline_cli_build_raw_from_search(tmp_path):
 def test_build_approved_blocks_invalid_search_log(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
+        "rounds": [{"round_id": "r1", "required_queries": ["synthetic biology funding"]}]
+    })
     raw = {
-        "news": [_item(type="news", source_round="r6")],
+        "news": [_item(type="news", source_round="r999")],
         "research": [],
         "funding": [],
         "policy": [],
@@ -598,14 +683,36 @@ def test_build_approved_blocks_invalid_search_log(tmp_path, monkeypatch):
             "2026-06-10",
             output_dir=tmp_path,
             search_log=_search_log(),
+            search_strategy={"queries": [{"query": "recent synthetic biology discovery", "required": True}]},
             check_url_health_enabled=False,
             check_title_match_enabled=False,
         )
     except ValueError as exc:
         assert "search_log校验失败" in str(exc)
+        assert "search_log invalid" in str(exc)
         assert "未记录的source_round" in str(exc)
     else:
         raise AssertionError("invalid search_log should fail build-approved")
+
+
+def test_build_approved_requires_search_strategy_with_search_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
+    try:
+        report_pipeline.build_approved_from_raw(
+            raw,
+            "2026-06-10",
+            output_dir=tmp_path,
+            search_log=_search_log(),
+            check_url_health_enabled=False,
+            check_title_match_enabled=False,
+        )
+    except ValueError as exc:
+        assert "LLM搜索策略缺失" in str(exc)
+    else:
+        raise AssertionError("search_log without same-day search_strategy should fail closed")
 
 
 def test_process_raw_data_rejects_missing_required_fields_and_backfills_type(monkeypatch):
@@ -631,6 +738,70 @@ def test_process_raw_data_rejects_type_category_mismatch(monkeypatch):
     assert "type mismatch" in result["rejected"][0]["reason"]
 
 
+def test_process_raw_data_reclassifies_event_before_rejecting(monkeypatch):
+    monkeypatch.setenv("SYNBIO_DAILY_NOW", "2026-06-29T12:00:00+08:00")
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {"version": 1, "registry": {}})
+    result = report_pipeline.process_raw_data([
+        _item(
+            title="2026 Synthetic Biology: Engineering, Evolution, & Design (SEED)",
+            source="synbioconference.org",
+            date="2026-06-15",
+            summary="Synthetic biology conference and meeting.",
+            url="https://synbioconference.org/2026",
+            type="funding",
+        )
+    ], "funding")
+
+    assert result["stats"]["approved"] == 0
+    assert result["stats"]["schema_rejected"] == 0
+    assert result["rejected"][0]["item"]["type"] == "events"
+    assert result["rejected"][0]["item"]["reclassified_from"] == "funding"
+
+
+def test_process_raw_data_reclassifies_old_stock_concept_as_news(monkeypatch):
+    monkeypatch.setenv("SYNBIO_DAILY_NOW", "2026-06-29T12:00:00+08:00")
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {"version": 1, "registry": {}})
+    result = report_pipeline.process_raw_data([
+        _item(
+            title="概念动态|华宝股份新增“合成生物”概念",
+            source="同花顺iNews",
+            date="2026-06-18",
+            summary="公司已选定核心品类推进合成生物学战略落地。",
+            url="https://m.10jqka.com.cn/20260618/c677569597.shtml",
+            type="funding",
+        )
+    ], "funding")
+
+    assert result["stats"]["approved"] == 0
+    assert result["stats"]["schema_rejected"] == 0
+    assert result["rejected"][0]["item"]["type"] == "news"
+    assert "[时效性]" in result["rejected"][0]["reason"]
+
+
+def test_process_raw_data_reclassifies_recoded_ecoli_as_research(monkeypatch):
+    monkeypatch.setenv("SYNBIO_DAILY_NOW", "2026-06-29T12:00:00+08:00")
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    result = report_pipeline.process_raw_data([
+        _item(
+            title="Recoded E. coli Promises More Scalable Weight Loss Drug Production",
+            source="GEN",
+            date="2026-06-24",
+            summary="...",
+            url="https://example.com/research/recoded-ecoli-glp1",
+            type="news",
+            source_query="site:genengnews.com synthetic biology biomanufacturing",
+        )
+    ], "news")
+
+    assert result["stats"]["approved"] == 1
+    assert result["approved"][0]["type"] == "research"
+    assert result["approved"][0]["reclassified_from"] == "news"
+
+
 def test_process_raw_data_rejects_policy_bucket_non_policy_content(monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     result = report_pipeline.process_raw_data([
@@ -651,8 +822,9 @@ def test_process_raw_data_rejects_policy_bucket_non_policy_content(monkeypatch):
     ], "policy")
 
     assert result["stats"]["approved"] == 1
-    assert result["stats"]["schema_rejected"] == 1
-    assert "type content mismatch" in result["rejected"][0]["reason"]
+    assert result["stats"]["schema_rejected"] == 0
+    assert result["stats"]["content_type_rejected"] == 1
+    assert "市场研究" in result["rejected"][0]["reason"]
 
 
 def test_policy_classifier_allows_gov_cn_plan_report_and_association_repost(monkeypatch):
@@ -710,11 +882,15 @@ def test_category_filter_allows_article_paths_and_blocks_aggregate_pages():
     assert not report_pipeline._is_category_or_aggregate_url("https://example.com/events/synbio-forum-2026")
     assert not report_pipeline._is_category_or_aggregate_url("https://example.com/article/123?q=source")
     assert not report_pipeline._is_category_or_aggregate_url("https://mp.weixin.qq.com/s/example-article")
+    assert not report_pipeline._is_category_or_aggregate_url(
+        "https://www.genengnews.com/topics/bioprocessing/recoded-e-coli-promises-more-scalable-weight-loss-drug-production/"
+    )
     assert not report_pipeline._is_category_or_aggregate_url("https://isynbio.siat.ac.cn/siat/2026-06/18/article_2026061810313229176.html")
     assert not report_pipeline._is_category_or_aggregate_url("https://synbio.suat-sz.edu.cn/index/zxcg.htm")
     assert not report_pipeline._is_category_or_aggregate_url("https://example.edu.cn/research/publications.html")
     assert not report_pipeline._is_category_or_aggregate_url("https://example.ac.cn/papers.html")
     assert report_pipeline._is_category_or_aggregate_url("https://example.com/news")
+    assert report_pipeline._is_category_or_aggregate_url("https://www.genengnews.com/topics/bioprocessing/")
     assert report_pipeline._is_category_or_aggregate_url("https://isynbio.siat.ac.cn/")
     assert report_pipeline._is_category_or_aggregate_url("https://isynbio.siat.ac.cn/index.html")
     assert report_pipeline._is_category_or_aggregate_url("https://example.com/category/synthetic-biology")
@@ -922,6 +1098,17 @@ def _write_full_validate_inputs(tmp_path, report_name="valid_report.md", email_n
         "date": approved_date,
         "raw_score": 18,
         "value_score": 6.0,
+        "llm_relevance": {
+            "is_approved": True,
+            "domain_relevance": "core_synbio",
+            "confidence": 0.9,
+            "reason": "含合成生物制造平台扩产证据",
+            "evidence_spans": ["合成生物制造平台扩产"],
+            "section": "news",
+            "provider": "llm-test",
+        },
+        "domain_relevance": "core_synbio",
+        "confidence": 0.9,
     }], ensure_ascii=False), encoding="utf-8")
     email = tmp_path / email_name
     email.write_text(
@@ -1005,6 +1192,58 @@ def test_run_full_validation_blocks_approved_type_timeliness():
 
     assert not result["can_send_email"]
     assert result["approved_timeliness_check"]["has_errors"]
+
+
+def test_run_full_validation_blocks_empty_approved():
+    report = str(ROOT / "tests" / "fixtures" / "valid_report.md")
+    email = '<span class="num">0</span>'
+
+    result = report_pipeline.run_full_validation(report, email, [])
+
+    assert not result["can_send_email"]
+    assert not result["approved_llm_trace_check"]["is_valid"]
+    assert any("approved为空" in item for item in result["fix_instructions"])
+
+
+def test_run_full_validation_blocks_missing_llm_trace():
+    report = str(ROOT / "tests" / "fixtures" / "valid_report.md")
+    email = '<span class="num">1</span><span class="num">2</span><span class="num">3</span><span class="num">4</span><span class="num">5</span><div class="card-title">星河生物完成数千万元 pre-A 轮融资</div><a href="https://example.com/news/xinghe">查看</a>'
+    approved = [{
+        "title": "星河生物完成数千万元 pre-A 轮融资",
+        "source": "SynBioBeta",
+        "url": "https://example.com/news/xinghe",
+        "summary": "星河生物完成数千万元 pre-A 轮融资，用于合成生物制造平台扩产。",
+        "type": "news",
+        "date": "2026-06-10",
+        "raw_score": 18,
+        "value_score": 6.0,
+    }]
+
+    result = report_pipeline.run_full_validation(report, email, approved)
+
+    assert not result["can_send_email"]
+    assert any("缺少LLM领域审计痕迹" in item for item in result["fix_instructions"])
+
+
+def test_validate_approved_date_verification_blocks_search_fallback():
+    result = report_pipeline.validate_approved_date_verification([{
+        "title": "合成生物产业园开园",
+        "source": "测试源",
+        "date": "2026-07-01",
+        "summary": "合成生物产业园开园。",
+        "url": "https://example.com/news/park",
+        "type": "news",
+        "source_round": "r1",
+        "source_query": "合成生物 产业园",
+        "date_verification": {
+            "verified_date": "2026-07-01",
+            "confidence": "low",
+            "source": "search_fallback",
+        },
+    }])
+
+    assert not result["is_valid"]
+    assert "搜索日期兜底" in ";".join(result["errors"])
 
 
 def test_validate_approved_schema_blocks_bad_urls_and_type_mismatch():

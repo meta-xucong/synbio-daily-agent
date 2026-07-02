@@ -9,11 +9,23 @@ import json
 try:
     from .settings import DATA_DIR, date_str as current_date_str
     from .console_utils import ensure_utf8_console
-    from .report_pipeline import LOW_APPROVED_COUNT_WARNING, find_default_search_strategy_path, validate_search_log
+    from .report_pipeline import (
+        EMPTY_APPROVED_ERROR,
+        find_default_search_strategy_path,
+        validate_approved_date_verification,
+        validate_approved_llm_trace,
+        validate_search_log,
+    )
 except ImportError:
     from settings import DATA_DIR, date_str as current_date_str
     from console_utils import ensure_utf8_console
-    from report_pipeline import LOW_APPROVED_COUNT_WARNING, find_default_search_strategy_path, validate_search_log
+    from report_pipeline import (
+        EMPTY_APPROVED_ERROR,
+        find_default_search_strategy_path,
+        validate_approved_date_verification,
+        validate_approved_llm_trace,
+        validate_search_log,
+    )
 
 ensure_utf8_console()
 
@@ -46,10 +58,10 @@ def pre_check(date_str: str) -> dict:
         except Exception as e:
             errors.append(f"❌ 原始数据JSON格式错误: {raw_path} ({e})")
 
-    # 检查1.5: 搜索日志存在且覆盖五轮搜索
+    # 检查1.5: 搜索日志存在且覆盖基座必搜和LLM高召回搜索
     search_log_path = DATA_DIR / f"search_log_{date_str}.json"
     if not search_log_path.exists():
-        errors.append(f"❌ 搜索日志不存在: {search_log_path} → 必须记录五轮搜索query和采集证据")
+        errors.append(f"❌ 搜索日志不存在: {search_log_path} → 必须记录基座必搜、LLM高召回query和采集证据")
     else:
         try:
             with open(search_log_path, 'r', encoding='utf-8') as f:
@@ -64,6 +76,7 @@ def pre_check(date_str: str) -> dict:
                 raw_data,
                 strict_coverage=True,
                 search_strategy=search_strategy,
+                require_search_strategy=True,
             )
             if not search_log_result["is_valid"]:
                 errors.extend([f"❌ 搜索日志不合规: {e}" for e in search_log_result["errors"]])
@@ -93,10 +106,14 @@ def pre_check(date_str: str) -> dict:
             with open(approved_path, 'r', encoding='utf-8') as f:
                 approved = json.load(f)
             print(f"✅ approved数据已保存: {len(approved)} 条信息")
-            if len(approved) < LOW_APPROVED_COUNT_WARNING:
-                warnings.append(
-                    f"⚠️ approved数量偏低: {len(approved)}条。请复查 search_log 原始搜索结果，确认没有漏收重要信息"
-                )
+            llm_trace = validate_approved_llm_trace(approved)
+            if not llm_trace["is_valid"]:
+                errors.extend([f"❌ {error}" for error in llm_trace["errors"]])
+            warnings.extend([f"⚠️ {warning}" for warning in llm_trace.get("warnings", [])])
+            date_trace = validate_approved_date_verification(approved)
+            if not date_trace["is_valid"]:
+                errors.extend([f"❌ {error}" for error in date_trace["errors"]])
+            warnings.extend([f"⚠️ {warning}" for warning in date_trace.get("warnings", [])])
         except Exception as e:
             errors.append(f"❌ approved数据格式错误: {approved_path} ({e})")
     

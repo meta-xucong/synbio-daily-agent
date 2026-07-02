@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -33,6 +34,16 @@ DEFAULT_CONFIG_PATH = CONFIG_DIR / "llm_search_strategy.json"
 VALID_SECTIONS = {"news", "research", "funding", "policy", "events"}
 VALID_PRIORITIES = {"high", "medium", "low"}
 DEFAULT_STRATEGY_MAX_TOKENS = 6000
+DEFAULT_STRATEGY_TIMEOUT_SECONDS = 90
+DEFAULT_STRATEGY_RETRIES = 3
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name) or default)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
 
 
 class StrategyClient(Protocol):
@@ -87,40 +98,68 @@ class MessagesTextClient:
     def complete(self, prompt: str) -> str:
         if not self.llm_client.is_configured:
             raise RuntimeError("LLM provider is not configured")
-        try:
-            max_tokens = int(os.getenv("ANTHROPIC_SEARCH_STRATEGY_MAX_TOKENS") or DEFAULT_STRATEGY_MAX_TOKENS)
-        except ValueError:
-            max_tokens = DEFAULT_STRATEGY_MAX_TOKENS
+        max_tokens = _positive_int_env("ANTHROPIC_SEARCH_STRATEGY_MAX_TOKENS", DEFAULT_STRATEGY_MAX_TOKENS)
+        timeout = _positive_int_env(
+            "ANTHROPIC_SEARCH_STRATEGY_TIMEOUT",
+            max(DEFAULT_STRATEGY_TIMEOUT_SECONDS, int(self.llm_client.timeout or 0)),
+        )
+        retries = _positive_int_env("ANTHROPIC_SEARCH_STRATEGY_RETRIES", DEFAULT_STRATEGY_RETRIES)
         payload = {
             "model": self.llm_client.model,
             "max_tokens": max_tokens,
             "temperature": 0,
             "messages": [{"role": "user", "content": prompt}],
         }
-        request = Request(
-            self.llm_client.messages_url,
-            data=json.dumps(payload, ensure_ascii=self.llm_client.use_ascii_prompts).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json; charset=utf-8",
-                "x-api-key": self.llm_client.auth_token or "",
-                "Authorization": f"Bearer {self.llm_client.auth_token or ''}",
-                "anthropic-version": "2023-06-01",
-            },
-            method="POST",
-        )
-        with self.llm_client.opener(request, timeout=self.llm_client.timeout) as response:
-            body = response.read().decode("utf-8", errors="replace")
-        parsed = json.loads(body)
-        content = parsed.get("content")
-        if isinstance(content, list):
-            return "\n".join(
-                str(part.get("text", ""))
-                for part in content
-                if isinstance(part, dict)
+        if _llm_client_supports_thinking_disable(self.llm_client):
+            payload["thinking"] = {"type": "disabled"}
+        last_error: Exception | None = None
+        for attempt in range(1, retries + 1):
+            request = Request(
+                self.llm_client.messages_url,
+                data=json.dumps(payload, ensure_ascii=self.llm_client.use_ascii_prompts).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    "x-api-key": self.llm_client.auth_token or "",
+                    "Authorization": f"Bearer {self.llm_client.auth_token or ''}",
+                    "anthropic-version": "2023-06-01",
+                },
+                method="POST",
             )
-        if isinstance(content, str):
-            return content
-        return str(parsed.get("text") or body)
+            try:
+                with self.llm_client.opener(request, timeout=timeout) as response:
+                    body = response.read().decode("utf-8", errors="replace")
+                parsed = json.loads(body)
+                content = parsed.get("content")
+                if isinstance(content, list):
+                    text = "\n".join(
+                        str(part.get("text", ""))
+                        for part in content
+                        if isinstance(part, dict) and part.get("text") is not None
+                    ).strip()
+                    if text:
+                        return text
+                    block_types = [
+                        str(part.get("type") or "<unknown>")
+                        for part in content
+                        if isinstance(part, dict)
+                    ]
+                    stop_reason = str(parsed.get("stop_reason") or "")
+                    raise RuntimeError(
+                        "LLM search strategy response contained no text blocks "
+                        f"(stop_reason={stop_reason or 'unknown'}, content_types={block_types})"
+                    )
+                if isinstance(content, str):
+                    return content
+                text = str(parsed.get("text") or "").strip()
+                if text:
+                    return text
+                raise RuntimeError("LLM search strategy response contained no text")
+            except Exception as exc:
+                last_error = exc
+                if attempt >= retries:
+                    break
+                time.sleep(min(2, attempt))
+        raise last_error or RuntimeError("LLM search strategy request failed")
 
 
 def normalize_query_text(query: Any) -> str:
@@ -336,6 +375,200 @@ def build_strategy_prompt(
     )
 
 
+def build_compact_strategy_prompt(
+    report_date: str,
+    config: dict[str, Any],
+    recent_titles: list[dict[str, str]] | None = None,
+    base_search_summary: dict[str, Any] | None = None,
+    ascii_safe: bool = False,
+) -> str:
+    """Build a short JSON-only retry prompt for providers with small output caps.
+
+    Some Anthropic-compatible Kimi gateways spend the available output budget on
+    internal ``thinking`` blocks when the full planning prompt is large.  This
+    compact prompt keeps only the business constraints that must come from the
+    LLM; deterministic coverage floors are appended later by
+    ``normalize_strategy_response``.
+    """
+    # The final normalized strategy will still satisfy config["min_queries"]
+    # because deterministic coverage floors are appended after parsing. Keep the
+    # live LLM portion deliberately small so constrained gateways return final
+    # text instead of spending their output budget on hidden/thinking blocks.
+    min_queries = 6
+    max_queries = 8
+    tracked_entities = [str(item) for item in (config.get("tracked_entities") or [])[:10]]
+    technology_topics = [str(item) for item in (config.get("technology_topics") or [])[:10]]
+    source_hints = [str(item) for item in (config.get("source_hints") or [])[:12]]
+    recent = [
+        {
+            "date": str(item.get("date") or ""),
+            "title": str(item.get("title") or "")[:100],
+        }
+        for item in (recent_titles or [])[:12]
+        if isinstance(item, dict)
+    ]
+    base_summary = {
+        "rounds": (base_search_summary or {}).get("rounds", [])[:8]
+        if isinstance(base_search_summary, dict)
+        else [],
+        "result_titles": (base_search_summary or {}).get("result_titles", [])[:12]
+        if isinstance(base_search_summary, dict)
+        else [],
+    }
+    compact = {
+        "report_date": report_date,
+        "required_dimensions": config.get("required_coverage_dimensions") or [
+            "news",
+            "research",
+            "funding",
+            "policy",
+            "events",
+            "company_announcement",
+            "china_local_sources",
+            "english_sources",
+        ],
+        "tracked_entities": tracked_entities,
+        "technology_topics": technology_topics,
+        "priority_source_hints": source_hints,
+        "recent_approved_titles": recent,
+        "base_search_summary": base_summary,
+    }
+    return (
+        "Return ONLY compact JSON. First character must be { and last character must be }. "
+        "No markdown. No explanation. Do not describe your plan. "
+        "Generate high-recall web-search queries for a synthetic-biology / "
+        f"biomanufacturing daily report dated {report_date}. "
+        "Cover news, research, funding, policy, events, company announcements, "
+        "China local/government/academic sources, and English sources. "
+        f"Return {min_queries} to {max_queries} queries. Each query must have one intent. "
+        "Keep each reason under 12 words. Keep blindspots to at most 3 strings. "
+        "Use only target_section values news, research, funding, policy, events. "
+        "Use only expected_source_type values company, media, government, academic, investor, mixed. "
+        "You may use Chinese search terms from the escaped context when useful. "
+        "Schema: {\"blindspots\":[\"...\"],\"queries\":[{\"query\":\"...\","
+        "\"reason\":\"...\",\"priority\":\"high|medium|low\","
+        "\"target_section\":\"news|research|funding|policy|events\","
+        "\"expected_source_type\":\"company|media|government|academic|investor|mixed\","
+        "\"iteration\":1,\"required\":true}]}. "
+        "context_json: "
+        f"{json.dumps(compact, ensure_ascii=True)}"
+    )
+
+
+def build_minimal_json_strategy_prompt(
+    report_date: str,
+    config: dict[str, Any],
+    recent_titles: list[dict[str, str]] | None = None,
+    base_search_summary: dict[str, Any] | None = None,
+    ascii_safe: bool = False,
+) -> str:
+    """Build the smallest possible JSON-only fallback prompt.
+
+    This prompt exists for Anthropic-compatible gateways that occasionally
+    ignore a larger JSON instruction. The normalized strategy still receives
+    deterministic coverage floors after parsing, so the model only needs to
+    prove that the live LLM path can contribute a small number of fresh,
+    structured discovery queries.
+    """
+    source_hints = [str(item) for item in (config.get("source_hints") or [])[:8]]
+    coverage_queries = [
+        str(item.get("query") if isinstance(item, dict) else item)
+        for item in (config.get("coverage_queries") or [])[:8]
+        if str(item.get("query") if isinstance(item, dict) else item).strip()
+    ]
+    compact = {
+        "report_date": report_date,
+        "source_hints": source_hints,
+        "coverage_queries": coverage_queries,
+        "recent_titles": [
+            str(item.get("title") or "")[:80]
+            for item in (recent_titles or [])[:8]
+            if isinstance(item, dict)
+        ],
+        "base_rounds": (base_search_summary or {}).get("rounds", [])[:6]
+        if isinstance(base_search_summary, dict)
+        else [],
+    }
+    context = json.dumps(compact, ensure_ascii=True if ascii_safe else False)
+    return (
+        "Return valid JSON only. Output must start with { and end with }. "
+        "No markdown, no comments, no explanation. "
+        "Create 2 to 4 high-recall web search queries for today's synthetic "
+        "biology / biomanufacturing daily report. Prefer source-specific or "
+        "blindspot queries, not generic filler. "
+        "Schema exactly: {\"blindspots\":[\"...\"],\"queries\":[{\"query\":\"...\","
+        "\"reason\":\"...\",\"priority\":\"high|medium|low\","
+        "\"target_section\":\"news|research|funding|policy|events\","
+        "\"expected_source_type\":\"company|media|government|academic|investor|mixed\","
+        "\"iteration\":1,\"required\":true}]}. "
+        "context_json: "
+        f"{context}"
+    )
+
+
+def extract_strategy_json_object(text: str) -> dict[str, Any]:
+    """Extract a JSON object from noisy LLM strategy text.
+
+    ``llm_judge._extract_json_object`` intentionally stays simple because it is
+    also used by the relevance gate. Strategy generation is more tolerant: it
+    may receive code fences or preambles from gateway models, so this scanner
+    tries every balanced JSON object and returns the first one that looks like a
+    strategy payload.
+    """
+    stripped = str(text or "").strip()
+    try:
+        parsed = json.loads(stripped)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    for candidate in _iter_balanced_json_objects(stripped):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and (
+            "queries" in parsed
+            or "strategy" in parsed
+            or "blindspots" in parsed
+        ):
+            return parsed
+
+    # Fall back to the shared extractor so callers get the established error
+    # message when no object can be recovered.
+    return _extract_json_object(stripped)
+
+
+def _iter_balanced_json_objects(text: str) -> list[str]:
+    candidates: list[str] = []
+    starts = [index for index, char in enumerate(text) if char == "{"]
+    for start in starts:
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start:index + 1])
+                    break
+    return candidates
+
+
 def generate_search_strategy(
     report_date: str,
     *,
@@ -356,25 +589,58 @@ def generate_search_strategy(
 
     strategy_client = _ensure_strategy_client(client)
     if selected_mode == "llm" or strategy_client.is_configured:
-        prompt = build_strategy_prompt(
-            report_date,
-            cfg,
-            recent_titles=recent_titles,
-            base_search_summary=base_summary,
-            ascii_safe=_strategy_client_uses_ascii_prompts(strategy_client),
-        )
-        try:
-            raw_text = strategy_client.complete(prompt)
-            data = _extract_json_object(raw_text)
-            return normalize_strategy_response(
-                data,
-                report_date=report_date,
-                config=cfg,
-                provider="llm",
-                model=_client_model(strategy_client),
-            ).to_dict()
-        except Exception as exc:
-            raise RuntimeError(f"LLM搜索策略生成失败: {exc}") from exc
+        ascii_safe = _strategy_client_uses_ascii_prompts(strategy_client)
+        prompts = [
+            (
+                "full",
+                build_strategy_prompt(
+                    report_date,
+                    cfg,
+                    recent_titles=recent_titles,
+                    base_search_summary=base_summary,
+                    ascii_safe=ascii_safe,
+                ),
+            ),
+            (
+                "compact",
+                build_compact_strategy_prompt(
+                    report_date,
+                    cfg,
+                    recent_titles=recent_titles,
+                    base_search_summary=base_summary,
+                    ascii_safe=ascii_safe,
+                ),
+            ),
+            (
+                "minimal_json",
+                build_minimal_json_strategy_prompt(
+                    report_date,
+                    cfg,
+                    recent_titles=recent_titles,
+                    base_search_summary=base_summary,
+                    ascii_safe=ascii_safe,
+                ),
+            ),
+        ]
+        if _strategy_client_prefers_compact_prompt(strategy_client):
+            prompts = [prompts[1], prompts[2], prompts[0]]
+        errors: list[str] = []
+        for attempt_name, prompt in prompts:
+            try:
+                raw_text = strategy_client.complete(prompt)
+                data = extract_strategy_json_object(raw_text)
+                strategy = normalize_strategy_response(
+                    data,
+                    report_date=report_date,
+                    config=cfg,
+                    provider="llm",
+                    model=_client_model(strategy_client),
+                ).to_dict()
+                strategy["prompt_attempt"] = attempt_name
+                return strategy
+            except Exception as exc:
+                errors.append(f"{attempt_name}: {exc}")
+        raise RuntimeError("LLM搜索策略生成失败: " + " | ".join(errors))
 
     return heuristic_search_strategy(report_date, cfg, recent_titles=recent_titles).to_dict()
 
@@ -393,10 +659,36 @@ def _client_model(client: StrategyClient) -> str | None:
     return str(getattr(client, "model", "") or "") or None
 
 
+def _llm_client_supports_thinking_disable(llm_client: LLMClient) -> bool:
+    base_url = (llm_client.base_url or "").lower()
+    model = (llm_client.model or "").lower()
+    return (
+        "kimi" in model
+        or "aiself.vip" in base_url
+        or "127.0.0.1:15721" in base_url
+        or "localhost:15721" in base_url
+    )
+
+
 def _strategy_client_uses_ascii_prompts(client: StrategyClient) -> bool:
     if isinstance(client, MessagesTextClient):
         return client.llm_client.use_ascii_prompts
     return bool(getattr(client, "use_ascii_prompts", False))
+
+
+def _strategy_client_prefers_compact_prompt(client: StrategyClient) -> bool:
+    if isinstance(client, MessagesTextClient):
+        base_url = (client.llm_client.base_url or "").lower()
+        model = (client.llm_client.model or "").lower()
+    else:
+        base_url = str(getattr(client, "base_url", "") or "").lower()
+        model = str(getattr(client, "model", "") or "").lower()
+    return (
+        "kimi" in model
+        or "aiself.vip" in base_url
+        or "127.0.0.1:15721" in base_url
+        or "localhost:15721" in base_url
+    )
 
 
 def heuristic_search_strategy(
@@ -452,6 +744,7 @@ def heuristic_search_strategy(
             infer_section_from_query(str(topic)),
             "media_or_academic",
         )
+    queries = append_missing_dimension_queries(queries, config, report_date=report_date)
     return SearchStrategy(
         date=report_date,
         provider="heuristic",
@@ -475,6 +768,34 @@ def infer_section_from_query(query: str) -> str:
     if any(token in text for token in ("会议", "活动", "event", "conference", "webinar")):
         return "events"
     return "news"
+
+
+def query_coverage_dimensions(entry: Any) -> set[str]:
+    """Infer high-level coverage dimensions from one strategy query."""
+    if isinstance(entry, str):
+        query = normalize_query_text(entry)
+        section = infer_section_from_query(query)
+        source_type = ""
+    elif isinstance(entry, dict):
+        query = normalize_query_text(entry.get("query") or entry.get("q") or "")
+        section = str(entry.get("target_section") or entry.get("section") or infer_section_from_query(query)).lower()
+        source_type = str(entry.get("expected_source_type") or "").lower()
+    else:
+        return set()
+
+    text = f"{query} {source_type}".lower()
+    dims = {section} if section in VALID_SECTIONS else set()
+    if any(token in text for token in ("公告", "cninfo", "上市公司", "company", "企业", "披露")):
+        dims.add("company_announcement")
+    if any(token in text for token in ("gov.cn", "政府", "科协", "高校", "大学", "sciencenet", "dg.gov.cn", "rednet", "hbkx", "ecust", "siat")):
+        dims.add("china_local_sources")
+    if any(token in text for token in ("synthetic", "biomanufacturing", "precision fermentation", "site:nature", "site:science", "site:genengnews", "site:synbiobeta", "site:labiotech", "site:fiercebiotech")):
+        dims.add("english_sources")
+    if any(token in text for token in ("论文", "研究", "nature", "science", "cell", "biorxiv", "科研", "团队")):
+        dims.add("research")
+    if any(token in text for token in ("会议", "大会", "峰会", "论坛", "赛事", "conference", "event")):
+        dims.add("events")
+    return dims
 
 
 def normalize_strategy_response(
@@ -523,6 +844,7 @@ def normalize_strategy_response(
         if len(normalized) >= max_queries:
             break
     normalized = append_missing_coverage_queries(normalized, config, max_queries=max_queries)
+    normalized = append_missing_dimension_queries(normalized, config, report_date=report_date)
     if len(normalized) < min_queries:
         raise ValueError(f"LLM search strategy returned {len(normalized)} queries, below min_queries={min_queries}")
 
@@ -582,33 +904,94 @@ def append_missing_coverage_queries(
 ) -> list[StrategyQuery]:
     """Ensure configured coverage-floor queries are present.
 
-    ``max_queries`` limits discretionary LLM queries, not hard coverage. When
-    the model fills the list but omits a required source/theme floor, replace a
-    non-floor query from the end. If the configured floor itself is larger than
-    ``max_queries``, keep every floor query and exceed the advisory cap.
+    ``max_queries`` limits the number of discretionary LLM queries parsed
+    before this function runs; it is not a hard cap after coverage floors are
+    appended.  This preserves proof that the LLM contributed live discovery
+    queries while still making every configured source/theme floor mandatory.
     """
     coverage_queries = iter_configured_coverage_queries(config)
-    coverage_keys = {normalize_query_text(query.query) for query in coverage_queries}
     seen = {normalize_query_text(query.query) for query in queries}
     result = list(queries)
     for coverage_query in coverage_queries:
         normalized = normalize_query_text(coverage_query.query)
         if normalized in seen:
             continue
-        if len(result) >= max_queries:
-            remove_index = next(
-                (
-                    index
-                    for index in range(len(result) - 1, -1, -1)
-                    if normalize_query_text(result[index].query) not in coverage_keys
-                ),
-                None,
-            )
-            if remove_index is not None:
-                removed = result.pop(remove_index)
-                seen.discard(normalize_query_text(removed.query))
         result.append(coverage_query)
         seen.add(normalized)
+    return result
+
+
+def _dimension_floor_queries(config: dict[str, Any], report_date: str) -> dict[str, StrategyQuery]:
+    configured = config.get("dimension_floor_queries")
+    floors: dict[str, StrategyQuery] = {}
+    if isinstance(configured, dict):
+        for dimension, entry in configured.items():
+            if isinstance(entry, str):
+                query = normalize_query_text(entry)
+                section = infer_section_from_query(query)
+                source_type = "mixed"
+                reason = f"{dimension}维度覆盖兜底"
+            elif isinstance(entry, dict):
+                query = normalize_query_text(entry.get("query") or entry.get("q") or "")
+                section = str(entry.get("target_section") or infer_section_from_query(query)).lower()
+                source_type = str(entry.get("expected_source_type") or "mixed")
+                reason = str(entry.get("reason") or f"{dimension}维度覆盖兜底")
+            else:
+                continue
+            if query:
+                floors[str(dimension)] = StrategyQuery(
+                    query=query,
+                    reason=reason[:300],
+                    priority="high",
+                    target_section=section if section in VALID_SECTIONS else infer_section_from_query(query),
+                    expected_source_type=source_type[:80] or "mixed",
+                )
+    defaults = {
+        "news": StrategyQuery("合成生物 生物制造 最新动态", "新闻维度覆盖兜底", "high", "news", "mixed"),
+        "research": StrategyQuery("合成生物 论文 研究 Nature Cell Science", "科研维度覆盖兜底", "high", "research", "academic"),
+        "funding": StrategyQuery("合成生物 融资 投资 IPO", "融资维度覆盖兜底", "high", "funding", "media"),
+        "policy": StrategyQuery("合成生物 生物制造 政策 通知", "政策维度覆盖兜底", "high", "policy", "government"),
+        "events": StrategyQuery("合成生物 大会 峰会 论坛 赛事", "活动维度覆盖兜底", "high", "events", "mixed"),
+        "company_announcement": StrategyQuery("上市公司 生物制造 项目 公告", "公司公告维度覆盖兜底", "high", "news", "company"),
+        "china_local_sources": StrategyQuery("合成生物 生物制造 政府 高校 科协 地方媒体", "中文地方源覆盖兜底", "high", "news", "government_academic_media"),
+        "english_sources": StrategyQuery("synthetic biology biomanufacturing news funding research 2026", "英文源覆盖兜底", "high", "news", "media"),
+    }
+    for key, value in defaults.items():
+        floors.setdefault(key, value)
+    return floors
+
+
+def append_missing_dimension_queries(
+    queries: list[StrategyQuery],
+    config: dict[str, Any],
+    *,
+    report_date: str,
+) -> list[StrategyQuery]:
+    required_dimensions = [
+        str(item).strip()
+        for item in config.get("required_coverage_dimensions", []) or []
+        if str(item).strip()
+    ]
+    if not required_dimensions:
+        return queries
+    result = list(queries)
+    covered: set[str] = set()
+    for query in result:
+        covered.update(query_coverage_dimensions(asdict(query)))
+    floors = _dimension_floor_queries(config, report_date)
+    seen = {normalize_query_text(query.query) for query in result}
+    for dimension in required_dimensions:
+        if dimension in covered:
+            continue
+        floor = floors.get(dimension)
+        if not floor:
+            continue
+        normalized = normalize_query_text(floor.query)
+        if normalized in seen:
+            continue
+        result.append(floor)
+        seen.add(normalized)
+        covered.update(query_coverage_dimensions(asdict(floor)))
     return result
 
 
@@ -654,6 +1037,48 @@ def _entity_query_suffix(query: str) -> str:
     return "最新 合成生物"
 
 
+def validate_generated_strategy(strategy: dict[str, Any], config: dict[str, Any]) -> None:
+    """Fail closed before writing a strategy that cannot drive dynamic search."""
+    raw_queries = strategy.get("queries")
+    if not isinstance(raw_queries, list):
+        raise ValueError("search strategy queries must be a list")
+    min_queries = max(1, int(config.get("min_queries") or 1))
+    if len(raw_queries) < min_queries:
+        raise ValueError(
+            f"search strategy has {len(raw_queries)} queries, below min_queries={min_queries}"
+        )
+    required_count = 0
+    for entry in raw_queries:
+        if isinstance(entry, str):
+            query = entry.strip()
+            required = True
+        elif isinstance(entry, dict):
+            query = str(entry.get("query") or entry.get("q") or "").strip()
+            required = bool(entry.get("required", True))
+        else:
+            query = ""
+            required = True
+        if query and required:
+            required_count += 1
+    if required_count < 1:
+        raise ValueError("search strategy must contain at least one required query")
+    required_dimensions = [
+        str(item).strip()
+        for item in config.get("required_coverage_dimensions", []) or []
+        if str(item).strip()
+    ]
+    if required_dimensions:
+        covered: set[str] = set()
+        for entry in raw_queries:
+            covered.update(query_coverage_dimensions(entry))
+        missing = sorted(set(required_dimensions) - covered)
+        if missing:
+            raise ValueError(
+                "search strategy coverage dimensions missing: "
+                + ", ".join(missing)
+            )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate LLM-driven search strategy JSON")
     parser.add_argument("--date", required=True, help="Report date YYYY-MM-DD")
@@ -675,6 +1100,11 @@ def main(argv: list[str] | None = None) -> int:
         base_search_log=base_search_log,
         mode=args.mode,
     )
+    try:
+        validate_generated_strategy(strategy, config)
+    except Exception as exc:
+        print(f"ERROR: invalid search strategy: {exc}", file=sys.stderr)
+        return 1
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(strategy, ensure_ascii=False, indent=2), encoding="utf-8")
     print(

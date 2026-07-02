@@ -71,12 +71,24 @@ def _check_relevance(client: LLMClient) -> dict[str, Any]:
     raw_response = decision.raw_response or ""
     if raw_response.count("?") >= 6 or "乱码" in raw_response:
         raise RuntimeError("LLM relevance response suggests the Chinese input was corrupted")
+    decoded_text = "\n".join([
+        decision.reason or "",
+        raw_response,
+        *[str(span) for span in decision.evidence_spans],
+    ])
+    decoded_markers = ("蓝晶", "微生物", "生物制造", "细胞工厂", "代谢工程", "发酵")
+    if not any(marker in decoded_text for marker in decoded_markers):
+        raise RuntimeError(
+            "LLM relevance check did not echo any decoded Chinese evidence markers; "
+            "the provider may be accepting requests while losing Chinese semantics"
+        )
     return {
         "provider": decision.provider,
         "domain_relevance": decision.domain_relevance,
         "confidence": decision.confidence,
         "section": decision.section,
         "evidence_count": len(decision.evidence_spans),
+        "decoded_marker_ok": True,
     }
 
 

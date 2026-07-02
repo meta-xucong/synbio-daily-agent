@@ -24,6 +24,11 @@ def main() -> int:
     parser.add_argument("--raw", type=Path, help="Optional raw JSON path for candidate URL coverage audit")
     parser.add_argument("--search-strategy", type=Path, help="Optional LLM search strategy JSON path")
     parser.add_argument(
+        "--allow-missing-strategy",
+        action="store_true",
+        help="Diagnostic-only: do not fail when the same-day LLM search strategy is absent",
+    )
+    parser.add_argument(
         "--relaxed",
         action="store_true",
         help="Downgrade missing required queries and candidate coverage gaps to warnings",
@@ -43,6 +48,7 @@ def main() -> int:
         raw_obj,
         strict_coverage=not args.relaxed,
         search_strategy=search_strategy,
+        require_search_strategy=not args.allow_missing_strategy,
     )
 
     print(

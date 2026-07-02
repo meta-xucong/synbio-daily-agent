@@ -11,6 +11,26 @@ if str(SCRIPTS) not in sys.path:
 import post_check
 
 
+def test_post_check_blocks_empty_approved(tmp_path, monkeypatch):
+    reports = tmp_path / "reports"
+    data = tmp_path / "data"
+    reports.mkdir()
+    data.mkdir()
+    (reports / "2026-06-10.md").write_text(
+        "# 合成生物行业日报\n\n流水线追踪：approved=0\n",
+        encoding="utf-8",
+    )
+    (data / "approved_2026-06-10.json").write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(post_check, "REPORTS_DIR", reports)
+    monkeypatch.setattr(post_check, "DATA_DIR", data)
+
+    result = post_check.post_check("2026-06-10")
+
+    assert not result["can_send"]
+    assert any("approved为空" in error for error in result["errors"])
+
+
 def test_post_check_blocks_missing_pipeline_trace(tmp_path, monkeypatch):
     reports = tmp_path / "reports"
     data = tmp_path / "data"
@@ -27,6 +47,27 @@ def test_post_check_blocks_missing_pipeline_trace(tmp_path, monkeypatch):
 
     assert not result["can_send"]
     assert any("流水线追踪" in error for error in result["errors"])
+
+
+def test_post_check_blocks_approved_item_missing_from_report(tmp_path, monkeypatch):
+    reports = tmp_path / "reports"
+    data = tmp_path / "data"
+    reports.mkdir()
+    data.mkdir()
+    (reports / "2026-06-10.md").write_text(
+        "# Daily\n\napproved=1\n\nDifferent title https://example.com/news/xinghe\n",
+        encoding="utf-8",
+    )
+    approved = [{"title": "Xinghe Synbio Expansion", "url": "https://example.com/news/xinghe"}]
+    (data / "approved_2026-06-10.json").write_text(json.dumps(approved, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(post_check, "REPORTS_DIR", reports)
+    monkeypatch.setattr(post_check, "DATA_DIR", data)
+
+    result = post_check.post_check("2026-06-10")
+
+    assert not result["can_send"]
+    assert any("approved" in error and "Xinghe Synbio Expansion" in error for error in result["errors"])
 
 
 def test_post_check_accepts_string_urls_field(tmp_path, monkeypatch):

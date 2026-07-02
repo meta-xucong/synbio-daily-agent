@@ -70,11 +70,15 @@ TIME_WINDOWS = {
 
 REQUIRED_RAW_FIELDS = {"title", "source", "date", "summary", "url"}
 VALID_ITEM_TYPES = {"news", "research", "funding", "policy", "events"}
+TYPE_INFERENCE_ORDER = ("events", "funding", "policy", "research", "news")
 HTML_URL_ATTRS = {"href", "src", "action", "formaction", "poster"}
 TITLE_SIMILARITY_THRESHOLD = 0.80
 HISTORY_DEDUP_DAYS = 30
 MAX_RAW_SCORE = 30
-REQUIRED_SEARCH_ROUNDS = {"r1", "r2", "r3", "r4", "r5"}
+REQUIRED_SEARCH_ROUNDS = {"r1", "r1b", "r2", "r3", "r4", "r5", "r6"}
+REQUIRED_SEARCH_LOG_GENERATOR = "search_executor"
+REQUIRED_HIGH_RECALL_ROUNDS = {"llm_discovery", "llm_gap_audit"}
+PRODUCTION_SEARCH_MIN_LIMIT = 15
 SEARCH_QUERY_CONFIG_FILENAME = "search_queries.json"
 URL_HEALTH_TIMEOUT_SECONDS = 10
 URL_HEALTH_MAX_BYTES = 250_000
@@ -90,6 +94,10 @@ SEARCH_RESULT_SUMMARY_KEYS = ("summary", "snippet", "description", "content", "t
 SEARCH_RESULT_SOURCE_KEYS = ("source", "site", "publisher", "source_name", "domain")
 SEARCH_RESULT_DATE_KEYS = ("date", "published_at", "published_time", "published", "time", "datetime", "created_at")
 LOW_APPROVED_COUNT_WARNING = 2
+EMPTY_APPROVED_ERROR = "approved为空：本次没有任何可发送信息，必须先复核搜索结果和拒绝列表，禁止发送空日报"
+MISSING_SEARCH_STRATEGY_ERROR = "LLM搜索策略缺失：正式搜索日志必须配套 data/search_strategy_YYYY-MM-DD.json 并执行 llm_dynamic query"
+LLM_TRACE_ERROR = "approved缺少LLM领域审计痕迹：正式发送必须确认每条信息经过LLM/语义审计"
+DATE_VERIFICATION_ERROR = "approved缺少可信页面发布时间验证：正式发送不能只依赖搜索引擎日期或抓取日期"
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_KEYS = {
     "fbclid", "gclid", "mc_cid", "mc_eid", "igshid", "spm", "from", "ref",
@@ -123,7 +131,7 @@ TYPE_TITLE_KEYWORDS = {
     "policy": ("政策", "法规", "监管", "规划", "计划", "报告", "项目", "措施", "指南", "征集", "通知", "公告", "课题", "专项", "申报", "标准", "开放共享", "grant", "call", "program", "programme", "proposal", "award", "regulation", "guidance"),
     "events": ("大会", "会议", "论坛", "研讨会", "峰会", "活动", "课程", "培训", "webinar", "conference", "symposium", "forum", "course", "summit", "workshop", "meeting", "webcast"),
     "funding": ("融资", "投资", "轮融资", "募资", "并购", "收购", "上市", "ipo", "series", "funding", "raised", "raises", "raise", "seed", "pre-a", "pre a", "round", "venture", "capital", "backs", "secures", "investment"),
-    "research": ("研究", "论文", "nature", "science", "cell", "pnas", "acs", "发现", "突破", "engineer", "research", "journal", "study", "paper", "published", "publication", "biotechnology", "bioengineering"),
+    "research": ("研究", "论文", "nature", "science", "cell", "pnas", "acs", "发现", "突破", "engineer", "engineered", "recoded", "e. coli", "synthetic cell", "research", "journal", "study", "paper", "published", "publication", "biotechnology", "bioengineering"),
 }
 TYPE_NEGATIVE_KEYWORDS = {
     "policy": ("investment report", "forum", "conference", "course", "webinar", "融资", "投资报告"),
@@ -191,6 +199,7 @@ MARKET_REPORT_KEYWORDS = (
     "market analysis report",
     "market research report",
     "market report",
+    "investment report",
     "industry report",
     "market size",
     "market share",
@@ -659,6 +668,26 @@ def _bool_from_search_log_value(value: Any) -> bool:
     return bool(value)
 
 
+def _looks_like_unexecuted_note(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    markers = (
+        "未执行",
+        "未執行",
+        "没有执行",
+        "沒有執行",
+        "not executed",
+        "not run",
+        "skipped",
+        "timeout",
+        "timed out",
+        "时间/资源限制",
+        "時間/資源限制",
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def _query_status_from_entry(query_entry: Any) -> Tuple[str, bool, str]:
     """Return query text, executed status, and failure reason from one search_log query entry."""
     if isinstance(query_entry, str):
@@ -668,12 +697,18 @@ def _query_status_from_entry(query_entry: Any) -> Tuple[str, bool, str]:
 
     query = _normalize_query_text(query_entry.get("query") or query_entry.get("q") or "")
     error = str(query_entry.get("error") or query_entry.get("reason") or query_entry.get("failure") or "").strip()
+    note = str(query_entry.get("notes") or query_entry.get("note") or "").strip()
+    note_says_unexecuted = _looks_like_unexecuted_note(note)
+    if note_says_unexecuted and not error:
+        error = note
     if "executed" in query_entry:
         executed = _bool_from_search_log_value(query_entry.get("executed"))
     elif error:
         executed = False
     else:
         executed = True
+    if executed and note_says_unexecuted:
+        executed = False
     return query, executed, error
 
 
@@ -823,6 +858,74 @@ def validate_required_search_queries(search_log: Any) -> Dict[str, Any]:
     }
 
 
+def configured_required_search_rounds() -> set[str]:
+    """Return required base round IDs from search_queries.json, with a legacy fallback."""
+    config = load_search_query_config()
+    rounds_config = config.get("rounds", []) if isinstance(config, dict) else []
+    round_ids = {
+        str(round_cfg.get("round_id") or round_cfg.get("round") or round_cfg.get("id") or "").strip()
+        for round_cfg in rounds_config
+        if isinstance(round_cfg, dict)
+    }
+    round_ids = {round_id for round_id in round_ids if round_id}
+    return round_ids or set(REQUIRED_SEARCH_ROUNDS)
+
+
+def validate_high_recall_search_log(search_log: Any, rounds_seen: set[str]) -> Dict[str, Any]:
+    """Validate production provenance and high-recall LLM discovery evidence."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(search_log, dict):
+        return {"is_valid": False, "errors": ["search_log必须是对象"], "warnings": warnings}
+
+    if search_log.get("generated_by") != REQUIRED_SEARCH_LOG_GENERATOR:
+        errors.append(
+            f"search_log.generated_by必须为{REQUIRED_SEARCH_LOG_GENERATOR}，禁止手写或人工拼接search_log"
+        )
+
+    try:
+        limit = int(search_log.get("limit") or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    if limit < PRODUCTION_SEARCH_MIN_LIMIT:
+        errors.append(f"search_log.limit必须 >= {PRODUCTION_SEARCH_MIN_LIMIT}，当前为{search_log.get('limit')!r}")
+
+    missing_high_recall = sorted(REQUIRED_HIGH_RECALL_ROUNDS - rounds_seen)
+    if missing_high_recall:
+        errors.append(f"search_log缺少高召回LLM搜索轮次: {', '.join(missing_high_recall)}")
+
+    provider = str(search_log.get("provider") or "")
+    for round_entry in search_log.get("rounds", []) or []:
+        if not isinstance(round_entry, dict):
+            continue
+        round_id = str(round_entry.get("round") or round_entry.get("id") or round_entry.get("round_id") or "").strip()
+        if round_id not in REQUIRED_HIGH_RECALL_ROUNDS:
+            continue
+        queries = round_entry.get("queries")
+        if not isinstance(queries, list) or not queries:
+            errors.append(f"{round_id}缺少queries，无法证明LLM高召回轮次已执行")
+            continue
+        for query_entry in queries:
+            query, executed, error = _query_status_from_entry(query_entry)
+            if not executed:
+                errors.append(f"{round_id}查询未成功执行: {query or '<empty>'} ({error or '未记录原因'})")
+                continue
+            if isinstance(query_entry, dict):
+                query_provider = str(query_entry.get("provider") or "")
+                if query_provider == "fixture" or provider == "fixture":
+                    warnings.append(f"{round_id}使用fixture provider，仅允许离线测试，不得用于正式发送")
+                elif query_provider != "llm_web":
+                    errors.append(f"{round_id}必须使用llm_web/Kimi web_search，当前provider={query_provider or '<missing>'}")
+                elif query_entry.get("web_search_tool_result") is not True:
+                    errors.append(f"{round_id}缺少web_search_tool_result证据: {query}")
+
+    return {
+        "is_valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
 def validate_search_strategy_execution(search_strategy: Any, search_log: Any) -> Dict[str, Any]:
     """Validate that LLM-generated dynamic strategy queries were executed."""
     errors: list[str] = []
@@ -869,6 +972,11 @@ def validate_search_strategy_execution(search_strategy: Any, search_log: Any) ->
             required_queries.append(query)
     if malformed:
         errors.append(f"search_strategy有{malformed}条query格式无效")
+    if not required_queries:
+        errors.append(
+            "LLM search_strategy has no required queries; "
+            "search_strategy.queries must contain at least one required query"
+        )
 
     executed_by_round, failed_by_round = _collect_search_log_query_status(search_log)
     executed_all = {
@@ -920,6 +1028,140 @@ def validate_search_strategy_execution(search_strategy: Any, search_log: Any) ->
     }
 
 
+def validate_approved_llm_trace(approved_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Ensure approved items carry evidence of the semantic/LLM relevance gate."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    checked: list[dict[str, Any]] = []
+    if not approved_data:
+        errors.append(EMPTY_APPROVED_ERROR)
+        return {
+            "is_valid": False,
+            "errors": errors,
+            "warnings": warnings,
+            "checked": checked,
+            "total_checked": 0,
+        }
+
+    for index, item in enumerate(approved_data, 1):
+        title = str(item.get("title") or f"item-{index}")
+        item_errors_before = len(errors)
+        trace = item.get("llm_relevance")
+        if not isinstance(trace, dict):
+            errors.append(f"{LLM_TRACE_ERROR}: 第{index}项 {title}")
+            checked.append({"index": index, "title": title, "ok": False, "reason": "missing"})
+            continue
+        provider = str(trace.get("provider") or "").strip().lower()
+        relevance = str(trace.get("domain_relevance") or "").strip().lower()
+        evidence = trace.get("evidence_spans") or []
+        is_approved = trace.get("is_approved")
+        if is_approved is not True:
+            errors.append(f"{LLM_TRACE_ERROR}: 第{index}项 {title} 的LLM结果不是approved")
+        if not provider:
+            errors.append(f"{LLM_TRACE_ERROR}: 第{index}项 {title} 缺少provider")
+        elif provider in {"off", "heuristic"} or provider.startswith("heuristic"):
+            errors.append(f"{LLM_TRACE_ERROR}: 第{index}项 {title} provider={provider}，不能作为正式发送依据")
+        if relevance not in {"core_synbio", "adjacent"}:
+            errors.append(f"{LLM_TRACE_ERROR}: 第{index}项 {title} domain_relevance={relevance or 'missing'}")
+        if not isinstance(evidence, list) or not evidence:
+            errors.append(f"{LLM_TRACE_ERROR}: 第{index}项 {title} 缺少evidence_spans")
+        checked.append({
+            "index": index,
+            "title": title,
+            "ok": len(errors) == item_errors_before,
+            "provider": provider,
+            "domain_relevance": relevance,
+        })
+
+    return {
+        "is_valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "checked": checked,
+        "total_checked": len(approved_data),
+    }
+
+
+def validate_approved_date_verification(approved_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Ensure search-derived approved items have a page-grounded publish/event date."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    checked: list[dict[str, Any]] = []
+    if not approved_data:
+        warnings.append("approved为空，无法验证页面发布时间")
+        return {
+            "is_valid": True,
+            "errors": errors,
+            "warnings": warnings,
+            "checked": checked,
+            "total_checked": 0,
+        }
+
+    for index, item in enumerate(approved_data, 1):
+        title = str(item.get("title") or f"item-{index}")
+        if not should_verify_page_date(item):
+            checked.append({"index": index, "title": title, "ok": True, "skipped": True})
+            continue
+        item_errors_before = len(errors)
+        verification = item.get("date_verification")
+        if not isinstance(verification, dict):
+            errors.append(f"{DATE_VERIFICATION_ERROR}: 第{index}项 {title} 缺少date_verification")
+            checked.append({"index": index, "title": title, "ok": False, "reason": "missing"})
+            continue
+        source = str(verification.get("source") or "").strip()
+        confidence = str(verification.get("confidence") or "").strip().lower()
+        verified_date = str(verification.get("verified_date") or item.get("verified_date") or "").strip()
+        if not parse_date(verified_date):
+            errors.append(f"{DATE_VERIFICATION_ERROR}: 第{index}项 {title} verified_date无效")
+        if source == "search_fallback" or confidence == "low":
+            errors.append(
+                f"{DATE_VERIFICATION_ERROR}: 第{index}项 {title} 仅有搜索日期兜底，source={source or 'missing'}, confidence={confidence or 'missing'}"
+            )
+        checked.append({
+            "index": index,
+            "title": title,
+            "ok": len(errors) == item_errors_before,
+            "source": source,
+            "confidence": confidence,
+            "verified_date": verified_date,
+        })
+
+    return {
+        "is_valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "checked": checked,
+        "total_checked": len(approved_data),
+    }
+
+
+def infer_raw_item_type(item: Dict[str, Any], fallback_type: str) -> str:
+    """Infer the most likely report section when a search result landed in the wrong bucket."""
+    for candidate_type in TYPE_INFERENCE_ORDER:
+        if candidate_type == fallback_type:
+            continue
+        if candidate_type == "research" and not _has_research_signal(item):
+            continue
+        if _looks_like_type(item, candidate_type):
+            return candidate_type
+    return fallback_type
+
+
+def _has_research_signal(item: Dict[str, Any]) -> bool:
+    text = " ".join(
+        str(item.get(field) or "")
+        for field in ("title", "summary", "source", "url")
+    ).lower()
+    research_terms = (
+        "研究", "论文", "发表", "期刊", "突破",
+        "nature", "science", "cell", "pnas", "acs",
+        "journal", "study", "paper", "published", "publication",
+        "engineer", "engineered", "recoded", "e. coli", "synthetic cell",
+        "biotechnology", "bioengineering",
+    )
+    return any(term in text for term in research_terms)
+
+
 def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, Dict[str, Any]]:
     """Validate and normalize one raw item before filtering."""
     normalized = dict(item)
@@ -942,7 +1184,24 @@ def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, 
         url = str(normalized.get("url", ""))
         return False, f"[schema] invalid url: {url}", normalized
 
+    if _looks_like_type(normalized, item_type):
+        if item_type == "news" and _has_research_signal(normalized) and _looks_like_type(normalized, "research"):
+            normalized["original_type"] = item_type
+            normalized["type"] = "research"
+            normalized["reclassified_from"] = item_type
+            normalized["reclassification_reason"] = "news item carries strong research signals; inferred research"
+        return True, "", normalized
+
     if not _looks_like_type(normalized, item_type):
+        inferred_type = infer_raw_item_type(normalized, item_type)
+        if inferred_type != item_type:
+            normalized["original_type"] = item_type
+            normalized["type"] = inferred_type
+            normalized["reclassified_from"] = item_type
+            normalized["reclassification_reason"] = (
+                f"source category {item_type} did not match content; inferred {inferred_type}"
+            )
+            return True, "", normalized
         return False, f"[schema] type content mismatch: item does not look like {item_type}", normalized
 
     return True, "", normalized
@@ -1474,6 +1733,10 @@ def _is_category_or_aggregate_url(url: str) -> bool:
 
     if normalized_path in URL_AGGREGATE_EXACT_PATHS or slashless_path in URL_AGGREGATE_EXACT_PATHS:
         return True
+
+    segments = [segment for segment in slashless_path.split("/") if segment]
+    if segments and segments[0] in {"topic", "topics"} and len(segments) >= 3:
+        return False
 
     if any(normalized_path.startswith(prefix) for prefix in URL_AGGREGATE_PREFIXES):
         return True
@@ -2112,6 +2375,8 @@ def is_duplicate(item: Dict[str, Any], fingerprint_db: Dict[str, Any]) -> Tuple[
 def check_timeliness(item: Dict[str, Any], item_type: str, now: Optional[datetime] = None) -> Tuple[bool, str]:
     """检查时效性"""
     effective_type = str(item.get("content_type") or item_type or "news")
+    if effective_type == "event_preview":
+        effective_type = "events"
     date_str = item.get("verified_date") or item.get("date", "")
     item_date = parse_date(date_str)
     current_time = (now or now_local()).replace(tzinfo=None)
@@ -2124,7 +2389,7 @@ def check_timeliness(item: Dict[str, Any], item_type: str, now: Optional[datetim
     # 只比较日期部分，避免边界时间问题
     cutoff = cutoff.replace(hour=0, minute=0, second=0, microsecond=0)
     
-    if item_type == "events":
+    if effective_type == "events":
         # 活动预告：检查是否在未来窗口内
         future_cutoff = current_time + timedelta(days=window_days)
         today = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -2297,7 +2562,8 @@ def process_raw_data(
             continue
 
         # 0.25 内容类型识别：市场研究/规模预测报告不进入日报主内容
-        content_type, content_reason = classify_content_type(item, item_type)
+        effective_item_type = str(item.get("type") or item_type)
+        content_type, content_reason = classify_content_type(item, effective_item_type)
         item["content_type"] = content_type
         if should_exclude_content_type(content_type):
             rejected.append({
@@ -2321,7 +2587,7 @@ def process_raw_data(
             item = verify_item_page_date(item, date_verify_func=date_verify_func)
 
         # 1. 时效性检查
-        timely, reason = check_timeliness(item, item_type)
+        timely, reason = check_timeliness(item, effective_item_type)
         if not timely:
             rejected.append({
                 "item": item,
@@ -2341,7 +2607,7 @@ def process_raw_data(
             continue
         
         # 3. 政策库去重（仅政策类）
-        if item_type == "policy":
+        if effective_item_type == "policy":
             policy_name = item.get("title", "")
             issuer = item.get("source", "")
             is_policy_dup = False
@@ -2590,7 +2856,7 @@ def validate_report_structure(report_path: str) -> Dict[str, Any]:
                 blank_sections.append(section_name)
     
     if blank_sections:
-        warnings.append(f"以下板块为空或未收录有效信息: {', '.join(blank_sections)}。请确认已执行第五轮定向补搜，并在报告中注明'经全面检索，本周期暂无新信息'")
+        warnings.append(f"以下板块为空或未收录有效信息: {', '.join(blank_sections)}。请确认已执行基座必搜和LLM高召回检索，并在报告中注明'经完整检索，本周期暂无新信息'")
     
     is_valid = len(errors) == 0
     
@@ -2929,14 +3195,17 @@ def validate_email_mime_type(email_msg) -> Dict[str, Any]:
 
 def _looks_like_type(item: Dict[str, Any], item_type: str) -> bool:
     """Check whether item content matches its claimed type and synbio relevance."""
-    title_summary_url = f"{item.get('title', '')} {item.get('summary', '')} {item.get('url', '')}".lower()
+    title_summary_url = (
+        f"{item.get('title', '')} {item.get('summary', '')} "
+        f"{item.get('url', '')} {item.get('source_query', '')}"
+    ).lower()
     text = f"{title_summary_url} {item.get('source', '')}".lower()
     
     # 1. 合成生物学主题相关性（核心判断）
     # 使用 LLM 语义判断（优先）或精确匹配（fallback）
     is_relevant, reason, confidence = _is_synbio_relevant(
         title=str(item.get("title", "")),
-        summary=str(item.get("summary", "")),
+        summary=f"{item.get('summary', '')} {item.get('source_query', '')}",
         url=str(item.get("url", "")),
     )
     if not is_relevant:
@@ -3076,9 +3345,14 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
     email_result = validate_email_consistency(email_body, approved_data)
     approved_schema = validate_approved_schema(approved_data)
     approved_timeliness = validate_approved_timeliness(approved_data)
+    approved_llm_trace = validate_approved_llm_trace(approved_data)
+    approved_date_verification = validate_approved_date_verification(approved_data)
     ai_result = report_result.get("ai_check", {"has_errors": False, "errors": [], "warnings": []})
     
     fix_instructions = list(report_result.get("fix_instructions", []))
+    empty_approved = not approved_data
+    if empty_approved:
+        fix_instructions.append(EMPTY_APPROVED_ERROR)
     
     # 邮件一致性错误必须修复
     if not email_result["is_consistent"]:
@@ -3089,6 +3363,12 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
 
     if approved_timeliness["has_errors"]:
         fix_instructions.extend(approved_timeliness["errors"])
+
+    if not approved_llm_trace["is_valid"]:
+        fix_instructions.extend(approved_llm_trace["errors"])
+
+    if not approved_date_verification["is_valid"]:
+        fix_instructions.extend(approved_date_verification["errors"])
     
     # 邮件一致性警告建议修复
     if email_result["warnings"]:
@@ -3097,6 +3377,10 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
         fix_instructions.extend([f"[approved schema建议] {w}" for w in approved_schema["warnings"]])
     if approved_timeliness["warnings"]:
         fix_instructions.extend([f"[approved时效性建议] {w}" for w in approved_timeliness["warnings"]])
+    if approved_llm_trace["warnings"]:
+        fix_instructions.extend([f"[LLM审计建议] {w}" for w in approved_llm_trace["warnings"]])
+    if approved_date_verification["warnings"]:
+        fix_instructions.extend([f"[页面日期建议] {w}" for w in approved_date_verification["warnings"]])
     
     # 计算综合分数
     score = report_result["overall_score"]
@@ -3112,6 +3396,12 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
         score -= len(approved_timeliness["errors"]) * 15
     if approved_timeliness["warnings"]:
         score -= len(approved_timeliness["warnings"]) * 3
+    if not approved_llm_trace["is_valid"]:
+        score -= len(approved_llm_trace["errors"]) * 15
+    if not approved_date_verification["is_valid"]:
+        score -= len(approved_date_verification["errors"]) * 15
+    if empty_approved:
+        score -= 50
     score = max(0, score)
     
     report_passed = report_result["passed"]
@@ -3119,7 +3409,19 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
     ai_passed = not ai_result["has_errors"]
     approved_schema_ok = approved_schema["is_valid"]
     approved_timely = not approved_timeliness["has_errors"]
-    can_send = report_passed and email_consistent and ai_passed and approved_schema_ok and approved_timely and score >= 80
+    approved_llm_ok = approved_llm_trace["is_valid"]
+    approved_date_ok = approved_date_verification["is_valid"]
+    can_send = (
+        report_passed
+        and email_consistent
+        and ai_passed
+        and approved_schema_ok
+        and approved_timely
+        and approved_llm_ok
+        and approved_date_ok
+        and not empty_approved
+        and score >= 80
+    )
     
     return {
         "report_passed": report_passed,
@@ -3127,6 +3429,8 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
         "ai_passed": ai_passed,
         "approved_schema_ok": approved_schema_ok,
         "approved_timely": approved_timely,
+        "approved_llm_ok": approved_llm_ok,
+        "approved_date_ok": approved_date_ok,
         "can_send_email": can_send,
         "overall_score": score,
         "fix_instructions": fix_instructions,
@@ -3135,6 +3439,8 @@ def run_full_validation(report_md_path: str, email_body: str, approved_data: Lis
         "ai_check": ai_result,
         "approved_schema_check": approved_schema,
         "approved_timeliness_check": approved_timeliness,
+        "approved_llm_trace_check": approved_llm_trace,
+        "approved_date_verification_check": approved_date_verification,
     }
 
 
@@ -3151,6 +3457,7 @@ def validate_search_log(
     raw_obj: Any | None = None,
     strict_coverage: bool = False,
     search_strategy: Any | None = None,
+    require_search_strategy: bool = False,
 ) -> Dict[str, Any]:
     """Validate evidence that all five search rounds were executed."""
     errors: list[str] = []
@@ -3201,9 +3508,17 @@ def validate_search_log(
         if not queries and not _round_source_queries(round_entry):
             errors.append(f"search_log第{index}轮缺少queries")
 
-    missing_rounds = sorted(REQUIRED_SEARCH_ROUNDS - rounds_seen)
+    required_rounds = configured_required_search_rounds()
+    missing_rounds = sorted(required_rounds - rounds_seen)
     if missing_rounds:
         errors.append(f"search_log缺少必要搜索轮次: {', '.join(missing_rounds)}")
+
+    high_recall_check = None
+    if strict_coverage or require_search_strategy:
+        high_recall_check = validate_high_recall_search_log(search_log, rounds_seen)
+        if high_recall_check["errors"]:
+            errors.extend(high_recall_check["errors"])
+        warnings.extend(high_recall_check.get("warnings", []))
 
     required_query_check = validate_required_search_queries(search_log)
     if required_query_check["errors"]:
@@ -3218,6 +3533,8 @@ def validate_search_log(
         if strategy_check["errors"]:
             errors.extend(strategy_check["errors"])
         warnings.extend(strategy_check.get("warnings", []))
+    elif require_search_strategy:
+        errors.append(MISSING_SEARCH_STRATEGY_ERROR)
 
     coverage_check = None
     if raw_obj is not None:
@@ -3271,6 +3588,7 @@ def validate_search_log(
         "required_query_check": required_query_check,
         "coverage_check": coverage_check,
         "strategy_check": strategy_check,
+        "high_recall_check": high_recall_check,
     }
 
 
@@ -3294,6 +3612,8 @@ def build_approved_from_raw(
         raise ValueError("--build-approved requires a full raw category dict")
     if search_strategy is not None and search_log is None:
         raise ValueError("search_strategy requires search_log so dynamic query execution can be audited")
+    if search_log is not None and search_strategy is None:
+        raise ValueError(MISSING_SEARCH_STRATEGY_ERROR)
 
     search_log_check = None
     if search_log is not None:
@@ -3303,9 +3623,13 @@ def build_approved_from_raw(
             raw_obj,
             strict_coverage=True,
             search_strategy=search_strategy,
+            require_search_strategy=True,
         )
         if not search_log_check["is_valid"]:
-            raise ValueError("search_log校验失败: " + "; ".join(search_log_check["errors"]))
+            raise ValueError(
+                "search_log校验失败 (search_log invalid，build-approved 已停止，不会生成 approved 输出): "
+                + "; ".join(search_log_check["errors"])
+            )
 
     output_dir = output_dir or DATA_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -3614,7 +3938,7 @@ def render_markdown_report(
                 f"{markdown_cell(item.get('summary', ''))}（{markdown_cell(item.get('date', report_date))}）"
             )
     else:
-        lines.append(f"1. 经五轮检索，本周期暂无可发送信息收录。（{report_date}）")
+        lines.append(f"1. 经完整检索，本周期暂无可发送信息收录。（{report_date}）")
 
     lines.extend([
         "",
@@ -3665,7 +3989,7 @@ def render_markdown_report(
         "",
         "### 国际监管动态",
         "",
-        "经五轮检索，本周期暂无相关新信息收录。",
+        "经完整检索，本周期暂无相关新信息收录。",
         "",
         "---",
         "",
@@ -3712,7 +4036,7 @@ def render_markdown_report(
         for index, item in enumerate(approved, 1):
             lines.append(f"{index}. {markdown_link(str(item.get('url', '')))}")
     else:
-        lines.append("1. 经五轮检索，本周期暂无可列示的外部链接。")
+        lines.append("1. 经完整检索，本周期暂无可列示的外部链接。")
     lines.extend([
         "",
         "---",
@@ -3725,7 +4049,7 @@ def render_markdown_report(
 
 def append_item_rows(lines: List[str], items: List[Dict[str, Any]], fields: List[str]) -> None:
     if not items:
-        lines.append("| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — | — |" if len(fields) == 5 else "| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — |")
+        lines.append("| 经完整检索，本周期暂无相关新信息收录。 | — | — | — | — |" if len(fields) == 5 else "| 经完整检索，本周期暂无相关新信息收录。 | — | — | — |")
         return
     for item in items:
         cells = []
@@ -3739,7 +4063,7 @@ def append_item_rows(lines: List[str], items: List[Dict[str, Any]], fields: List
 
 def append_funding_rows(lines: List[str], items: List[Dict[str, Any]]) -> None:
     if not items:
-        lines.append("| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — | — | — |")
+        lines.append("| 经完整检索，本周期暂无相关新信息收录。 | — | — | — | — | — |")
         return
     for item in items:
         cells = [
@@ -3755,7 +4079,7 @@ def append_funding_rows(lines: List[str], items: List[Dict[str, Any]]) -> None:
 
 def append_event_rows(lines: List[str], items: List[Dict[str, Any]]) -> None:
     if not items:
-        lines.append("| 经五轮检索，本周期暂无相关新信息收录。 | — | — | — | — |")
+        lines.append("| 经完整检索，本周期暂无相关新信息收录。 | — | — | — | — |")
         return
     for item in items:
         cells = [
@@ -3789,7 +4113,7 @@ def main():
     parser.add_argument("--skip-title-match", action="store_true", help="仅离线测试/受限网络临时使用：跳过build-approved标题-URL匹配")
     parser.add_argument("--skip-page-date-check", action="store_true", help="仅离线测试/受限网络临时使用：跳过原页面日期验证")
     parser.add_argument("--llm-relevance-mode", choices=["auto", "llm", "heuristic", "off"], default="auto", help="领域相关性审计模式：auto默认有LLM配置则调用，否则本地语义fallback")
-    parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验五轮搜索证据")
+    parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验基座必搜和LLM高召回搜索证据")
     parser.add_argument("--search-strategy", type=str, help="LLM动态搜索策略JSON路径，用于校验动态query执行证据")
     parser.add_argument("--strict-search-coverage", action="store_true", help="兼容旧命令；build-approved默认已严格校验必搜query和候选URL覆盖")
     parser.add_argument("--render-md", type=str, help="从approved JSON生成确定性Markdown报告")
@@ -3898,17 +4222,21 @@ def main():
                 search_strategy = json.load(f)
             print(f"自动加载LLM搜索策略: {search_strategy_path}")
         output_dir = Path(args.output) if args.output else DATA_DIR
-        result = build_approved_from_raw(
-            raw_obj,
-            args.date,
-            output_dir=output_dir,
-            check_url_health_enabled=not args.skip_url_health,
-            check_title_match_enabled=not args.skip_title_match,
-            check_page_date_enabled=not args.skip_page_date_check,
-            llm_relevance_mode=args.llm_relevance_mode,
-            search_log=search_log,
-            search_strategy=search_strategy,
-        )
+        try:
+            result = build_approved_from_raw(
+                raw_obj,
+                args.date,
+                output_dir=output_dir,
+                check_url_health_enabled=not args.skip_url_health,
+                check_title_match_enabled=not args.skip_title_match,
+                check_page_date_enabled=not args.skip_page_date_check,
+                llm_relevance_mode=args.llm_relevance_mode,
+                search_log=search_log,
+                search_strategy=search_strategy,
+            )
+        except ValueError as exc:
+            print(f"ERROR: {exc}")
+            sys.exit(1)
         print(f"approved已生成: {result['approved_path']} ({len(result['approved'])}条)")
         print(f"rejected已生成: {result['rejected_path']} ({len(result['rejected'])}条)")
         if result.get("search_log_check"):
@@ -3946,6 +4274,9 @@ def main():
             print("按照规则，系统已停止运行，正在发送通知邮件...")
             notify_user_on_llm_error(error_msg, args.date)
             sys.exit(1)
+        if not result["approved"]:
+            print(f"WARNING: approved为空，本次生成空日报")
+            # 空日报允许继续生成报告和后续流程，不强制退出
         if not result["approved_schema"]["is_valid"]:
             print(f"approved schema错误: {len(result['approved_schema']['errors'])}个")
             for error in result["approved_schema"]["errors"][:10]:

@@ -11,5 +11,12 @@ for key in (
     "SMTP_PASSWORD",
     "SYNBIO_DAILY_HOME",
     "SYNBIO_LLM_JUDGE_CACHE",
+    "SYNBIO_LLM_ASCII_PROMPTS",
+    "SYNBIO_SEARCH_PROVIDER",
+    "SYNBIO_SEARCH_FIXTURE",
+    "SERPER_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
+    "BING_SEARCH_API_KEY",
+    "TAVILY_API_KEY",
 ):
     os.environ.pop(key, None)

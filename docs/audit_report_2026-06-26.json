@@ -1,0 +1,46 @@
+{
+  "audited_at": "2026-06-25",
+  "report_date": "2026-06-26",
+  "approved_items": 3,
+  "rejected_items": 6,
+  "approved_titles": [
+    "深圳市推动合成生物创新引领生物制造产业高质量发展若干措施",
+    "深度学习赋能合成生物学——从分子、细胞、组织到生物体高度的应用",
+    "Advancing precision fermentation: Minimizing power demand of industrial scale bioreactors"
+  ],
+  "rejected_reasons": {
+    "[历史索引去重]": 1,
+    "[时效性]": 2,
+    "[去重]": 2,
+    "[approved冲突]": 1
+  },
+  "timeliness_issues": [],
+  "url_duplicates": [],
+  "dead_links": [
+    {
+      "url": "https://stic.sz.gov.cn/gkmlpt/content/12/12740/post_12740127.html",
+      "error": "SSL: BAD_ECPOINT bad ecpoint"
+    },
+    {
+      "url": "https://www.sciencedirect.com/science/article/pii/S009813542400173X",
+      "error": "HTTP Error 403: Forbidden"
+    }
+  ],
+  "content_type_issues": [],
+  "date_verification_issues": [
+    {
+      "title": "深圳市推动合成生物创新引领生物制造产业高质量发展若干措施",
+      "issue": "日期验证 confidence=low, error=SSL: BAD_ECPOINT"
+    },
+    {
+      "title": "Advancing precision fermentation: Minimizing power demand of industrial scale bioreactors",
+      "issue": "日期验证 confidence=low, error=HTTP Error 403: Forbidden"
+    }
+  ],
+  "recommendations": [
+    "最多拒绝原因: [时效性] (2条) — 新闻类条目因超过3天窗口被拒绝，需关注数据收集时效性",
+    "发现 2 条链接访问异常（SSL/403），建议人工复核或补充本地网络验证",
+    "发现 2 条日期验证问题，因目标网站SSL/访问限制导致 confidence=low，建议补充页面抓取验证或手动确认日期",
+    "建议补充 r3-r6 轮次搜索以提升 approved 条目数量（当前仅执行 r1+r2 共13条查询）"
+  ]
+}

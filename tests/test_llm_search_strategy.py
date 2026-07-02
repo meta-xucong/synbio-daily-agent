@@ -133,6 +133,66 @@ def test_current_strategy_config_covers_audited_blindspots():
     assert "生物制造 死亡谷 落地" in coverage_queries
     assert "金河生物 辅酶Q10 发酵项目 公告" in coverage_queries
     assert "site:stcn.com 生物制造 项目" in coverage_queries
+    assert "site:jfdaily.com 合成生物学创新产业峰会" in coverage_queries
+    assert "未来健康产业大会 合成生物学创新产业峰会" in coverage_queries
+
+
+def test_strategy_config_covers_2026_07_01_omission_sources():
+    config = llm_search_strategy.load_strategy_config(ROOT / "config" / "llm_search_strategy.json")
+    all_queries = " || ".join(
+        [str(item.get("query") or item) for item in config.get("coverage_queries", [])]
+        + [str(item) for item in config.get("source_hints", [])]
+        + [str(item) for item in config.get("llm_discovery_queries", [])]
+        + [str(item) for item in config.get("llm_gap_audit_queries", [])]
+    )
+
+    for token in [
+        "sciencenet.cn",
+        "dg.gov.cn",
+        "rednet.cn",
+        "hbkx.org.cn",
+        "ecust.edu.cn",
+        "siat.ac.cn",
+        "未来健康产业大会",
+        "中国创新创业大赛",
+        "核酸合成生物学",
+        "生物制造 中试平台",
+        "金帆 Nature Cell",
+    ]:
+        assert token in all_queries
+
+
+def test_strategy_config_declares_required_coverage_dimensions():
+    config = llm_search_strategy.load_strategy_config(ROOT / "config" / "llm_search_strategy.json")
+    assert set(config.get("required_coverage_dimensions", [])) >= {
+        "news",
+        "research",
+        "funding",
+        "policy",
+        "events",
+        "company_announcement",
+        "china_local_sources",
+        "english_sources",
+    }
+
+
+def test_base_search_queries_cover_shanghai_summit_blindspot():
+    config = json.loads((ROOT / "config" / "search_queries.json").read_text(encoding="utf-8"))
+    queries = [
+        query
+        for round_cfg in config.get("rounds", [])
+        for query in round_cfg.get("required_queries", [])
+    ]
+
+    assert "site:jfdaily.com 合成生物学创新产业峰会" in queries
+    assert "site:jfdaily.com 未来健康产业大会 合成生物" in queries
+    assert "site:sina.com.cn 合成生物学创新产业峰会" in queries
+    assert "site:sciencenet.cn 合成生物 生物制造 大会 峰会" in queries
+    assert "site:dg.gov.cn 合成生物 生物制造 产业园" in queries
+    assert "site:rednet.cn 合成生物 生物制造 中国创新创业大赛" in queries
+    assert "site:hbkx.org.cn 核酸合成生物学 中欧生命科学" in queries
+    assert "site:ecust.edu.cn 生物制造 中试平台 璧山" in queries
+    assert "site:siat.ac.cn 合成生物 金帆 Nature Cell" in queries
 
 
 def test_llm_search_strategy_normalizes_fake_client_response():
@@ -173,6 +233,117 @@ def test_llm_search_strategy_normalizes_fake_client_response():
     assert strategy["queries"][0]["priority"] == "high"
     assert strategy["queries"][1]["target_section"] == "funding"
     assert strategy["blindspots"] == ["重点企业", "融资"]
+
+
+def test_llm_search_strategy_retries_with_compact_prompt_after_non_json_response():
+    class FakeClient:
+        is_configured = True
+        model = "fake-model"
+
+        def __init__(self):
+            self.prompts = []
+
+        def complete(self, prompt):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                return "I will think about this first, but not return JSON."
+            assert "Return ONLY compact JSON" in prompt
+            return json.dumps({
+                "blindspots": ["地方政府源", "英文源"],
+                "queries": [
+                    {
+                        "query": "site:sciencenet.cn 合成生物 生物制造 大会",
+                        "reason": "科学网会议与产业活动补搜",
+                        "priority": "high",
+                        "target_section": "events",
+                        "expected_source_type": "academic",
+                    },
+                    {
+                        "query": "synthetic biology funding 2026",
+                        "reason": "英文融资动态补搜",
+                        "priority": "high",
+                        "target_section": "funding",
+                        "expected_source_type": "media",
+                    },
+                ],
+            }, ensure_ascii=False)
+
+    client = FakeClient()
+    strategy = llm_search_strategy.generate_search_strategy(
+        "2026-07-02",
+        config=_strategy_config(),
+        mode="llm",
+        client=client,
+    )
+
+    assert len(client.prompts) == 2
+    assert strategy["provider"] == "llm"
+    assert strategy["prompt_attempt"] == "compact"
+    assert strategy["queries"][0]["query"] == "site:sciencenet.cn 合成生物 生物制造 大会"
+
+
+def test_llm_search_strategy_uses_minimal_json_prompt_after_noisy_responses():
+    class FakeClient:
+        is_configured = True
+        model = "kimi-for-coding"
+        base_url = "http://127.0.0.1:15721"
+
+        def __init__(self):
+            self.prompts = []
+
+        def complete(self, prompt):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                return "我会先分析一下，但这次没有给 JSON。"
+            assert "Create 2 to 4 high-recall web search queries" in prompt
+            return json.dumps({
+                "blindspots": ["地方源", "活动"],
+                "queries": [
+                    {
+                        "query": "未来健康产业大会 合成生物学创新产业峰会 2026",
+                        "reason": "补搜上海峰会",
+                        "priority": "high",
+                        "target_section": "events",
+                        "expected_source_type": "media",
+                        "iteration": 1,
+                        "required": True,
+                    },
+                    {
+                        "query": "site:dg.gov.cn 合成生物 生物制造 产业园",
+                        "reason": "补搜地方政府源",
+                        "priority": "high",
+                        "target_section": "news",
+                        "expected_source_type": "government",
+                        "iteration": 1,
+                        "required": True,
+                    },
+                ],
+            }, ensure_ascii=False)
+
+    client = FakeClient()
+    strategy = llm_search_strategy.generate_search_strategy(
+        "2026-07-02",
+        config=_strategy_config(),
+        mode="llm",
+        client=client,
+    )
+
+    assert len(client.prompts) == 2
+    assert "Return ONLY compact JSON" in client.prompts[0]
+    assert strategy["prompt_attempt"] == "minimal_json"
+    assert strategy["queries"][0]["query"] == "未来健康产业大会 合成生物学创新产业峰会 2026"
+
+
+def test_extract_strategy_json_object_accepts_code_fence_and_preamble():
+    payload = {
+        "blindspots": ["科学网"],
+        "queries": [{"query": "site:sciencenet.cn 合成生物", "reason": "补搜"}],
+    }
+    text = "先给结论：\n```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```\n结束"
+
+    parsed = llm_search_strategy.extract_strategy_json_object(text)
+
+    assert parsed["queries"][0]["query"] == "site:sciencenet.cn 合成生物"
 
 
 def test_strategy_prompt_ascii_safe_encodes_chinese_context():
@@ -220,6 +391,77 @@ def test_messages_text_client_uses_search_strategy_token_budget(monkeypatch):
     assert captured["payload"]["max_tokens"] == 4200
 
 
+def test_messages_text_client_rejects_thinking_only_response(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "stop_reason": "max_tokens",
+                "content": [{"type": "thinking", "thinking": "not final JSON"}],
+            }).encode("utf-8")
+
+    def fake_opener(request, timeout=45):
+        return FakeResponse()
+
+    monkeypatch.setenv("ANTHROPIC_SEARCH_STRATEGY_RETRIES", "1")
+    client = llm_search_strategy.MessagesTextClient(
+        llm_search_strategy.LLMClient(
+            base_url="https://example.invalid",
+            auth_token="test-token",
+            opener=fake_opener,
+        )
+    )
+
+    try:
+        client.complete("prompt")
+    except RuntimeError as exc:
+        assert "no text blocks" in str(exc)
+        assert "thinking" in str(exc)
+    else:
+        raise AssertionError("thinking-only LLM responses must not be treated as empty success")
+
+
+def test_messages_text_client_retries_with_strategy_timeout(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "content": [{"text": '{"queries": []}'}],
+            }).encode("utf-8")
+
+    def fake_opener(request, timeout=45):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise TimeoutError("slow provider")
+        return FakeResponse()
+
+    monkeypatch.setenv("ANTHROPIC_SEARCH_STRATEGY_TIMEOUT", "91")
+    monkeypatch.setenv("ANTHROPIC_SEARCH_STRATEGY_RETRIES", "2")
+    monkeypatch.setattr(llm_search_strategy.time, "sleep", lambda seconds: None)
+    client = llm_search_strategy.MessagesTextClient(
+        llm_search_strategy.LLMClient(
+            base_url="https://example.invalid",
+            auth_token="test-token",
+            opener=fake_opener,
+        )
+    )
+
+    assert client.complete("prompt") == '{"queries": []}'
+    assert calls == [91, 91]
+
+
 def test_messages_text_client_uses_ascii_prompt_for_aiself(monkeypatch):
     captured = {}
 
@@ -261,6 +503,39 @@ def test_messages_text_client_uses_ascii_prompt_for_aiself(monkeypatch):
     assert "\\u84dd\\u6676\\u5fae\\u751f\\u7269" in captured["payload"]["messages"][0]["content"]
 
 
+def test_messages_text_client_disables_thinking_for_kimi_gateway(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "content": [{"type": "text", "text": '{"queries": []}'}],
+            }).encode("utf-8")
+
+    def fake_opener(request, timeout=45):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = llm_search_strategy.MessagesTextClient(
+        llm_search_strategy.LLMClient(
+            base_url="http://127.0.0.1:15721",
+            auth_token="test-token",
+            model="kimi-for-coding",
+            opener=fake_opener,
+        )
+    )
+
+    client.complete("prompt")
+
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
+
+
 def test_llm_search_strategy_appends_missing_coverage_queries():
     config = _strategy_config()
     config["max_queries"] = 5
@@ -290,7 +565,7 @@ def test_llm_search_strategy_appends_missing_coverage_queries():
     assert "site:vbdata.cn 合成生物" in queries
 
 
-def test_llm_search_strategy_coverage_floor_displaces_full_llm_response():
+def test_llm_search_strategy_coverage_floor_preserves_llm_response():
     config = _strategy_config()
     config["max_queries"] = 4
     config["coverage_queries"] = [
@@ -314,8 +589,9 @@ def test_llm_search_strategy_coverage_floor_displaces_full_llm_response():
     ).to_dict()
 
     queries = [item["query"] for item in strategy["queries"]]
-    assert len(queries) == 4
-    assert queries == [
+    assert len(queries) == 8
+    assert queries[:4] == [f"LLM 临时查询 {index}" for index in range(1, 5)]
+    assert queries[-4:] == [
         "site:stic.sz.gov.cn 合成生物",
         "生物制造 政策 落地",
         "site:vbdata.cn 合成生物",
@@ -378,6 +654,26 @@ def test_validate_search_strategy_execution_blocks_failed_query():
     assert not result["is_valid"]
     assert result["failed_queries"][0]["error"] == "timeout"
     assert "执行失败" in ";".join(result["errors"])
+
+
+def test_validate_search_strategy_execution_blocks_empty_required_queries():
+    result = report_pipeline.validate_search_strategy_execution(
+        {"queries": []},
+        _search_log_with_dynamic_query("unused dynamic query"),
+    )
+
+    assert not result["is_valid"]
+    assert result["required_total"] == 0
+    assert "no required queries" in ";".join(result["errors"])
+
+
+def test_validate_generated_strategy_blocks_empty_queries():
+    try:
+        llm_search_strategy.validate_generated_strategy({"queries": []}, _strategy_config())
+    except ValueError as exc:
+        assert "below min_queries" in str(exc)
+    else:
+        raise AssertionError("empty generated strategy should fail before being written")
 
 
 def test_find_default_search_strategy_path_prefers_search_log_directory(tmp_path):
