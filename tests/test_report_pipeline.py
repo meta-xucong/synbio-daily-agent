@@ -499,6 +499,21 @@ def test_extract_page_verified_date_falls_back_when_page_dates_do_not_match_sear
     assert "warning" in result
 
 
+def test_extract_page_verified_date_rejects_far_future_placeholder_date():
+    html = """
+    <html><body>
+      <h1>招商银行：生物制造系列报告①——把握合成生物发展趋势</h1>
+      <p>版权所有 2099-10-10</p>
+      <p>动脉智库 2025-02-06 17:30</p>
+    </body></html>
+    """
+
+    result = report_pipeline.extract_page_verified_date(html, search_date="2026-07-03")
+
+    assert result["verified_date"] == "2026-07-03"
+    assert result["source"] == "search_fallback"
+
+
 def test_validate_report_structure_forbidden_section_check_only_scans_headings(tmp_path):
     report = tmp_path / "report.md"
     report.write_text(
@@ -1901,6 +1916,60 @@ def test_extract_page_verified_date_uses_body_event_date_without_label():
 
     assert result["verified_date"] == "2025-08-29"
     assert result["confidence"] == "high"
+
+
+def test_verify_item_page_date_demotes_future_non_event_date_to_search_fallback():
+    item = _item(
+        title="金河生物项目公告",
+        summary="项目实施期间为2026年08月01日至2028年04月30日。",
+        date="2026-06-26",
+        search_date="2026-06-26",
+        date_source="search_result",
+        source_round="r1",
+        type="funding",
+        url="https://example.com/funding/jinhe",
+    )
+
+    def fake_verify(url, search_date):
+        return {
+            "verified_date": "2026-08-01",
+            "confidence": "medium",
+            "source": "body",
+            "url": url,
+        }
+
+    verified = report_pipeline.verify_item_page_date(item, date_verify_func=fake_verify)
+
+    assert verified["date"] == "2026-06-26"
+    assert verified["date_verification"]["source"] == "search_fallback"
+    assert verified["date_verification"]["confidence"] == "low"
+
+
+def test_verify_item_page_date_keeps_near_future_event_date():
+    item = _item(
+        title="Synthetic Biology at the Intersection of Science, Ethics, and Policy",
+        summary="Sep. 18, 2026 event page.",
+        date="2026-07-03",
+        search_date="2026-07-03",
+        date_source="search_result",
+        source_round="llm_discovery",
+        type="events",
+        url="https://example.com/events/synthetic-biology-policy",
+    )
+    item["content_type"] = "event_preview"
+
+    def fake_verify(url, search_date):
+        return {
+            "verified_date": "2026-07-04",
+            "confidence": "high",
+            "source": "meta/body",
+            "url": url,
+        }
+
+    verified = report_pipeline.verify_item_page_date(item, date_verify_func=fake_verify)
+
+    assert verified["date"] == "2026-07-04"
+    assert verified["verified_date"] == "2026-07-04"
 
 
 def test_fetch_and_verify_date_extracts_body_date_without_network():

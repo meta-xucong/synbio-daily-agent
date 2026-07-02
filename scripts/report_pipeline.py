@@ -293,7 +293,7 @@ AUTHORITY_TIERS = {
 # ==================== 工具函数 ====================
 
 def parse_date(date_str: str) -> Optional[datetime]:
-    """解析各种日期格式"""
+    """解析各种日期格式，并过滤明显不合理的日期。"""
     if not date_str or date_str == "N/A":
         return None
     
@@ -307,7 +307,10 @@ def parse_date(date_str: str) -> Optional[datetime]:
     
     for fmt in formats:
         try:
-            return datetime.strptime(date_str.strip(), fmt)
+            dt = datetime.strptime(date_str.strip(), fmt)
+            if _is_reasonable_date(dt):
+                return dt
+            return None
         except ValueError:
             continue
     
@@ -321,11 +324,34 @@ def parse_date(date_str: str) -> Optional[datetime]:
         if match:
             try:
                 y, m, d = int(match.group(1)), int(match.group(2)), int(match.group(3))
-                return datetime(y, m, d)
+                dt = datetime(y, m, d)
+                if _is_reasonable_date(dt):
+                    return dt
+                return None
             except:
                 pass
     
     return None
+
+
+def _is_reasonable_date(dt: datetime) -> bool:
+    """检查日期是否在基础合理范围内，防止模板占位符年份等明显异常日期被误用。"""
+    if not dt:
+        return False
+    return datetime(2018, 1, 1) <= dt <= datetime(2030, 12, 31)
+
+
+def _is_plausible_verified_date(candidate: datetime, search_date: str = "", *, allow_future_days: int = 0) -> bool:
+    if not _is_reasonable_date(candidate):
+        return False
+    search_dt = parse_date(search_date)
+    if not search_dt:
+        return True
+    candidate_day = candidate.replace(hour=0, minute=0, second=0, microsecond=0)
+    search_day = search_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    if candidate_day > search_day + timedelta(days=max(0, allow_future_days)):
+        return False
+    return True
 
 
 def generate_fingerprint(item: Dict[str, Any]) -> str:
@@ -551,7 +577,7 @@ def normalize_search_result_to_raw_item(
     summary = str(_first_nonempty(result, SEARCH_RESULT_SUMMARY_KEYS) or title).strip()
     source = str(_first_nonempty(result, SEARCH_RESULT_SOURCE_KEYS) or urlsplit(url).netloc or "搜索结果").strip()
     date_value = str(_first_nonempty(result, SEARCH_RESULT_DATE_KEYS) or "").strip()
-    date_value = normalize_search_result_date(date_value or summary or title, report_date=report_date)
+    date_value = normalize_search_result_date(date_value, report_date=report_date)
     item_type = str(result.get("type") or result.get("category") or "").strip()
     if item_type not in VALID_ITEM_TYPES:
         item_type = infer_item_type_from_search_result(result, query=query)
@@ -1548,7 +1574,12 @@ def _select_verified_date(
     older dates. When a search/result date is available, use it only as a
     disambiguation anchor among page-visible candidates.
     """
-    unique = _unique_dates([candidate for candidate in candidates if candidate])
+    # 先过滤掉不合理的日期（模板占位符、正文中的未来日期等）
+    unique = _unique_dates([
+        candidate
+        for candidate in candidates
+        if candidate and _is_plausible_verified_date(candidate, search_date, allow_future_days=0)
+    ])
     if not unique:
         return None
 
@@ -1736,9 +1767,21 @@ def verify_item_page_date(
         return verified_item
     verified_item["date_verification"] = result
     verified_date = str(result.get("verified_date") or "").strip()
-    if result.get("source") != "search_fallback" and parse_date(verified_date):
-        verified_item["verified_date"] = verified_date
-        verified_item["date"] = verified_date
+    if result.get("source") != "search_fallback":
+        verified_dt = parse_date(verified_date)
+        effective_type = str(verified_item.get("content_type") or verified_item.get("type") or "")
+        allow_future_days = 1 if effective_type in {"events", "event_preview"} else 0
+        if verified_dt and _is_plausible_verified_date(verified_dt, search_date, allow_future_days=allow_future_days):
+            verified_item["verified_date"] = verified_date
+            verified_item["date"] = verified_date
+        else:
+            # 日期不合理：降级为 search_fallback
+            verified_item["date_verification"] = {
+                "verified_date": verified_date,
+                "source": "search_fallback",
+                "confidence": "low",
+                "reason": f"页面提取日期不合理: {verified_date}",
+            }
     return verified_item
 
 
@@ -2444,6 +2487,12 @@ def check_timeliness(item: Dict[str, Any], item_type: str, now: Optional[datetim
         if item_date > future_cutoff:
             return False, f"活动太远 ({date_str}, 超过{window_days}天)"
         return True, ""
+    
+    # 非活动类型：拒绝未来日期（超过当前时间1天），防止正文中的预计日期或模板占位符被误用
+    tomorrow = current_time + timedelta(days=1)
+    tomorrow = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+    if item_date > tomorrow:
+        return False, f"日期在未来 ({date_str})，疑似正文中的预计日期或模板占位符"
     
     if item_date < cutoff:
         return False, f"超过时间窗口 ({date_str}, 限制{window_days}天)"
