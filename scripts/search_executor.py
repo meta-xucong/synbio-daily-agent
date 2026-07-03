@@ -253,6 +253,7 @@ def _should_failover_key(error: str) -> bool:
             "http error 401",
             "http error 403",
             "http error 429",
+            "http error 432",
             "http error 500",
             "http error 502",
             "http error 503",
@@ -269,6 +270,7 @@ def _should_failover_key(error: str) -> bool:
             "credit",
             "credits",
             "exhaust",
+            "exceeds",
             "unauthorized",
             "forbidden",
         )

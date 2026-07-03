@@ -357,6 +357,36 @@ def test_tavily_provider_fails_over_to_backup_key():
     assert results[0]["title"] == "Recovered"
 
 
+def test_tavily_provider_fails_over_on_http_432_plan_limit():
+    seen_suffixes = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"results": [{"title": "Recovered", "url": "https://example.com/recovered"}]}).encode("utf-8")
+
+    def fake_opener(request, timeout=30):
+        payload = json.loads(request.data.decode("utf-8"))
+        api_key = payload["api_key"]
+        seen_suffixes.append(api_key[-2:])
+        if api_key == "key-1":
+            raise search_executor.SearchProviderError(
+                "HTTP Error 432: This request exceeds your plan's set usage limit"
+            )
+        return FakeResponse()
+
+    provider = search_executor.TavilySearchProvider(["key-1", "key-2"], opener=fake_opener, retries=1)
+    results = provider.search("synthetic biology", limit=5)
+
+    assert seen_suffixes == ["-1", "-2"]
+    assert results[0]["title"] == "Recovered"
+
+
 def test_execute_search_plan_parallelizes_base_queries_and_preserves_order():
     calls = []
 
