@@ -1465,10 +1465,15 @@ class PageDateParser(HTMLParser):
         super().__init__()
         self.meta_dates: list[str] = []
         self.time_dates: list[str] = []
+        self.text_parts: list[str] = []
+        self._skip_text_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag_name = tag.lower()
         attributes = {str(name).lower(): str(value or "") for name, value in attrs}
-        if tag.lower() == "meta":
+        if tag_name in {"script", "style", "noscript", "svg"}:
+            self._skip_text_depth += 1
+        if tag_name == "meta":
             key = (
                 attributes.get("property")
                 or attributes.get("name")
@@ -1478,8 +1483,22 @@ class PageDateParser(HTMLParser):
             content = attributes.get("content", "")
             if content and key in PAGE_DATE_META_KEYS:
                 self.meta_dates.append(content)
-        if tag.lower() == "time" and attributes.get("datetime"):
+        if tag_name == "time" and attributes.get("datetime"):
             self.time_dates.append(attributes["datetime"])
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"script", "style", "noscript", "svg"} and self._skip_text_depth > 0:
+            self._skip_text_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_text_depth > 0:
+            return
+        text = str(data or "").strip()
+        if text:
+            self.text_parts.append(text)
+
+    def visible_text(self) -> str:
+        return " ".join(self.text_parts)
 
 
 def _parse_any_date(value: str) -> Optional[datetime]:
@@ -1606,7 +1625,22 @@ def _select_verified_date(
     return min(unique)
 
 
-def extract_page_verified_date(html: str, search_date: str = "") -> Dict[str, Any]:
+def _looks_like_36kr_url(url: str) -> bool:
+    host = urlsplit(url or "").netloc.lower()
+    return host == "36kr.com" or host == "www.36kr.com" or host == "m.36kr.com"
+
+
+def _first_plausible_body_date(text: str, search_date: str = "") -> Optional[datetime]:
+    lead = (text or "")[:2000]
+    for pattern in DATE_TEXT_PATTERNS:
+        for match in re.finditer(pattern, lead, flags=re.IGNORECASE):
+            parsed = _parse_any_date(match.group(0))
+            if parsed and _is_plausible_verified_date(parsed, search_date, allow_future_days=0):
+                return parsed
+    return None
+
+
+def extract_page_verified_date(html: str, search_date: str = "", page_url: str = "") -> Dict[str, Any]:
     """Extract a conservative original date from a fetched page."""
     parser = PageDateParser()
     try:
@@ -1618,7 +1652,7 @@ def extract_page_verified_date(html: str, search_date: str = "") -> Dict[str, An
         parsed for parsed in (_parse_any_date(value) for value in parser.meta_dates + parser.time_dates)
         if parsed
     ]
-    text = unescape(re.sub(r"<[^>]+>", " ", html or ""))
+    text = unescape(parser.visible_text())
     text = re.sub(r"\s+", " ", text)
 
     context_dates: list[datetime] = []
@@ -1635,6 +1669,17 @@ def extract_page_verified_date(html: str, search_date: str = "") -> Dict[str, An
             context_dates.append(parsed)
 
     structured_dates = meta_dates + context_dates
+    if _looks_like_36kr_url(page_url):
+        body_verified = _first_plausible_body_date(text, search_date)
+        if body_verified:
+            structured_verified = _select_verified_date(structured_dates, search_date) if structured_dates else None
+            if structured_verified is None or body_verified != structured_verified:
+                return {
+                    "verified_date": body_verified.strftime("%Y-%m-%d"),
+                    "confidence": "high",
+                    "source": "body",
+                    "date_count": 1,
+                }
     if structured_dates:
         verified = _select_verified_date(structured_dates, search_date)
         if verified:
@@ -1725,7 +1770,7 @@ def fetch_and_verify_date(
                 charset = headers.get_content_charset() or charset
             body = response.read(DATE_VERIFY_MAX_BYTES)
         html = body.decode(charset, errors="replace")
-        result = extract_page_verified_date(html, search_date=search_date)
+        result = extract_page_verified_date(html, search_date=search_date, page_url=url)
         result["url"] = url
         return result
     except Exception as exc:

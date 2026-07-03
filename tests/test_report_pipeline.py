@@ -1905,6 +1905,28 @@ def test_extract_page_verified_date_ignores_effective_and_noise_dates_when_publi
     assert result["confidence"] == "high"
 
 
+def test_extract_page_verified_date_prefers_body_date_for_36kr_cache_meta():
+    html = """
+    <html>
+      <head><meta property="article:published_time" content="2026-07-03T07:36:17+08:00"></head>
+      <body>
+        氪记2022
+        2023-01-12 08:00
+        这是一篇 36氪 旧文章，被移动端缓存页面重新注入了当天 meta 时间。
+      </body>
+    </html>
+    """
+
+    result = report_pipeline.extract_page_verified_date(
+        html,
+        search_date="2026-07-03",
+        page_url="https://m.36kr.com/p/2084819844283143",
+    )
+
+    assert result["verified_date"] == "2023-01-12"
+    assert result["source"] == "body"
+
+
 def test_extract_page_verified_date_uses_body_event_date_without_label():
     html = """
     <html><body>
