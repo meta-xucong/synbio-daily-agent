@@ -45,6 +45,7 @@ try:
     from .render_utils import safe_url
     from .llm_judge import Decision, is_synbio_relevant as _is_synbio_relevant_impl
     from .llm_judge import judge_item_relevance
+    from .llm_judge import DateDecision, judge_item_date_validity
 except ImportError:
     from settings import CONFIG_DIR, DATA_DIR, REPORTS_DIR, TEMPLATES_DIR, now_local
     from console_utils import ensure_utf8_console
@@ -52,10 +53,12 @@ except ImportError:
     from render_utils import safe_url
     from llm_judge import Decision, is_synbio_relevant as _is_synbio_relevant_impl
     from llm_judge import judge_item_relevance
+    from llm_judge import DateDecision, judge_item_date_validity
 
 ensure_utf8_console()
 
 RelevanceDecision = Decision
+DateAuditDecision = DateDecision
 
 # ==================== 配置常量 ====================
 
@@ -3879,6 +3882,7 @@ def build_approved_from_raw(
     date_verify_func=fetch_and_verify_date,
     llm_relevance_mode: str = "auto",
     llm_judge_func=judge_item_relevance,
+    llm_date_judge_func=judge_item_date_validity,
     search_log: Any | None = None,
     search_strategy: Any | None = None,
 ) -> Dict[str, Any]:
@@ -3941,6 +3945,7 @@ def build_approved_from_raw(
         )
         all_rejected.extend(title_rejected)
     llm_relevance_warnings: list[str] = []
+    llm_date_warnings: list[str] = []
     llm_api_error: str = ""
     if llm_relevance_mode != "off":
         all_approved, llm_rejected, llm_relevance_warnings, llm_api_error = remove_llm_rejected_items(
@@ -3949,6 +3954,16 @@ def build_approved_from_raw(
             judge_func=llm_judge_func,
         )
         all_rejected.extend(llm_rejected)
+        if not llm_api_error:
+            all_approved, llm_date_rejected, llm_date_warnings, llm_date_api_error = remove_llm_date_mismatch_items(
+                all_approved,
+                report_date,
+                mode=llm_relevance_mode,
+                judge_func=llm_date_judge_func,
+            )
+            all_rejected.extend(llm_date_rejected)
+            if llm_date_api_error:
+                llm_api_error = llm_date_api_error
     all_approved = sort_approved_items(all_approved)
     approved_check = validate_approved_schema(all_approved)
     approved_path = output_dir / f"approved_{report_date}.json"
@@ -3972,6 +3987,7 @@ def build_approved_from_raw(
         "search_log_check": search_log_check,
         "title_match_warnings": title_match_warnings,
         "llm_relevance_warnings": llm_relevance_warnings,
+        "llm_date_warnings": llm_date_warnings,
         "llm_api_error": llm_api_error,
     }
 
@@ -4117,6 +4133,61 @@ def remove_llm_rejected_items(
         rejected.append({
             "item": annotated,
             "reason": f"[LLM领域审计] {decision.reject_message()}",
+            "action": "排除",
+        })
+
+    return kept, rejected, warnings, api_error
+
+
+def remove_llm_date_mismatch_items(
+    items: List[Dict[str, Any]],
+    report_date: str,
+    mode: str = "auto",
+    judge_func=judge_item_date_validity,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str], str]:
+    """Run the LLM date-integrity gate over already-approved candidates."""
+    kept: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    api_error: str = ""
+
+    for item in items:
+        if not should_verify_page_date(item):
+            kept.append(item)
+            continue
+        try:
+            decision = judge_func(item, report_date, mode=mode)
+        except RuntimeError as exc:
+            error_msg = str(exc)
+            if not api_error:
+                api_error = error_msg
+            warnings.append(f"LLM日期审计不可用: {error_msg}")
+            continue
+        if not isinstance(decision, DateDecision):
+            warnings.append(f"LLM日期审计返回非标准结果，已保守排除: {item.get('title', '')}")
+            rejected.append({
+                "item": item,
+                "reason": "[LLM日期审计] 非标准审计结果",
+                "action": "排除",
+            })
+            continue
+
+        annotated = dict(item)
+        annotated["llm_date_check"] = {
+            "is_date_valid": decision.is_date_valid,
+            "confidence": decision.confidence,
+            "reason": decision.reason,
+            "evidence_spans": decision.evidence_spans,
+            "suspected_actual_date": decision.suspected_actual_date,
+            "provider": decision.provider,
+        }
+        if decision.is_date_valid:
+            kept.append(annotated)
+            continue
+        suspected = f"，疑似真实日期={decision.suspected_actual_date}" if decision.suspected_actual_date else ""
+        rejected.append({
+            "item": annotated,
+            "reason": f"[LLM日期审计] {decision.reason or '候选日期疑似不是文章真实发布时间'}{suspected}",
             "action": "排除",
         })
 

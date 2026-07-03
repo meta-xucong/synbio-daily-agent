@@ -2120,6 +2120,70 @@ def test_build_approved_rejects_search_fallback_date_verification(tmp_path, monk
     assert result["stats"]["news"]["date_verification_rejected"] == 1
 
 
+def test_build_approved_rejects_llm_date_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {"version": 1, "registry": {}})
+    monkeypatch.setattr(report_pipeline, "validate_raw_item", lambda item, item_type: (True, "", dict(item)))
+    raw = {
+        "news": [],
+        "research": [_item(
+                title="合成生物细胞工厂产业回顾 | 氪记2022-36氪",
+                summary="该文回顾合成生物细胞工厂企业在2023年1月前后的融资与产业进展。",
+                date="2026-06-10",
+                search_date="2026-06-10",
+                date_source="search_result",
+                source_round="r1",
+                type="research",
+                url="https://m.36kr.com/p/2084819844283143",
+        )],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def fake_date_verify(url, search_date):
+            return {
+                "verified_date": "2026-06-10",
+                "confidence": "high",
+                "source": "meta/body",
+                "url": url,
+            }
+
+    def fake_llm_date(item, report_date, mode="auto"):
+        return report_pipeline.DateAuditDecision(
+            is_date_valid=False,
+            confidence=0.97,
+            reason="候选日期更像缓存或页脚日期，不像文章真实发布时间",
+            evidence_spans=["氪记2022", "2023年1月完成交割"],
+            suspected_actual_date="2023-01-12",
+            provider="llm-test",
+        )
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+        date_verify_func=fake_date_verify,
+        llm_relevance_mode="auto",
+        llm_judge_func=lambda item, mode="auto": report_pipeline.RelevanceDecision(
+            is_approved=True,
+            domain_relevance="core_synbio",
+            confidence=0.9,
+            reason="合成生物相关",
+            evidence_spans=["合成生物"],
+            section="news",
+            provider="llm-test",
+        ),
+        llm_date_judge_func=fake_llm_date,
+    )
+
+    assert result["approved"] == []
+    assert "LLM日期审计" in json.dumps(result["rejected"], ensure_ascii=False)
+
+
 def test_build_approved_rejects_old_policy_file_after_page_date_verification(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])

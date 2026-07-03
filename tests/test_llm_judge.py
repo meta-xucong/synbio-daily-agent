@@ -210,6 +210,44 @@ def test_kimi_official_client_disables_thinking_for_json_judging():
     assert decision.is_approved
 
 
+def test_anthropic_client_parses_date_validation_response():
+    response_payload = {
+        "content": [{
+            "type": "text",
+            "text": json.dumps({
+                "is_date_valid": False,
+                "confidence": 0.96,
+                "reason": "候选日期更像页脚最近内容日期，不像文章真实发布时间",
+                "evidence_spans": ["该轮融资于2023年1月完成交割", "氪记2022"],
+                "suspected_actual_date": "2023-01-12",
+            }, ensure_ascii=False),
+        }]
+    }
+    seen = {}
+
+    def fake_opener(request, timeout=45):
+        seen["body"] = json.loads(request.data.decode("utf-8"))
+        return _FakeResponse(json.dumps(response_payload).encode("utf-8"))
+
+    client = llm_judge.AnthropicRelevanceClient(
+        base_url="https://api.kimi.com/coding",
+        auth_token="test-token",
+        model="kimi-for-coding",
+        opener=fake_opener,
+    )
+    decision = client.judge_date({
+        "title": "从躺着拿钱到融资内卷，合成生物回归商业理性 | 氪记2022-36氪",
+        "summary": "该轮融资于2023年1月完成交割",
+        "date": "2026-07-03",
+        "search_date": "2026-07-03",
+        "type": "research",
+    }, "2026-07-03")
+
+    assert seen["body"]["thinking"] == {"type": "disabled"}
+    assert not decision.is_date_valid
+    assert decision.suspected_actual_date == "2023-01-12"
+
+
 def test_anthropic_client_does_not_duplicate_v1_path():
     response_payload = {
         "content": json.dumps({

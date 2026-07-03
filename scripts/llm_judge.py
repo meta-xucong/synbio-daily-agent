@@ -226,6 +226,36 @@ class JudgeClient(Protocol):
         ...
 
 
+@dataclass
+class DateDecision:
+    """Structured judgment for whether a candidate date looks like the real publish/event date."""
+
+    is_date_valid: bool = True
+    confidence: float = 0.0
+    reason: str = ""
+    evidence_spans: list[str] = field(default_factory=list)
+    suspected_actual_date: Optional[str] = None
+    provider: str = "heuristic"
+    raw_response: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        try:
+            self.confidence = float(self.confidence)
+        except (TypeError, ValueError):
+            self.confidence = 0.0
+        self.confidence = max(0.0, min(1.0, self.confidence))
+        self.evidence_spans = [
+            str(span).strip()[:300]
+            for span in (self.evidence_spans or [])
+            if str(span).strip()
+        ][:5]
+        if self.suspected_actual_date:
+            self.suspected_actual_date = str(self.suspected_actual_date).strip()[:40]
+
+
+DateValidationDecision = DateDecision
+
+
 # Strong positive signals: engineered biological systems and biomanufacturing.
 _STRONG_POSITIVE = frozenset([
     "代谢工程", "基因编辑", "crispr", "基因线路", "基因回路", "基因电路",
@@ -567,6 +597,58 @@ def _build_prompt(item: dict[str, Any], *, ascii_safe: bool = False) -> str:
     )
 
 
+def _build_date_validation_prompt(
+    item: dict[str, Any],
+    report_date: str,
+    *,
+    ascii_safe: bool = False,
+) -> str:
+    compact = {
+        "title": str(item.get("title", ""))[:300],
+        "source": str(item.get("source", ""))[:120],
+        "type": str(item.get("type", ""))[:40],
+        "candidate_date": str(item.get("date", ""))[:40],
+        "search_date": str(item.get("search_date", ""))[:40],
+        "summary": str(item.get("summary", ""))[:2000],
+        "url": str(item.get("url", ""))[:300],
+        "date_verification": item.get("date_verification") if isinstance(item.get("date_verification"), dict) else {},
+        "report_date": str(report_date or "")[:40],
+    }
+    if ascii_safe:
+        return (
+            "You are the date-integrity gate for a synthetic-biology daily report.\n"
+            "Decide whether candidate_json.candidate_date is likely the actual article publish date or actual event date.\n"
+            "Reject dates that look like cached page time, footer/recent-content date, copyright date, project start/plan date, or another historical date mentioned inside the article.\n"
+            "Accept only when the candidate_date likely matches the article's real publish date or the real event date being reported.\n"
+            "Return strict JSON only, no Markdown. Schema:\n"
+            "{"
+            '"is_date_valid":true,'
+            '"confidence":0.0,'
+            '"reason":"short reason",'
+            '"evidence_spans":["evidence from candidate_json"],'
+            '"suspected_actual_date":null'
+            "}\n"
+            "candidate_json:\n"
+            f"{json.dumps(compact, ensure_ascii=True)}"
+        )
+    return (
+        "你是合成生物行业日报的日期审稿人。\n"
+        "判断 candidate_date 是否像文章真正的发布日期或真正的事件日期。\n"
+        "如果它更像页脚最近内容日期、缓存时间、版权年份、项目计划日期、历史回顾日期，就判定为无效并建议排除。\n"
+        "只有当 candidate_date 很像这篇文章自己的真实发布时间或活动真实日期时，才判定有效。\n"
+        "必须输出纯 JSON，不要 Markdown。schema:\n"
+        "{"
+        '"is_date_valid":true,'
+        '"confidence":0.0,'
+        '"reason":"短理由",'
+        '"evidence_spans":["原文证据片段"],'
+        '"suspected_actual_date":null'
+        "}\n"
+        "候选信息:\n"
+        f"{json.dumps(compact, ensure_ascii=False)}"
+    )
+
+
 def _extract_json_object(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
@@ -615,6 +697,26 @@ def normalize_llm_decision(data: dict[str, Any], raw_response: str | None = None
     )
 
 
+def normalize_date_decision(data: dict[str, Any], raw_response: str | None = None) -> DateDecision:
+    is_date_valid = bool(data.get("is_date_valid", False))
+    try:
+        confidence = float(data.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    evidence = data.get("evidence_spans") or []
+    if not isinstance(evidence, list):
+        evidence = [str(evidence)]
+    return DateDecision(
+        is_date_valid=is_date_valid,
+        confidence=confidence,
+        reason=str(data.get("reason") or "").strip()[:500],
+        evidence_spans=[str(item) for item in evidence],
+        suspected_actual_date=str(data.get("suspected_actual_date") or "").strip()[:40] or None,
+        provider="llm",
+        raw_response=raw_response,
+    )
+
+
 class LLMClient:
     """Minimal Anthropic-compatible Messages API client."""
 
@@ -646,14 +748,14 @@ class LLMClient:
             return f"{self.base_url}/messages"
         return f"{self.base_url}/v1/messages"
 
-    def judge(self, item: dict[str, Any]) -> Decision:
+    def complete_text(self, prompt: str, *, max_tokens: int = 600, temperature: float = 0) -> str:
         if not self.is_configured:
             raise RuntimeError("LLM provider is not configured")
         payload = {
             "model": self.model,
-            "max_tokens": 600,
-            "temperature": 0,
-            "messages": [{"role": "user", "content": _build_prompt(item, ascii_safe=self.use_ascii_prompts)}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [{"role": "user", "content": prompt}],
         }
         if provider_supports_thinking_disable(self.base_url, self.model):
             payload["thinking"] = {"type": "disabled"}
@@ -682,7 +784,19 @@ class LLMClient:
             text = content
         else:
             text = str(parsed.get("text") or body)
+        return text
+
+    def judge(self, item: dict[str, Any]) -> Decision:
+        text = self.complete_text(_build_prompt(item, ascii_safe=self.use_ascii_prompts), max_tokens=600, temperature=0)
         return normalize_llm_decision(_extract_json_object(text), raw_response=text)
+
+    def judge_date(self, item: dict[str, Any], report_date: str) -> DateDecision:
+        text = self.complete_text(
+            _build_date_validation_prompt(item, report_date, ascii_safe=self.use_ascii_prompts),
+            max_tokens=400,
+            temperature=0,
+        )
+        return normalize_date_decision(_extract_json_object(text), raw_response=text)
 
 
 AnthropicRelevanceClient = LLMClient
@@ -748,6 +862,38 @@ def judge_item_relevance(
             raise RuntimeError(f"LLM API已配置但调用失败: {exc}") from exc
     # auto mode: client not configured -> fallback to heuristic
     return heuristic_relevance_decision(item)
+
+
+def judge_item_date_validity(
+    item: dict[str, Any],
+    report_date: str,
+    mode: str = "auto",
+    client: JudgeClient | None = None,
+) -> DateDecision:
+    selected_mode = (mode or "auto").lower()
+    if selected_mode == "off":
+        return DateDecision(
+            is_date_valid=True,
+            confidence=0.7,
+            reason="LLM日期审计已关闭",
+            evidence_spans=[str(item.get("date") or item.get("search_date") or "manual-off")],
+            provider="off",
+        )
+    client_instance = client or LLMClient()
+    if hasattr(client_instance, "judge_date") and (selected_mode == "llm" or (selected_mode == "auto" and client_instance.is_configured)):  # type: ignore[attr-defined]
+        try:
+            return client_instance.judge_date(item, report_date)  # type: ignore[attr-defined]
+        except Exception as exc:
+            if selected_mode == "llm":
+                raise RuntimeError(f"LLM日期审计失败: {exc}") from exc
+            raise RuntimeError(f"LLM API已配置但日期审计调用失败: {exc}") from exc
+    return DateDecision(
+        is_date_valid=True,
+        confidence=0.51,
+        reason="未配置LLM日期审计，跳过",
+        evidence_spans=[str(item.get("date") or item.get("search_date") or "skipped")],
+        provider="heuristic-skip",
+    )
 
 
 def is_synbio_relevant(title: str = "", summary: str = "", url: str = "") -> Tuple[bool, str, str]:
