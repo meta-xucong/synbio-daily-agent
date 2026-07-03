@@ -19,6 +19,8 @@ import json
 import os
 import re
 import hashlib
+import concurrent.futures
+import threading
 import socket
 import ssl
 import smtplib
@@ -86,6 +88,7 @@ URL_HEALTH_TIMEOUT_SECONDS = 10
 URL_HEALTH_MAX_BYTES = 250_000
 DATE_VERIFY_TIMEOUT_SECONDS = 10
 DATE_VERIFY_MAX_BYTES = 300_000
+DATE_VERIFY_MAX_WORKERS = 12
 TITLE_MATCH_TIMEOUT_SECONDS = 10
 TITLE_MATCH_MAX_BYTES = 300_000
 TITLE_MATCH_MIN_SCORE = 0.30
@@ -1830,6 +1833,55 @@ def verify_item_page_date(
     return verified_item
 
 
+def verify_items_page_dates(
+    items: List[Dict[str, Any]],
+    date_verify_func=fetch_and_verify_date,
+    *,
+    max_workers: int = DATE_VERIFY_MAX_WORKERS,
+) -> List[Dict[str, Any]]:
+    """Verify page dates for many items with URL-level caching and bounded concurrency."""
+    if not items:
+        return []
+
+    worker_count = max(1, min(int(max_workers or 1), len(items)))
+    cache: dict[str, Dict[str, Any]] = {}
+    cache_lock = threading.Lock()
+
+    def cache_key(item: Dict[str, Any]) -> str:
+        primary = canonicalize_url(str(item.get("url", "") or ""))
+        search_date = str(item.get("search_date") or item.get("date") or "")
+        return f"{primary}::{search_date}"
+
+    def run(item: Dict[str, Any]) -> Dict[str, Any]:
+        key = cache_key(item)
+        with cache_lock:
+            cached = cache.get(key)
+        if cached is not None:
+            verified_item = dict(item)
+            verified_item.update(cached)
+            return verified_item
+
+        verified_item = verify_item_page_date(item, date_verify_func=date_verify_func)
+        with cache_lock:
+            cache[key] = {
+                "date_verification": dict(verified_item.get("date_verification") or {}),
+                "verified_date": verified_item.get("verified_date"),
+                "date": verified_item.get("date"),
+            }
+        return verified_item
+
+    if worker_count == 1:
+        return [run(item) for item in items]
+
+    results: list[Dict[str, Any]] = [dict(item) for item in items]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_map = {executor.submit(run, item): index for index, item in enumerate(items)}
+        for future in concurrent.futures.as_completed(future_map):
+            index = future_map[future]
+            results[index] = future.result()
+    return results
+
+
 def _hostname_matches(hostname: str, domain: str) -> bool:
     hostname = hostname.lower().strip(".")
     domain = domain.lower().strip(".")
@@ -2679,7 +2731,8 @@ def process_raw_data(
     
     approved = []
     rejected = []
-    
+    candidates: list[Dict[str, Any]] = []
+
     for item in raw_data:
         schema_ok, schema_reason, item = validate_raw_item(item, item_type)
         if not schema_ok:
@@ -2720,10 +2773,24 @@ def process_raw_data(
                 "action": "排除",
             })
             continue
+        candidates.append(item)
 
-        # 0.75 搜索日期二次验证：搜索引擎日期不作为最终时效性依据
+    if date_verify_func:
+        to_verify = [item for item in candidates if should_verify_page_date(item)]
+        verified_by_identity = {
+            id(item): verified
+            for item, verified in zip(
+                to_verify,
+                verify_items_page_dates(to_verify, date_verify_func=date_verify_func),
+            )
+        }
+    else:
+        verified_by_identity = {}
+
+    for item in candidates:
+        item = verified_by_identity.get(id(item), item)
+        effective_item_type = str(item.get("type") or item_type)
         if date_verify_func and should_verify_page_date(item):
-            item = verify_item_page_date(item, date_verify_func=date_verify_func)
             verification = item.get("date_verification")
             if is_low_confidence_date_verification(verification):
                 source = str((verification or {}).get("source") or "").strip() if isinstance(verification, dict) else ""
