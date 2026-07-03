@@ -470,6 +470,50 @@ def test_tavily_provider_defaults_to_basic_search_depth():
     provider.search("synthetic biology news", limit=5)
 
     assert captured["payload"]["search_depth"] == "basic"
+    assert captured["payload"]["include_raw_content"] is True
+
+
+def test_coerce_result_accepts_published_date_field():
+    result = search_executor._coerce_result(
+        {
+            "title": "Synthetic biology article",
+            "url": "https://example.com/article",
+            "published_date": "2026-07-03",
+        },
+        query="synthetic biology",
+        provider="tavily",
+        rank=1,
+    )
+
+    assert result["date"] == "2026-07-03"
+
+
+def test_tavily_provider_extracts_date_hint_from_raw_content():
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "results": [{
+                    "title": "专访微元合成刘波：生命科学人除了做药，另一个梦想是让物质生产回归自然-动脉网",
+                    "url": "https://www.vbdata.cn/1518943816",
+                    "content": "动脉网 近期内容",
+                    "raw_content": "# 专访微元合成刘波\\n周秋寒 2023-12-29 08:00\\n正文内容……",
+                    "score": 0.9,
+                }]
+            }).encode("utf-8")
+
+    def fake_opener(request, timeout=30):
+        return FakeResponse()
+
+    provider = search_executor.TavilySearchProvider("test-key", opener=fake_opener)
+    results = provider.search("专访微元合成刘波", limit=5)
+
+    assert results[0]["date"] == "2023-12-29 08:00" or results[0]["date"] == "2023-12-29"
 
 
 def test_llm_web_search_provider_extracts_server_tool_results():

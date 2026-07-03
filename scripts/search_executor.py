@@ -324,6 +324,7 @@ def _coerce_result(
     ).strip()
     date = str(
         item.get("date")
+        or item.get("published_date")
         or item.get("published_at")
         or item.get("published")
         or item.get("published_time")
@@ -341,6 +342,55 @@ def _coerce_result(
         "search_provider": provider,
         "rank": rank,
     }
+
+
+_DATE_TEXT_PATTERNS = (
+    r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日",
+    r"\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2}",
+    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s*\d{4}",
+)
+
+
+def _extract_tavily_date_hint(item: dict[str, Any]) -> str:
+    """Best-effort date hint from Tavily content/raw_content when structured date is absent.
+
+    Tavily search results do not reliably expose a dedicated published-date field.
+    We only use this as an upstream hint for later page verification, so keep the
+    extraction conservative and limited to the leading page text.
+    """
+    existing = str(
+        item.get("published_date")
+        or item.get("date")
+        or item.get("published_at")
+        or item.get("published")
+        or item.get("published_time")
+        or ""
+    ).strip()
+    if existing:
+        return existing
+
+    text = str(item.get("raw_content") or item.get("content") or "").strip()
+    if not text:
+        return ""
+    lead = re.sub(r"\s+", " ", text)[:2000]
+
+    # Prefer common "published" labels first when present in the lead text.
+    labeled_patterns = (
+        r"(?:发布时间|发布日期|发布于|发表时间|Published|Posted|Updated)[:：\s]{0,12}"
+        r"(\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2}|"
+        r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s*\d{4})",
+    )
+    for pattern in labeled_patterns:
+        match = re.search(pattern, lead, flags=re.IGNORECASE)
+        if match:
+            return str(match.group(1)).strip()
+
+    # Fall back to the first visible date in the leading content block.
+    for pattern in _DATE_TEXT_PATTERNS:
+        match = re.search(pattern, lead, flags=re.IGNORECASE)
+        if match:
+            return str(match.group(0)).strip()
+    return ""
 
 
 class FixtureSearchProvider:
@@ -483,6 +533,7 @@ class TavilySearchProvider:
             "max_results": limit,
             "search_depth": os.getenv("TAVILY_SEARCH_DEPTH", "basic"),
             "include_answer": False,
+            "include_raw_content": True,
         }
         request = Request(
             "https://api.tavily.com/search",
@@ -495,6 +546,11 @@ class TavilySearchProvider:
         except SearchProviderError as exc:
             raise SearchProviderError(f"{exc} [tavily_key_suffix={key_suffix}]") from exc
         items = data.get("results") or []
+        if isinstance(items, list):
+            items = [
+                dict(item, published_date=_extract_tavily_date_hint(item)) if isinstance(item, dict) else item
+                for item in items
+            ]
         return _normalize_provider_results(items, query=query, provider=self.name, limit=limit)
 
     def search(self, query: str, *, limit: int) -> list[dict[str, Any]]:
