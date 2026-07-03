@@ -1628,11 +1628,6 @@ def _select_verified_date(
     return min(unique)
 
 
-def _looks_like_36kr_url(url: str) -> bool:
-    host = urlsplit(url or "").netloc.lower()
-    return host == "36kr.com" or host == "www.36kr.com" or host == "m.36kr.com"
-
-
 def _first_plausible_body_date(text: str, search_date: str = "") -> Optional[datetime]:
     lead = (text or "")[:2000]
     for pattern in DATE_TEXT_PATTERNS:
@@ -1640,6 +1635,54 @@ def _first_plausible_body_date(text: str, search_date: str = "") -> Optional[dat
             parsed = _parse_any_date(match.group(0))
             if parsed and _is_plausible_verified_date(parsed, search_date, allow_future_days=0):
                 return parsed
+    return None
+
+
+def _is_close_to_search_date(candidate: datetime, search_date: str = "", *, max_days: int = DATE_VERIFY_SEARCH_TOLERANCE_DAYS) -> bool:
+    search_dt = parse_date(search_date)
+    if not search_dt:
+        return True
+    candidate_day = candidate.replace(hour=0, minute=0, second=0, microsecond=0)
+    search_day = search_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    return abs((candidate_day - search_day).days) <= max_days
+
+
+def _header_window_date(text: str, title: str, search_date: str = "") -> Optional[datetime]:
+    content = str(text or "")
+    heading = str(title or "").strip()
+    if not content:
+        return None
+    if heading:
+        index = content.find(heading)
+        if index >= 0:
+            window = content[index:index + 260]
+        else:
+            window = content[:260]
+    else:
+        window = content[:260]
+
+    datetime_patterns = [
+        r"(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})\s+\d{1,2}:\d{2}(?::\d{2})?",
+        r"(\d{4}年\d{1,2}月\d{1,2}日)\s+\d{1,2}:\d{2}(?::\d{2})?",
+    ]
+    matches = []
+    for pattern in datetime_patterns:
+        for match in re.finditer(pattern, window, flags=re.IGNORECASE):
+            matches.append(match)
+    if not matches:
+        return None
+    matches.sort(key=lambda m: m.start())
+    match = matches[0]
+    prefix = window[max(0, match.start() - 32):match.start()]
+    if not re.search(r"[\u4e00-\u9fffA-Za-z]", prefix):
+        return None
+    earlier_slice = window[:match.start()]
+    for pattern in DATE_TEXT_PATTERNS:
+        if re.search(pattern, earlier_slice, flags=re.IGNORECASE):
+            return None
+    parsed = _parse_any_date(match.group(1))
+    if parsed and _is_reasonable_date(parsed):
+        return parsed
     return None
 
 
@@ -1657,6 +1700,10 @@ def extract_page_verified_date(html: str, search_date: str = "", page_url: str =
     ]
     text = unescape(parser.visible_text())
     text = re.sub(r"\s+", " ", text)
+    title_hint = ""
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html or "", flags=re.IGNORECASE | re.DOTALL)
+    if title_match:
+        title_hint = unescape(re.sub(r"\s+", " ", title_match.group(1))).strip()
 
     context_dates: list[datetime] = []
     context_pattern = (
@@ -1671,26 +1718,34 @@ def extract_page_verified_date(html: str, search_date: str = "", page_url: str =
         if parsed:
             context_dates.append(parsed)
 
-    structured_dates = meta_dates + context_dates
-    if _looks_like_36kr_url(page_url):
-        body_verified = _first_plausible_body_date(text, search_date)
-        if body_verified:
-            structured_verified = _select_verified_date(structured_dates, search_date) if structured_dates else None
-            if structured_verified is None or body_verified != structured_verified:
-                return {
-                    "verified_date": body_verified.strftime("%Y-%m-%d"),
-                    "confidence": "high",
-                    "source": "body",
-                    "date_count": 1,
-                }
-    if structured_dates:
-        verified = _select_verified_date(structured_dates, search_date)
+    header_verified = _header_window_date(text, title_hint, search_date)
+    if header_verified:
+        return {
+            "verified_date": header_verified.strftime("%Y-%m-%d"),
+            "confidence": "high",
+            "source": "body_context",
+            "date_count": 1,
+        }
+
+    meta_time_dates = meta_dates
+    if meta_time_dates:
+        verified = _select_verified_date(meta_time_dates, search_date)
         if verified:
             return {
                 "verified_date": verified.strftime("%Y-%m-%d"),
                 "confidence": "high",
                 "source": "meta/body",
-                "date_count": len(_unique_dates(structured_dates)),
+                "date_count": len(_unique_dates(meta_time_dates)),
+            }
+
+    if context_dates:
+        verified = _select_verified_date(context_dates, "")
+        if verified:
+            return {
+                "verified_date": verified.strftime("%Y-%m-%d"),
+                "confidence": "high",
+                "source": "meta/body",
+                "date_count": len(_unique_dates(context_dates)),
             }
 
     event_dates = _contextual_date_candidates_from_text(text)
@@ -1708,10 +1763,10 @@ def extract_page_verified_date(html: str, search_date: str = "", page_url: str =
     # dates only when they are unambiguous or line up with the collected search
     # date. This keeps legacy pages usable without letting related-story dates
     # override the article's actual publish date.
-    if not (structured_dates or event_dates):
+    if not (meta_time_dates or context_dates or event_dates):
         generic_dates = _date_candidates_from_text(text)
         verified = _select_verified_date(generic_dates, search_date, allow_unanchored=False)
-        if verified:
+        if verified and _is_close_to_search_date(verified, search_date):
             return {
                 "verified_date": verified.strftime("%Y-%m-%d"),
                 "confidence": "medium",
@@ -1719,7 +1774,7 @@ def extract_page_verified_date(html: str, search_date: str = "", page_url: str =
                 "date_count": len(_unique_dates(generic_dates)),
             }
 
-    all_dates = structured_dates + event_dates
+    all_dates = meta_time_dates + context_dates + event_dates
     if all_dates:
         return {
             "verified_date": search_date,

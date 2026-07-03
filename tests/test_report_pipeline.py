@@ -1909,6 +1909,7 @@ def test_extract_page_verified_date_prefers_body_date_for_36kr_cache_meta():
     html = """
     <html>
       <head><meta property="article:published_time" content="2026-07-03T07:36:17+08:00"></head>
+      <title>从躺着拿钱到融资内卷，合成生物回归商业理性 | 氪记2022-36氪</title>
       <body>
         氪记2022
         2023-01-12 08:00
@@ -1924,7 +1925,31 @@ def test_extract_page_verified_date_prefers_body_date_for_36kr_cache_meta():
     )
 
     assert result["verified_date"] == "2023-01-12"
-    assert result["source"] == "body"
+    assert result["source"] == "body_context"
+
+
+def test_extract_page_verified_date_prefers_lead_body_date_over_recent_content_footer():
+    html = """
+    <html>
+      <head><meta property="article:published_time" content="2026-07-03T07:36:17+08:00"></head>
+      <title>专访微元合成刘波：生命科学人除了做药，另一个梦想是让物质生产回归自然-动脉网</title>
+      <body>
+        专访微元合成刘波：生命科学人除了做药，另一个梦想是让物质生产回归自然
+        周秋寒 2023-12-29 08:00
+        正文内容……
+        最近内容 查看更多 3亿元，溢价约400%！安徽这家CRO被收购了 2026-06-29
+      </body>
+    </html>
+    """
+
+    result = report_pipeline.extract_page_verified_date(
+        html,
+        search_date="2026-07-03",
+        page_url="https://www.vbdata.cn/1518943816",
+    )
+
+    assert result["verified_date"] == "2023-12-29"
+    assert result["source"] == "body_context"
 
 
 def test_extract_page_verified_date_uses_body_event_date_without_label():
