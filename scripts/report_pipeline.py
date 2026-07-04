@@ -46,6 +46,7 @@ try:
     from .llm_judge import Decision, is_synbio_relevant as _is_synbio_relevant_impl
     from .llm_judge import judge_item_relevance
     from .llm_judge import DateDecision, judge_item_date_validity
+    from .llm_judge import judge_final_audit
 except ImportError:
     from settings import CONFIG_DIR, DATA_DIR, REPORTS_DIR, TEMPLATES_DIR, now_local
     from console_utils import ensure_utf8_console
@@ -54,6 +55,7 @@ except ImportError:
     from llm_judge import Decision, is_synbio_relevant as _is_synbio_relevant_impl
     from llm_judge import judge_item_relevance
     from llm_judge import DateDecision, judge_item_date_validity
+    from llm_judge import judge_final_audit
 
 ensure_utf8_console()
 
@@ -3892,6 +3894,7 @@ def build_approved_from_raw(
     llm_relevance_mode: str = "auto",
     llm_judge_func=judge_item_relevance,
     llm_date_judge_func=judge_item_date_validity,
+    llm_final_audit_mode: str = "auto",
     search_log: Any | None = None,
     search_strategy: Any | None = None,
 ) -> Dict[str, Any]:
@@ -3987,6 +3990,13 @@ def build_approved_from_raw(
     )
     all_rejected.extend(final_date_rejected)
     all_approved = sort_approved_items(all_approved)
+    # LLM final audit: catch duplicates, title mismatch, spam sources, aggregate pages
+    all_approved, final_rejected, final_warnings = judge_final_audit(
+        all_approved,
+        report_date,
+        mode=llm_final_audit_mode,
+    )
+    all_rejected.extend(final_rejected)
     approved_check = validate_approved_schema(all_approved)
     approved_path = output_dir / f"approved_{report_date}.json"
     rejected_path = output_dir / f"rejected_{report_date}.json"
@@ -4561,6 +4571,7 @@ def main():
     parser.add_argument("--skip-title-match", action="store_true", help="仅离线测试/受限网络临时使用：跳过build-approved标题-URL匹配")
     parser.add_argument("--skip-page-date-check", action="store_true", help="仅离线测试/受限网络临时使用：跳过原页面日期验证")
     parser.add_argument("--llm-relevance-mode", choices=["auto", "llm", "heuristic", "off"], default="auto", help="领域相关性审计模式：auto默认有LLM配置则调用，否则本地语义fallback")
+    parser.add_argument("--llm-final-audit-mode", choices=["auto", "llm", "off"], default="auto", help="最终质量审计模式：auto有LLM配置则终审，off关闭")
     parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验基座必搜和LLM高召回搜索证据")
     parser.add_argument("--search-strategy", type=str, help="LLM动态搜索策略JSON路径，用于校验动态query执行证据")
     parser.add_argument("--strict-search-coverage", action="store_true", help="兼容旧命令；build-approved默认已严格校验必搜query和候选URL覆盖")
@@ -4679,6 +4690,7 @@ def main():
                 check_title_match_enabled=not args.skip_title_match,
                 check_page_date_enabled=not args.skip_page_date_check,
                 llm_relevance_mode=args.llm_relevance_mode,
+                llm_final_audit_mode=args.llm_final_audit_mode,
                 search_log=search_log,
                 search_strategy=search_strategy,
             )

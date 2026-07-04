@@ -790,6 +790,14 @@ class LLMClient:
         text = self.complete_text(_build_prompt(item, ascii_safe=self.use_ascii_prompts), max_tokens=600, temperature=0)
         return normalize_llm_decision(_extract_json_object(text), raw_response=text)
 
+    def final_audit(self, items: list[dict[str, Any]], report_date: str) -> list[dict[str, Any]]:
+        text = self.complete_text(
+            _build_final_audit_prompt(items, report_date, ascii_safe=self.use_ascii_prompts),
+            max_tokens=1200,
+            temperature=0,
+        )
+        return _extract_json_array(text)
+
     def judge_date(self, item: dict[str, Any], report_date: str) -> DateDecision:
         text = self.complete_text(
             _build_date_validation_prompt(item, report_date, ascii_safe=self.use_ascii_prompts),
@@ -895,6 +903,165 @@ def judge_item_date_validity(
         provider="heuristic-skip",
     )
 
+
+def _build_final_audit_prompt(items: list[dict[str, Any]], report_date: str, *, ascii_safe: bool = False) -> str:
+    """Build a prompt for final quality audit of approved items."""
+    truncated_items = []
+    for i, item in enumerate(items):
+        dv = item.get("date_verification") or {}
+        truncated_items.append({
+            "index": i,
+            "title": str(item.get("title", ""))[:200],
+            "type": str(item.get("type", "")),
+            "date": str(item.get("date", "")),
+            "source": str(item.get("source", ""))[:100],
+            "url": str(item.get("url", ""))[:150],
+            "summary": str(item.get("summary", ""))[:350],
+            "domain_relevance": str(item.get("domain_relevance", "")),
+            "date_verification_confidence": str(dv.get("confidence", "")),
+        })
+    schema = (
+        "[\n"
+        '  {"index":0,"keep":true,"reason":"保留原因","duplicate_of":null},\n'
+        '  {"index":1,"keep":false,"reason":"重复-同一事件已保留#0","duplicate_of":0}\n'
+        "]"
+    )
+    instructions = (
+        "你是合成生物行业日报的最终质量审计员。以下候选条目已通过初步筛选，"
+        "请你做最终把关，从严审查以下问题：\n"
+        "\n"
+        "审查标准（必须满足才能保留）：\n"
+        "1. 重复检测：如果多条是同一事件/同一论坛/同一会议的不同媒体报道，只保留1条最佳（来源最权威、内容最完整），其余标记为重复\n"
+        "2. 标题摘要匹配：标题是否与摘要内容一致？如果标题和正文完全无关（如标题是'超低轨科技'但摘要是'合成生物学峰会'），标记为不匹配\n"
+        "3. 来源质量：来源网站是否可信？是否有垃圾广告、加密货币、赌博等低质量内容混入？\n"
+        "4. 内容相关性：是否真正与合成生物学、生物制造相关？非合成生物的通用科技新闻应排除\n"
+        "5. 聚合页面：如果是一个机构/网站的动态列表页（包含多篇不同日期文章），不应作为单条新闻收录\n"
+        "\n"
+        f"输出要求：必须返回纯JSON数组，不要Markdown。Schema示例：\n{schema}\n"
+        f"报告日期: {report_date}\n"
+        "候选条目:\n"
+    )
+    if ascii_safe:
+        return instructions + json.dumps(truncated_items, ensure_ascii=True)
+    return instructions + json.dumps(truncated_items, ensure_ascii=False)
+
+
+def _extract_json_array(text: str) -> list[dict[str, Any]]:
+    """Extract a JSON array from LLM response, tolerating trailing content."""
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    # Try to find array pattern [...]
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if not match:
+        raise ValueError("LLM response did not contain a JSON array")
+    parsed = json.loads(match.group(0))
+    if not isinstance(parsed, list):
+        raise ValueError("LLM JSON response must be an array")
+    return parsed
+
+
+def normalize_final_audit_decisions(
+    raw_decisions: list[dict[str, Any]],
+    items_count: int,
+) -> list[dict[str, Any]]:
+    """Normalize and validate final audit decisions, defaulting to keep for missing items."""
+    decisions = []
+    seen_indices = set()
+    for entry in raw_decisions:
+        if not isinstance(entry, dict):
+            continue
+        idx = entry.get("index")
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            continue
+        if idx < 0 or idx >= items_count:
+            continue
+        seen_indices.add(idx)
+        keep = bool(entry.get("keep", True))
+        reason = str(entry.get("reason") or ("保留" if keep else "排除")).strip()[:100]
+        dup = entry.get("duplicate_of")
+        try:
+            dup = int(dup) if dup is not None else None
+        except (TypeError, ValueError):
+            dup = None
+        if dup is not None and (dup < 0 or dup >= items_count or dup == idx):
+            dup = None
+        decisions.append({
+            "index": idx,
+            "keep": keep,
+            "reason": reason,
+            "duplicate_of": dup,
+        })
+    # Default missing indices to keep
+    for i in range(items_count):
+        if i not in seen_indices:
+            decisions.append({"index": i, "keep": True, "reason": "LLM未明确判断，默认保留", "duplicate_of": None})
+    return sorted(decisions, key=lambda x: x["index"])
+
+
+def judge_final_audit(
+    items: list[dict[str, Any]],
+    report_date: str,
+    mode: str = "auto",
+    client: JudgeClient | None = None,
+) -> Tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """Run LLM final audit on approved items. Returns (kept, rejected, warnings).
+
+    The audit checks:
+    - duplicates (same event from different media)
+    - title/summary mismatch
+    - source quality (spam, crypto ads, etc.)
+    - content relevance
+    - aggregate pages
+    """
+    if not items:
+        return [], [], []
+    selected_mode = (mode or "auto").lower()
+    warnings = []
+    if selected_mode == "off":
+        return list(items), [], ["LLM终审已关闭"]
+    client_instance = client or LLMClient()
+    if selected_mode == "llm" or (selected_mode == "auto" and client_instance.is_configured):
+        try:
+            if hasattr(client_instance, "final_audit"):
+                raw_decisions = client_instance.final_audit(items, report_date)
+            else:
+                raise RuntimeError("LLM client does not support final_audit")
+            decisions = normalize_final_audit_decisions(raw_decisions, len(items))
+            kept = []
+            rejected = []
+            for dec in decisions:
+                idx = dec["index"]
+                item = dict(items[idx])
+                if dec["keep"]:
+                    item["final_audit"] = {
+                        "keep": True,
+                        "reason": dec["reason"],
+                        "duplicate_of": dec["duplicate_of"],
+                    }
+                    kept.append(item)
+                else:
+                    item["final_audit"] = {
+                        "keep": False,
+                        "reason": dec["reason"],
+                        "duplicate_of": dec["duplicate_of"],
+                    }
+                    item["rejection_reason"] = f"LLM终审排除: {dec['reason']}"
+                    rejected.append(item)
+            warnings.append(f"LLM终审: {len(kept)}/{len(items)} 保留, {len(rejected)}/{len(items)} 排除")
+            return kept, rejected, warnings
+        except Exception as exc:
+            if selected_mode == "llm":
+                raise RuntimeError(f"LLM终审失败: {exc}") from exc
+            warnings.append(f"LLM终审调用失败，默认全部保留: {exc}")
+            return list(items), [], warnings
+    warnings.append("LLM未配置，跳过终审")
+    return list(items), [], warnings
 
 def is_synbio_relevant(title: str = "", summary: str = "", url: str = "") -> Tuple[bool, str, str]:
     """Backward-compatible tuple API used by older type checks."""

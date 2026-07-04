@@ -14,13 +14,13 @@ from typing import Any
 try:
     from .console_utils import ensure_utf8_console
     from .html_safety import validate_html_safety
-    from .render_utils import safe_link_attrs, safe_text, safe_url
+    from .render_utils import safe_link_attrs, safe_text, safe_url, truncate_summary
     from .report_pipeline import extract_http_urls, validate_urls_against_approved
     from .settings import REPORTS_DIR, TEMPLATES_DIR, now_local
 except ImportError:
     from console_utils import ensure_utf8_console
     from html_safety import validate_html_safety
-    from render_utils import safe_link_attrs, safe_text, safe_url
+    from render_utils import safe_link_attrs, safe_text, safe_url, truncate_summary
     from report_pipeline import extract_http_urls, validate_urls_against_approved
     from settings import REPORTS_DIR, TEMPLATES_DIR, now_local
 
@@ -85,7 +85,7 @@ def render_summary(items: list[dict[str, Any]], limit: int = 5) -> str:
     rows = []
     for index, item in enumerate(selected, 1):
         title = safe_text(item.get("title", "未命名信息"))
-        summary = safe_text(item.get("summary", ""))
+        summary = safe_text(truncate_summary(item.get("summary", "")))
         date = safe_text(item.get("date", ""))
         url = item_url(item)
         rows.append(
@@ -123,7 +123,7 @@ def render_card_section(title: str, items: list[dict[str, Any]], tag: str, limit
             f'<span>📰 {safe_text(item.get("source", "未知来源"))}</span>'
             f'<span>📅 {safe_text(item.get("date", ""))}</span>'
             "</div>"
-            f'<div class="card-summary">{safe_text(item.get("summary", ""))}</div>'
+            f'<div class="card-summary">{safe_text(truncate_summary(item.get("summary", "")))}</div>'
             f'<a href="{url}" {safe_link_attrs()} class="card-link">查看详情</a>'
             "</div>"
         )
@@ -177,7 +177,7 @@ def render_events_section(items: list[dict[str, Any]], limit: int | None = None)
             f"<td><strong>{safe_text(item.get('title', '未命名活动'))}</strong></td>"
             f"<td>{safe_text(item.get('date', ''))}</td>"
             f"<td>{safe_text(item.get('location', ''))}</td>"
-            f"<td>{safe_text(item.get('summary', ''))}</td>"
+            f"<td>{safe_text(truncate_summary(item.get('summary', '')))}</td>"
             f'<td><a href="{url}" {safe_link_attrs()}>查看</a></td>'
             "</tr>"
         )

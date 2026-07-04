@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:
-    from .render_utils import safe_link_attrs, safe_text, safe_url
+    from .render_utils import safe_link_attrs, safe_text, safe_url, truncate_summary
 except ImportError:
-    from render_utils import safe_link_attrs, safe_text, safe_url
+    from render_utils import safe_link_attrs, safe_text, safe_url, truncate_summary
 
 
 EMPTY_SECTION_TEXT = "经完整检索，本周期暂无相关新信息收录。"
@@ -39,7 +39,7 @@ def render_item_card(item: dict[str, Any]) -> str:
     title = safe_text(item.get("title", ""))
     source = safe_text(item.get("source", ""))
     date = safe_text(item.get("date", ""))
-    summary = safe_text(item.get("summary", ""))
+    summary = safe_text(truncate_summary(item.get("summary", "")))
     url = safe_url(str(item.get("url", "")))
     attrs = safe_link_attrs()
     return (

@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .render_utils import safe_link_attrs, safe_text, safe_url
+    from .render_utils import safe_link_attrs, safe_text, safe_url, truncate_summary
 except ImportError:
-    from render_utils import safe_link_attrs, safe_text, safe_url
+    from render_utils import safe_link_attrs, safe_text, safe_url, truncate_summary
 
 
 def render_email_html(items: list[dict[str, Any]], date_str: str, limit: int = 5) -> str:
@@ -20,7 +20,7 @@ def render_email_html(items: list[dict[str, Any]], date_str: str, limit: int = 5
     attrs = safe_link_attrs()
     for index, item in enumerate(items[:limit], 1):
         title = safe_text(item.get("title", ""))
-        summary = safe_text(item.get("summary", ""))
+        summary = safe_text(truncate_summary(item.get("summary", "")))
         url = safe_url(str(item.get("url", "")))
         rows.append(
             f'<li><span class="num">{index}</span> '
