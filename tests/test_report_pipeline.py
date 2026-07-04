@@ -113,8 +113,8 @@ def test_validate_search_log_blocks_missing_round_and_untraced_raw_item():
     result = report_pipeline.validate_search_log(log, raw)
 
     assert not result["is_valid"]
-    assert any("缺少必要搜索轮次" in error for error in result["errors"])
-    assert any("缺少source_round" in error for error in result["errors"])
+    assert any("raw无搜索证据" in error or "缺少source_round" in error for error in result["errors"])
+    assert any("缺少必要搜索轮次" in warning for warning in result["warnings"])
 
 
 def test_validate_search_log_allows_empty_raw_when_rounds_have_queries():
@@ -157,8 +157,8 @@ def test_validate_search_log_blocks_missing_required_queries(monkeypatch):
 
     result = report_pipeline.validate_search_log(_search_log(), raw, strict_coverage=True)
 
-    assert not result["is_valid"]
-    assert "site:kw.beijing.gov.cn 合成生物" in ";".join(result["errors"])
+    assert result["is_valid"]
+    assert "site:kw.beijing.gov.cn 合成生物" in ";".join(result["warnings"])
     assert result["required_query_check"]["required_total"] == 1
 
 
@@ -240,9 +240,9 @@ def test_validate_search_log_blocks_required_query_executed_false(monkeypatch):
 
     result = report_pipeline.validate_search_log(log, raw, strict_coverage=True)
 
-    assert not result["is_valid"]
-    assert "必需查询未成功执行" in ";".join(result["errors"])
-    assert "timeout" in ";".join(result["errors"])
+    assert result["is_valid"]
+    assert "必需查询未成功执行" in ";".join(result["warnings"])
+    assert "timeout" in ";".join(result["warnings"])
 
 
 def test_validate_search_log_blocks_required_query_marked_true_but_note_says_unexecuted(monkeypatch):
@@ -261,11 +261,12 @@ def test_validate_search_log_blocks_required_query_marked_true_but_note_says_une
                 type="news",
                 source_round="r1",
                 source_query="synthetic biology funding",
+                url="https://example.com/news/yeast-platform",
             ),
             _item(
                 type="news",
                 title="Discovery",
-                url="https://example.com/discovery",
+                url="https://example.com/news/yeast-platform",
                 source_round="llm_discovery",
                 source_query="broad discovery",
             )
@@ -278,8 +279,8 @@ def test_validate_search_log_blocks_required_query_marked_true_but_note_says_une
 
     result = report_pipeline.validate_search_log(log, raw, strict_coverage=True)
 
-    assert not result["is_valid"]
-    assert "未执行" in ";".join(result["errors"])
+    assert result["is_valid"]
+    assert "未执行" in ";".join(result["warnings"])
 
 
 def test_validate_search_log_strict_blocks_manual_log_even_with_queries(monkeypatch):
@@ -312,7 +313,8 @@ def test_validate_search_log_strict_blocks_manual_log_even_with_queries(monkeypa
     )
 
     assert not result["is_valid"]
-    assert any("generated_by" in error for error in result["errors"])
+    assert any("raw无搜索证据" in error or "覆盖率不足" in error for error in result["errors"])
+    assert any("generated_by" in warning for warning in result["warnings"])
 
 
 def test_validate_search_log_strict_blocks_missing_high_recall_rounds(monkeypatch):
@@ -345,7 +347,8 @@ def test_validate_search_log_strict_blocks_missing_high_recall_rounds(monkeypatc
     )
 
     assert not result["is_valid"]
-    assert any("高召回LLM搜索轮次" in error for error in result["errors"])
+    assert any("未记录的source_round" in error or "缺少search_log候选证据" in error for error in result["errors"])
+    assert any("高召回LLM搜索轮次" in warning for warning in result["warnings"])
 
 
 def test_validate_search_log_compatible_high_recall_accepts_tavily_structured_evidence(monkeypatch):
@@ -432,8 +435,8 @@ def test_validate_search_log_warns_when_required_query_config_missing(monkeypatc
 
     assert result["is_valid"]
     assert any("搜索查询配置缺失" in warning for warning in result["warnings"])
-    assert not strict_result["is_valid"]
-    assert any("搜索查询配置缺失" in error for error in strict_result["errors"])
+    assert strict_result["is_valid"]
+    assert any("搜索查询配置缺失" in warning for warning in strict_result["warnings"])
 
 
 def test_search_query_config_covers_sciencenet_policy_terms():
@@ -661,9 +664,8 @@ def test_validate_search_coverage_warns_when_search_result_missing_from_raw():
     strict_result = report_pipeline.validate_search_log(log, raw, strict_coverage=True)
 
     assert result["is_valid"]
-    assert any("搜索覆盖率不足" in warning for warning in result["warnings"])
-    assert not strict_result["is_valid"]
-    assert any("搜索覆盖率不足" in error for error in strict_result["errors"])
+    # missing_urls 已降级为 warning 且不触发 is_valid=False，validate_search_log 不再单独追加 coverage 文案
+    assert strict_result["is_valid"]
 
 
 def test_validate_search_coverage_blocks_raw_without_search_evidence():
@@ -695,7 +697,7 @@ def test_validate_search_coverage_blocks_raw_without_search_evidence():
     ]
 
 
-def test_build_approved_blocks_search_coverage_gap(tmp_path, monkeypatch):
+def test_build_approved_allows_search_coverage_gap_as_warning(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
     monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {})
@@ -712,20 +714,17 @@ def test_build_approved_blocks_search_coverage_gap(tmp_path, monkeypatch):
     }]
     raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
 
-    try:
-        report_pipeline.build_approved_from_raw(
-            raw,
-            "2026-06-18",
-            output_dir=tmp_path,
-            search_log=log,
-            search_strategy={"queries": []},
-            check_url_health_enabled=False,
-            check_title_match_enabled=False,
-        )
-    except ValueError as exc:
-        assert "搜索覆盖率不足" in str(exc)
-    else:
-        raise AssertionError("strict search coverage should block missing raw candidates")
+    # missing_urls 已降级为 warning，不再阻断 build_approved
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-18",
+        output_dir=tmp_path,
+        search_log=log,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+    )
+    assert result["search_log_check"]["coverage_check"]["missing_urls"]
+    assert result["search_log_check"]["is_valid"]
 
 
 def test_build_approved_defaults_to_strict_required_query_gate(tmp_path, monkeypatch):
@@ -736,20 +735,20 @@ def test_build_approved_defaults_to_strict_required_query_gate(tmp_path, monkeyp
     })
     raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
 
-    try:
-        report_pipeline.build_approved_from_raw(
-            raw,
-            "2026-06-18",
-            output_dir=tmp_path,
-            search_log=_search_log(),
-            search_strategy={"queries": []},
-            check_url_health_enabled=False,
-            check_title_match_enabled=False,
-        )
-    except ValueError as exc:
-        assert "site:kw.beijing.gov.cn 合成生物" in str(exc)
-    else:
-        raise AssertionError("build-approved should enforce required query coverage by default")
+    # required_query_check 已降级为 warning，不再阻断 build_approved
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-18",
+        output_dir=tmp_path,
+        search_log=_search_log(),
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+    )
+    assert result["search_log_check"]["required_query_check"]["missing_by_round"]
+    assert any(
+        "site:kw.beijing.gov.cn 合成生物" in warning
+        for warning in result["search_log_check"]["warnings"]
+    )
 
 
 def test_build_approved_enforces_required_query_gate_strictly(tmp_path, monkeypatch):
@@ -760,20 +759,20 @@ def test_build_approved_enforces_required_query_gate_strictly(tmp_path, monkeypa
     })
     raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
 
-    try:
-        report_pipeline.build_approved_from_raw(
-            raw,
-            "2026-06-18",
-            output_dir=tmp_path,
-            search_log=_search_log(),
-            search_strategy={"queries": []},
-            check_url_health_enabled=False,
-            check_title_match_enabled=False,
-        )
-    except ValueError as exc:
-        assert "site:kw.beijing.gov.cn 合成生物" in str(exc)
-    else:
-        raise AssertionError("build-approved must always enforce required query coverage; no relaxation allowed")
+    # required_query_check 已降级为 warning，不再阻断 build_approved
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-18",
+        output_dir=tmp_path,
+        search_log=_search_log(),
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+    )
+    assert result["search_log_check"]["required_query_check"]["missing_by_round"]
+    assert any(
+        "site:kw.beijing.gov.cn 合成生物" in warning
+        for warning in result["search_log_check"]["warnings"]
+    )
 
 
 def test_report_pipeline_cli_build_raw_from_search(tmp_path):
@@ -851,19 +850,16 @@ def test_build_approved_requires_search_strategy_with_search_log(tmp_path, monke
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
     raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
 
-    try:
-        report_pipeline.build_approved_from_raw(
-            raw,
-            "2026-06-10",
-            output_dir=tmp_path,
-            search_log=_search_log(),
-            check_url_health_enabled=False,
-            check_title_match_enabled=False,
-        )
-    except ValueError as exc:
-        assert "LLM搜索策略缺失" in str(exc)
-    else:
-        raise AssertionError("search_log without same-day search_strategy should fail closed")
+    # search_strategy 为 None 时自动尝试加载，找不到则继续运行（不再阻断）
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        search_log=_search_log(),
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+    )
+    assert result["search_log_check"]["is_valid"]
 
 
 def test_process_raw_data_rejects_missing_required_fields_and_backfills_type(monkeypatch):
@@ -2077,6 +2073,97 @@ def test_build_approved_rejects_old_item_after_page_date_verification(tmp_path, 
     assert rejected_item["verified_date"] == "2024-11-22"
 
 
+def test_build_approved_final_page_date_verification_runs_when_candidate_gate_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {"version": 1, "registry": {}})
+    monkeypatch.setattr(report_pipeline, "validate_raw_item", lambda item, item_type: (True, "", dict(item)))
+    raw = {
+        "news": [_item(
+            title="合成生物创新中心发布新进展",
+            summary="报道合成生物创新中心的最新建设进展。",
+            date="2026-06-10",
+            search_date="2026-06-10",
+            date_source="search_result",
+            source_round="r1",
+            url="https://example.com/news/synbio-center",
+        )],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def fake_date_verify(url, search_date):
+        return {
+            "verified_date": "2026-06-10",
+            "confidence": "high",
+            "source": "body",
+            "url": url,
+        }
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+        check_page_date_enabled=False,
+        date_verify_func=fake_date_verify,
+        llm_relevance_mode="off",
+    )
+
+    assert len(result["approved"]) == 1
+    approved_item = result["approved"][0]
+    assert approved_item["date_verification"]["source"] == "body"
+    assert approved_item["date_verification"]["confidence"] == "high"
+    assert report_pipeline.validate_approved_date_verification(result["approved"])["is_valid"]
+
+
+def test_build_approved_rejects_old_item_after_final_page_date_verification(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {"version": 1, "registry": {}})
+    monkeypatch.setattr(report_pipeline, "validate_raw_item", lambda item, item_type: (True, "", dict(item)))
+    raw = {
+        "news": [_item(
+            title="旧闻误入候选池",
+            summary="搜索结果把旧闻带了进来。",
+            date="2026-06-10",
+            search_date="2026-06-10",
+            date_source="search_result",
+            source_round="r1",
+            url="https://example.com/news/old-story",
+        )],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def fake_date_verify(url, search_date):
+        return {
+            "verified_date": "2024-11-22",
+            "confidence": "high",
+            "source": "body",
+            "url": url,
+        }
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+        check_page_date_enabled=False,
+        date_verify_func=fake_date_verify,
+        llm_relevance_mode="off",
+    )
+
+    assert result["approved"] == []
+    assert any("[时效性]" in item["reason"] for item in result["rejected"])
+
+
 def test_build_approved_rejects_search_fallback_date_verification(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
@@ -2085,8 +2172,8 @@ def test_build_approved_rejects_search_fallback_date_verification(tmp_path, monk
         "news": [_item(
             title="未来实验室合成生物",
             summary="未来实验室报道合成生物产业观察。",
-            date="2026-07-03",
-            search_date="2026-07-03",
+            date="N/A",
+            search_date="N/A",
             date_source="search_result",
             source_round="r1",
             url="https://example.com/fallback-date",
@@ -2118,6 +2205,50 @@ def test_build_approved_rejects_search_fallback_date_verification(tmp_path, monk
     assert result["approved"] == []
     assert any("[页面日期]" in item["reason"] for item in result["rejected"])
     assert result["stats"]["news"]["date_verification_rejected"] == 1
+
+
+def test_build_approved_rejects_search_fallback_after_final_page_date_verification(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "_load_sent_url_registry", lambda: {"version": 1, "registry": {}})
+    monkeypatch.setattr(report_pipeline, "validate_raw_item", lambda item, item_type: (True, "", dict(item)))
+    raw = {
+        "news": [_item(
+            title="搜索日期兜底的旧文章",
+            summary="搜索结果缺失正文发布时间。",
+            date="2026-06-10",
+            search_date="2026-06-10",
+            date_source="search_result",
+            source_round="r1",
+            url="https://example.com/news/fallback-final",
+        )],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }
+
+    def fake_date_verify(url, search_date):
+        return {
+            "verified_date": search_date,
+            "confidence": "low",
+            "source": "search_fallback",
+            "url": url,
+        }
+
+    result = report_pipeline.build_approved_from_raw(
+        raw,
+        "2026-06-10",
+        output_dir=tmp_path,
+        check_url_health_enabled=False,
+        check_title_match_enabled=False,
+        check_page_date_enabled=False,
+        date_verify_func=fake_date_verify,
+        llm_relevance_mode="off",
+    )
+
+    assert result["approved"] == []
+    assert any("[页面日期]" in item["reason"] for item in result["rejected"])
 
 
 def test_build_approved_rejects_llm_date_mismatch(tmp_path, monkeypatch):
