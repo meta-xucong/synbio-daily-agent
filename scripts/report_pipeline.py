@@ -3897,6 +3897,7 @@ def build_approved_from_raw(
     llm_final_audit_mode: str = "auto",
     search_log: Any | None = None,
     search_strategy: Any | None = None,
+    strict_search_log: bool = True,
 ) -> Dict[str, Any]:
     """Process every category from a full raw dict and persist approved/rejected outputs."""
     if not isinstance(raw_obj, dict):
@@ -3910,24 +3911,29 @@ def build_approved_from_raw(
                 search_strategy = json.load(f)
             print(f"build_approved_from_raw: 自动加载搜索策略 {search_strategy_path}")
         else:
-            # 不强制阻断：允许 cron 简化流程在没有 search_strategy 文件时继续运行
-            print(f"build_approved_from_raw: 未找到搜索策略 {search_strategy_path}，继续运行（将在校验中降级为警告）")
+            if strict_search_log:
+                raise ValueError(MISSING_SEARCH_STRATEGY_ERROR)
+            print(f"build_approved_from_raw: 未找到搜索策略 {search_strategy_path}，继续运行（调试模式允许）")
 
     search_log_check = None
     if search_log is not None:
         # search_log coverage is always enforced; it cannot be bypassed.
-        # require_search_strategy 设为 False：前面已自动加载或降级，不再强制阻断
         search_log_check = validate_search_log(
             search_log,
             raw_obj,
             strict_coverage=True,
             search_strategy=search_strategy,
-            require_search_strategy=False,
+            require_search_strategy=strict_search_log,
         )
         if not search_log_check["is_valid"]:
             raise ValueError(
                 "search_log校验失败 (search_log invalid，build-approved 已停止，不会生成 approved 输出): "
                 + "; ".join(search_log_check["errors"])
+            )
+        if strict_search_log and search_log_check["warnings"]:
+            raise ValueError(
+                "search_log生产审计未通过（存在阻断级警告，build-approved 已停止）: "
+                + "; ".join(search_log_check["warnings"])
             )
 
     output_dir = output_dir or DATA_DIR
@@ -4574,6 +4580,8 @@ def main():
     parser.add_argument("--llm-final-audit-mode", choices=["auto", "llm", "off"], default="auto", help="最终质量审计模式：auto有LLM配置则终审，off关闭")
     parser.add_argument("--search-log", type=str, help="搜索执行日志JSON路径，用于校验基座必搜和LLM高召回搜索证据")
     parser.add_argument("--search-strategy", type=str, help="LLM动态搜索策略JSON路径，用于校验动态query执行证据")
+    parser.add_argument("--allow-incomplete-search-log", action="store_true", help="仅审计/排障：允许缺少同日search_strategy或存在search_log warnings，不用于正式日报")
+    parser.add_argument("--allow-empty-approved", action="store_true", help="仅审计/排障：approved=0 时仍返回成功，允许继续渲染空报告，不用于正式日报")
     parser.add_argument("--strict-search-coverage", action="store_true", help="兼容旧命令；build-approved默认已严格校验必搜query和候选URL覆盖")
     parser.add_argument("--render-md", type=str, help="从approved JSON生成确定性Markdown报告")
     parser.add_argument("--raw", type=str, help="render-md使用的raw JSON路径，用于准确显示原始数据总数")
@@ -4693,6 +4701,7 @@ def main():
                 llm_final_audit_mode=args.llm_final_audit_mode,
                 search_log=search_log,
                 search_strategy=search_strategy,
+                strict_search_log=not args.allow_incomplete_search_log,
             )
         except ValueError as exc:
             print(f"ERROR: {exc}")
@@ -4735,8 +4744,12 @@ def main():
             notify_user_on_llm_error(error_msg, args.date)
             sys.exit(1)
         if not result["approved"]:
-            print(f"WARNING: approved为空，本次生成空日报")
-            # 空日报允许继续生成报告和后续流程，不强制退出
+            if args.allow_empty_approved:
+                print("WARNING: approved为空，当前以审计/排障模式继续；正式日报禁止发送空日报")
+            else:
+                print(f"ERROR: {EMPTY_APPROVED_ERROR}")
+                print("如仅需排障或生成审计用空报告，请显式传 --allow-empty-approved")
+                sys.exit(1)
         if not result["approved_schema"]["is_valid"]:
             print(f"approved schema错误: {len(result['approved_schema']['errors'])}个")
             for error in result["approved_schema"]["errors"][:10]:

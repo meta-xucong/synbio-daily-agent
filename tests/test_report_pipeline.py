@@ -697,7 +697,7 @@ def test_validate_search_coverage_blocks_raw_without_search_evidence():
     ]
 
 
-def test_build_approved_allows_search_coverage_gap_as_warning(tmp_path, monkeypatch):
+def test_build_approved_blocks_search_coverage_gap_in_strict_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
     monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {})
@@ -714,20 +714,55 @@ def test_build_approved_allows_search_coverage_gap_as_warning(tmp_path, monkeypa
     }]
     raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
 
-    # missing_urls 已降级为 warning，不再阻断 build_approved
+    try:
+        report_pipeline.build_approved_from_raw(
+            raw,
+            "2026-06-18",
+            output_dir=tmp_path,
+            search_log=log,
+            search_strategy={"queries": [{"query": "recent synthetic biology discovery", "required": True}]},
+            check_url_health_enabled=False,
+            check_title_match_enabled=False,
+        )
+    except ValueError as exc:
+        assert "search_log生产审计未通过" in str(exc)
+    else:
+        raise AssertionError("strict build-approved should fail on search_log warnings")
+
+
+def test_build_approved_can_allow_search_coverage_gap_in_debug_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {})
+    log = _search_log()
+    log["rounds"][0]["queries"] = [{
+        "query": "合成生物 白皮书",
+        "results": [{
+            "title": "2026中国合成生物制造白皮书发布",
+            "url": "https://bydrug.pharmcube.com/news/detail/whitepaper-2026",
+            "snippet": "白皮书系统介绍中国合成生物制造产业。",
+            "source": "ByDrug",
+            "date": "2026-06-17",
+        }],
+    }]
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
     result = report_pipeline.build_approved_from_raw(
         raw,
         "2026-06-18",
         output_dir=tmp_path,
         search_log=log,
+        search_strategy={"queries": [{"query": "recent synthetic biology discovery", "required": True}]},
         check_url_health_enabled=False,
         check_title_match_enabled=False,
+        strict_search_log=False,
     )
+
     assert result["search_log_check"]["coverage_check"]["missing_urls"]
     assert result["search_log_check"]["is_valid"]
 
 
-def test_build_approved_defaults_to_strict_required_query_gate(tmp_path, monkeypatch):
+def test_build_approved_blocks_missing_required_query_in_strict_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
     monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
@@ -735,23 +770,24 @@ def test_build_approved_defaults_to_strict_required_query_gate(tmp_path, monkeyp
     })
     raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
 
-    # required_query_check 已降级为 warning，不再阻断 build_approved
-    result = report_pipeline.build_approved_from_raw(
-        raw,
-        "2026-06-18",
-        output_dir=tmp_path,
-        search_log=_search_log(),
-        check_url_health_enabled=False,
-        check_title_match_enabled=False,
-    )
-    assert result["search_log_check"]["required_query_check"]["missing_by_round"]
-    assert any(
-        "site:kw.beijing.gov.cn 合成生物" in warning
-        for warning in result["search_log_check"]["warnings"]
-    )
+    try:
+        report_pipeline.build_approved_from_raw(
+            raw,
+            "2026-06-18",
+            output_dir=tmp_path,
+            search_log=_search_log(),
+            search_strategy={"queries": [{"query": "recent synthetic biology discovery", "required": True}]},
+            check_url_health_enabled=False,
+            check_title_match_enabled=False,
+        )
+    except ValueError as exc:
+        assert "search_log生产审计未通过" in str(exc)
+        assert "site:kw.beijing.gov.cn 合成生物" in str(exc)
+    else:
+        raise AssertionError("strict build-approved should fail on missing required queries")
 
 
-def test_build_approved_enforces_required_query_gate_strictly(tmp_path, monkeypatch):
+def test_build_approved_can_allow_missing_required_query_in_debug_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
     monkeypatch.setattr(report_pipeline, "load_search_query_config", lambda: {
@@ -759,14 +795,15 @@ def test_build_approved_enforces_required_query_gate_strictly(tmp_path, monkeypa
     })
     raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
 
-    # required_query_check 已降级为 warning，不再阻断 build_approved
     result = report_pipeline.build_approved_from_raw(
         raw,
         "2026-06-18",
         output_dir=tmp_path,
         search_log=_search_log(),
+        search_strategy={"queries": [{"query": "recent synthetic biology discovery", "required": True}]},
         check_url_health_enabled=False,
         check_title_match_enabled=False,
+        strict_search_log=False,
     )
     assert result["search_log_check"]["required_query_check"]["missing_by_round"]
     assert any(
@@ -850,7 +887,26 @@ def test_build_approved_requires_search_strategy_with_search_log(tmp_path, monke
     monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
     raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
 
-    # search_strategy 为 None 时自动尝试加载，找不到则继续运行（不再阻断）
+    try:
+        report_pipeline.build_approved_from_raw(
+            raw,
+            "2026-06-10",
+            output_dir=tmp_path,
+            search_log=_search_log(),
+            check_url_health_enabled=False,
+            check_title_match_enabled=False,
+        )
+    except ValueError as exc:
+        assert "LLM搜索策略缺失" in str(exc)
+    else:
+        raise AssertionError("search_log without same-day search_strategy should fail closed by default")
+
+
+def test_build_approved_can_allow_incomplete_search_log_for_debug(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_pipeline, "load_historical_events", lambda days=30: {})
+    monkeypatch.setattr(report_pipeline, "_load_history_index", lambda: [])
+    raw = {"news": [], "research": [], "funding": [], "policy": [], "events": []}
+
     result = report_pipeline.build_approved_from_raw(
         raw,
         "2026-06-10",
@@ -858,7 +914,9 @@ def test_build_approved_requires_search_strategy_with_search_log(tmp_path, monke
         search_log=_search_log(),
         check_url_health_enabled=False,
         check_title_match_enabled=False,
+        strict_search_log=False,
     )
+
     assert result["search_log_check"]["is_valid"]
 
 
@@ -1461,6 +1519,111 @@ def test_report_pipeline_cli_build_approved_generates_outputs(tmp_path):
     assert approved
     assert rejected
     assert (tmp_path / "processed_news_2026-06-10.json").exists()
+
+
+def test_report_pipeline_cli_build_approved_blocks_empty_by_default(tmp_path):
+    raw_path = tmp_path / "raw.json"
+    raw_path.write_text(json.dumps({
+        "news": [_item(date="2024-01-01", search_date="2024-01-01", type="news")],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "report_pipeline.py"),
+            "--build-approved",
+            str(raw_path),
+            "--date",
+            "2026-06-10",
+            "--output",
+            str(tmp_path),
+            "--skip-url-health",
+            "--skip-title-match",
+        ],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "approved为空" in (result.stdout + result.stderr)
+
+
+def test_report_pipeline_cli_build_approved_allows_empty_with_flag(tmp_path):
+    raw_path = tmp_path / "raw.json"
+    raw_path.write_text(json.dumps({
+        "news": [_item(date="2024-01-01", search_date="2024-01-01", type="news")],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "report_pipeline.py"),
+            "--build-approved",
+            str(raw_path),
+            "--date",
+            "2026-06-10",
+            "--output",
+            str(tmp_path),
+            "--skip-url-health",
+            "--skip-title-match",
+            "--allow-empty-approved",
+        ],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    approved = json.loads((tmp_path / "approved_2026-06-10.json").read_text(encoding="utf-8"))
+    assert approved == []
+
+
+def test_report_pipeline_cli_build_approved_blocks_incomplete_search_log_by_default(tmp_path):
+    raw_path = tmp_path / "raw.json"
+    raw_path.write_text(json.dumps({
+        "news": [_item(type="news", source_round="r1")],
+        "research": [],
+        "funding": [],
+        "policy": [],
+        "events": [],
+    }, ensure_ascii=False), encoding="utf-8")
+    search_log_path = tmp_path / "search_log.json"
+    search_log_path.write_text(json.dumps(_search_log(), ensure_ascii=False), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "report_pipeline.py"),
+            "--build-approved",
+            str(raw_path),
+            "--date",
+            "2026-06-10",
+            "--output",
+            str(tmp_path),
+            "--skip-url-health",
+            "--skip-title-match",
+            "--search-log",
+            str(search_log_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "LLM搜索策略缺失" in (result.stdout + result.stderr)
 
 
 def test_build_approved_drops_conflicting_same_url_titles(tmp_path, monkeypatch):

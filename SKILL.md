@@ -31,6 +31,11 @@ Step 8: 邮件推送（send gate通过后才发送）
 Step 9: 更新政策库
 ```
 
+**生产执行铁律**：
+- 正式日报优先使用单一入口 `python scripts\\run_daily_pipeline.py --date YYYY-MM-DD --provider tavily ...`，不要手工并行 15 个 query 再自己拼 `search_log`。
+- `approved=0`、缺少同日 `search_strategy_YYYY-MM-DD.json`、或 `search_log` 不是 `search_executor` 产物时，都是 **fail-closed** 场景，必须停止，不发送邮件。
+- 只有排障/审计时才允许显式使用 `report_pipeline.py --allow-incomplete-search-log` 或 `--allow-empty-approved`；这种产物不能当正式日报发送。
+
 ---
 
 ## Step 1: 读取配置
@@ -186,7 +191,7 @@ python scripts\report_pipeline.py --build-approved data\raw_YYYY-MM-DD.json --da
 - **必须保留 `data/search_log_YYYY-MM-DD.json`，发送前会检查五轮 query 和 raw 的 `source_round`**
 - **如果生成了 `data/search_strategy_YYYY-MM-DD.json`，build-approved 必须传 `--search-strategy`，确保 LLM 动态 query 没被跳过**
 - **严禁把 LLM provider token 写入仓库、配置文件、测试 fixture、报告或日志；只能由运行环境变量提供**
-- 如果所有信息都被拒绝，生成"本周期暂无相关新信息"的报告
+- 如果所有信息都被拒绝，只能生成审计用空报告；**正式流程必须立即停止，不发送邮件**
 
 ---
 

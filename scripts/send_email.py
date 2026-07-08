@@ -732,7 +732,7 @@ def validate_send_gate(
         warnings.extend(pre_result.get("warnings", []))
 
         approved_data = prepared.effective_approved_data
-        # 空日报允许继续后续验证流程，不强制阻止
+        # 空approved会被 pre_check / LLM trace / post_check 阻断；这里只继续收集诊断细节。
         if not approved_data:
             details["sent_url_registry"] = prepared.duplicate_check
             details["skipped_after_empty_approved"] = True
