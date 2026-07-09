@@ -1,7 +1,9 @@
 import json
 import pytest
 import sys
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -246,6 +248,108 @@ def test_anthropic_client_parses_date_validation_response():
     assert seen["body"]["thinking"] == {"type": "disabled"}
     assert not decision.is_date_valid
     assert decision.suspected_actual_date == "2023-01-12"
+
+
+def test_llm_client_falls_back_to_secondary_provider_on_http_403(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_FALLBACKS", json.dumps([
+        {
+            "base_url": "https://aiself.vip",
+            "auth_token": "fallback-token",
+            "model": "deepseek-chat",
+        }
+    ]))
+    seen = {"urls": []}
+    response_payload = {
+        "content": [{
+            "type": "text",
+            "text": json.dumps({
+                "decision": "include",
+                "domain_relevance": "core_synbio",
+                "confidence": 0.91,
+                "reason": "含合成生物证据",
+                "evidence_spans": ["合成生物", "生物制造"],
+                "section": "news",
+                "reject_reason": None,
+            }, ensure_ascii=False),
+        }]
+    }
+
+    def fake_opener(request, timeout=45):
+        seen["urls"].append(request.full_url)
+        if "api.kimi.com" in request.full_url:
+            raise HTTPError(
+                request.full_url,
+                403,
+                "Forbidden",
+                hdrs=None,
+                fp=BytesIO(b'{"error":{"message":"usage limit exceeded"}}'),
+            )
+        return _FakeResponse(json.dumps(response_payload).encode("utf-8"))
+
+    client = llm_judge.AnthropicRelevanceClient(
+        base_url="https://api.kimi.com/coding",
+        auth_token="primary-token",
+        model="kimi-for-coding",
+        opener=fake_opener,
+    )
+    decision = client.judge({
+        "title": "Synthetic biology update",
+        "summary": "Synthetic biology and biomanufacturing progress.",
+        "type": "news",
+    })
+
+    assert decision.is_approved
+    assert any("api.kimi.com" in url for url in seen["urls"])
+    assert any("aiself.vip" in url for url in seen["urls"])
+    assert client.last_used_model == "deepseek-chat"
+
+
+def test_llm_client_falls_back_on_malformed_date_json(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_FALLBACKS", json.dumps([
+        {
+            "base_url": "https://aiself.vip",
+            "auth_token": "fallback-token",
+            "model": "deepseek-chat",
+        }
+    ]))
+    calls = []
+
+    def fake_opener(request, timeout=45):
+        calls.append(request.full_url)
+        if "api.kimi.com" in request.full_url:
+            return _FakeResponse(json.dumps({
+                "content": [{"type": "text", "text": '{"is_date_valid": true "confidence": 0.8}'}]
+            }).encode("utf-8"))
+        return _FakeResponse(json.dumps({
+            "content": [{
+                "type": "text",
+                "text": json.dumps({
+                    "is_date_valid": True,
+                    "confidence": 0.95,
+                    "reason": "备用provider返回了合法JSON",
+                    "evidence_spans": ["2026-07-08", "正式开园"],
+                    "suspected_actual_date": None,
+                }, ensure_ascii=False),
+            }]
+        }).encode("utf-8"))
+
+    client = llm_judge.AnthropicRelevanceClient(
+        base_url="https://api.kimi.com/coding",
+        auth_token="primary-token",
+        model="kimi-for-coding",
+        opener=fake_opener,
+    )
+    decision = client.judge_date({
+        "title": "诺赫合成生物产业园开园",
+        "summary": "7月3日产业园正式开园。",
+        "date": "2026-07-03",
+        "search_date": "2026-07-03",
+        "type": "events",
+    }, "2026-07-09")
+
+    assert decision.is_date_valid
+    assert any("api.kimi.com" in url for url in calls)
+    assert any("aiself.vip" in url for url in calls)
 
 
 def test_anthropic_client_does_not_duplicate_v1_path():

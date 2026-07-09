@@ -17,6 +17,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol, Tuple
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -64,9 +65,8 @@ def _load_env() -> None:
 _load_env()
 
 
-def _default_model() -> str:
-    """Return default model based on the configured base URL."""
-    base = os.getenv("ANTHROPIC_BASE_URL", "").lower()
+def _default_model_for_base_url(base_url: str | None) -> str:
+    base = (base_url or os.getenv("ANTHROPIC_BASE_URL") or "").lower()
     if (
         "api.kimi.com" in base
         or "aiself.vip" in base
@@ -75,6 +75,11 @@ def _default_model() -> str:
     ):
         return "kimi-for-coding"
     return "claude-3-5-sonnet-20241022"
+
+
+def _default_model() -> str:
+    """Return default model based on the configured base URL."""
+    return _default_model_for_base_url(os.getenv("ANTHROPIC_BASE_URL", ""))
 
 
 DEFAULT_MODEL = _default_model()
@@ -91,6 +96,101 @@ _COMPANY_BIOMFG_TERMS = frozenset([
     "主营业务为生物制造", "主营业务是生物制造", "合成生物", "生物制造",
     "biomanufacturing", "synthetic biology", "precision fermentation",
 ])
+
+
+def _coerce_provider_entry(item: Any) -> dict[str, str] | None:
+    if not isinstance(item, dict):
+        return None
+    base_url = str(
+        item.get("base_url")
+        or item.get("ANTHROPIC_BASE_URL")
+        or ""
+    ).strip().rstrip("/")
+    auth_token = str(
+        item.get("auth_token")
+        or item.get("ANTHROPIC_AUTH_TOKEN")
+        or ""
+    ).strip()
+    model = str(
+        item.get("model")
+        or item.get("ANTHROPIC_MODEL")
+        or _default_model_for_base_url(base_url)
+    ).strip()
+    if not base_url or not auth_token:
+        return None
+    return {
+        "base_url": base_url,
+        "auth_token": auth_token,
+        "model": model or _default_model_for_base_url(base_url),
+    }
+
+
+def _load_fallback_provider_entries() -> list[dict[str, str]]:
+    raw = str(os.getenv("ANTHROPIC_FALLBACKS") or "").strip()
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    entries = payload if isinstance(payload, list) else [payload]
+    normalized: list[dict[str, str]] = []
+    for item in entries:
+        entry = _coerce_provider_entry(item)
+        if entry is not None:
+            normalized.append(entry)
+    return normalized
+
+
+def _build_provider_entries(
+    base_url: str | None,
+    auth_token: str | None,
+    model: str | None,
+) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    primary = _coerce_provider_entry({
+        "base_url": base_url or os.getenv("ANTHROPIC_BASE_URL") or "",
+        "auth_token": auth_token if auth_token is not None else os.getenv("ANTHROPIC_AUTH_TOKEN") or "",
+        "model": model or os.getenv("ANTHROPIC_MODEL") or _default_model_for_base_url(base_url),
+    })
+    if primary is not None:
+        entries.append(primary)
+    entries.extend(_load_fallback_provider_entries())
+
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        key = (entry["base_url"], entry["auth_token"], entry["model"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped
+
+
+def _should_failover_provider_error(exc: Exception) -> bool:
+    code = getattr(exc, "code", None)
+    if code in {401, 403, 408, 409, 429, 432, 500, 502, 503, 504}:
+        return True
+    if isinstance(exc, (HTTPError, URLError, TimeoutError, json.JSONDecodeError)):
+        return True
+    message = str(exc).lower()
+    return any(token in message for token in (
+        "usage limit",
+        "quota",
+        "billing cycle",
+        "rate limit",
+        "too many requests",
+        "timed out",
+        "timeout",
+        "forbidden",
+        "unauthorized",
+        "expecting ',' delimiter",
+        "did not contain a json",
+        "response contained no text",
+        "temporarily unavailable",
+        "connection reset",
+    ))
 
 
 def provider_uses_ascii_prompts(base_url: str | None) -> bool:
@@ -733,10 +833,13 @@ class LLMClient:
         self.model = model or os.getenv("ANTHROPIC_MODEL") or DEFAULT_MODEL
         self.timeout = timeout
         self.opener = opener
+        self.provider_entries = _build_provider_entries(self.base_url, self.auth_token, self.model)
+        self.last_used_base_url = self.base_url
+        self.last_used_model = self.model
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.base_url and self.auth_token)
+        return bool(self.provider_entries)
 
     @property
     def use_ascii_prompts(self) -> bool:
@@ -744,33 +847,48 @@ class LLMClient:
 
     @property
     def messages_url(self) -> str:
-        if self.base_url.endswith("/v1"):
-            return f"{self.base_url}/messages"
-        return f"{self.base_url}/v1/messages"
+        return self._messages_url_for(self.base_url)
 
-    def complete_text(self, prompt: str, *, max_tokens: int = 600, temperature: float = 0) -> str:
+    def _messages_url_for(self, base_url: str) -> str:
+        if base_url.endswith("/v1"):
+            return f"{base_url}/messages"
+        return f"{base_url}/v1/messages"
+
+    def _request_text_once(
+        self,
+        provider: dict[str, str],
+        prompt: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        timeout: int | None = None,
+    ) -> str:
+        provider_base_url = str(provider.get("base_url") or "").rstrip("/")
+        provider_auth_token = str(provider.get("auth_token") or "")
+        provider_model = str(provider.get("model") or self.model or DEFAULT_MODEL)
+        use_ascii_prompts = provider_uses_ascii_prompts(provider_base_url)
         if not self.is_configured:
             raise RuntimeError("LLM provider is not configured")
         payload = {
-            "model": self.model,
+            "model": provider_model,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "messages": [{"role": "user", "content": prompt}],
         }
-        if provider_supports_thinking_disable(self.base_url, self.model):
+        if provider_supports_thinking_disable(provider_base_url, provider_model):
             payload["thinking"] = {"type": "disabled"}
         request = Request(
-            self.messages_url,
-            data=json.dumps(payload, ensure_ascii=self.use_ascii_prompts).encode("utf-8"),
+            self._messages_url_for(provider_base_url),
+            data=json.dumps(payload, ensure_ascii=use_ascii_prompts).encode("utf-8"),
             headers={
                 "Content-Type": "application/json; charset=utf-8",
-                "x-api-key": self.auth_token or "",
-                "Authorization": f"Bearer {self.auth_token or ''}",
+                "x-api-key": provider_auth_token,
+                "Authorization": f"Bearer {provider_auth_token}",
                 "anthropic-version": "2023-06-01",
             },
             method="POST",
         )
-        with self.opener(request, timeout=self.timeout) as response:
+        with self.opener(request, timeout=timeout or self.timeout) as response:
             body = response.read().decode("utf-8", errors="replace")
         parsed = json.loads(body)
         content = parsed.get("content")
@@ -779,32 +897,112 @@ class LLMClient:
                 str(part.get("text", ""))
                 for part in content
                 if isinstance(part, dict)
-            )
+            ).strip()
+            if not text:
+                block_types = [
+                    str(part.get("type") or "<unknown>")
+                    for part in content
+                    if isinstance(part, dict)
+                ]
+                stop_reason = str(parsed.get("stop_reason") or "")
+                raise RuntimeError(
+                    "LLM response contained no text blocks "
+                    f"(stop_reason={stop_reason or 'unknown'}, content_types={block_types})"
+                )
         elif isinstance(content, str):
             text = content
         else:
             text = str(parsed.get("text") or body)
+        self.last_used_base_url = provider_base_url
+        self.last_used_model = provider_model
         return text
 
+    def _invoke_with_failover(
+        self,
+        prompt_builder: Callable[[dict[str, str]], str],
+        parser: Callable[[str], Any],
+        *,
+        max_tokens: int,
+        temperature: float,
+        timeout: int | None = None,
+        retries: int = 1,
+    ) -> Any:
+        if not self.is_configured:
+            raise RuntimeError("LLM provider is not configured")
+        last_error: Exception | None = None
+        provider_count = len(self.provider_entries)
+        for provider_index, provider in enumerate(self.provider_entries):
+            for attempt in range(1, max(1, retries) + 1):
+                try:
+                    prompt = prompt_builder(provider)
+                    text = self._request_text_once(
+                        provider,
+                        prompt,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        timeout=timeout,
+                    )
+                    return parser(text)
+                except Exception as exc:
+                    last_error = exc
+                    has_more_retries = attempt < max(1, retries)
+                    has_more_providers = provider_index < provider_count - 1
+                    if has_more_retries:
+                        continue
+                    if has_more_providers and _should_failover_provider_error(exc):
+                        break
+                    raise
+        raise last_error or RuntimeError("LLM provider request failed")
+
+    def complete_text(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 600,
+        temperature: float = 0,
+        timeout: int | None = None,
+        retries: int = 1,
+    ) -> str:
+        return str(self._invoke_with_failover(
+            lambda provider: prompt,
+            lambda text: text,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+            retries=retries,
+        ))
+
     def judge(self, item: dict[str, Any]) -> Decision:
-        text = self.complete_text(_build_prompt(item, ascii_safe=self.use_ascii_prompts), max_tokens=600, temperature=0)
-        return normalize_llm_decision(_extract_json_object(text), raw_response=text)
+        return self._invoke_with_failover(
+            lambda provider: _build_prompt(item, ascii_safe=provider_uses_ascii_prompts(provider.get("base_url"))),
+            lambda text: normalize_llm_decision(_extract_json_object(text), raw_response=text),
+            max_tokens=600,
+            temperature=0,
+        )
 
     def final_audit(self, items: list[dict[str, Any]], report_date: str) -> list[dict[str, Any]]:
-        text = self.complete_text(
-            _build_final_audit_prompt(items, report_date, ascii_safe=self.use_ascii_prompts),
+        return self._invoke_with_failover(
+            lambda provider: _build_final_audit_prompt(
+                items,
+                report_date,
+                ascii_safe=provider_uses_ascii_prompts(provider.get("base_url")),
+            ),
+            _extract_json_array,
             max_tokens=1200,
             temperature=0,
         )
-        return _extract_json_array(text)
 
     def judge_date(self, item: dict[str, Any], report_date: str) -> DateDecision:
-        text = self.complete_text(
-            _build_date_validation_prompt(item, report_date, ascii_safe=self.use_ascii_prompts),
+        return self._invoke_with_failover(
+            lambda provider: _build_date_validation_prompt(
+                item,
+                report_date,
+                ascii_safe=provider_uses_ascii_prompts(provider.get("base_url")),
+            ),
+            lambda text: normalize_date_decision(_extract_json_object(text), raw_response=text),
             max_tokens=400,
             temperature=0,
         )
-        return normalize_date_decision(_extract_json_object(text), raw_response=text)
 
 
 AnthropicRelevanceClient = LLMClient

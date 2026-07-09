@@ -1,7 +1,9 @@
 import json
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -534,6 +536,59 @@ def test_messages_text_client_disables_thinking_for_kimi_gateway(monkeypatch):
     client.complete("prompt")
 
     assert captured["payload"]["thinking"] == {"type": "disabled"}
+
+
+def test_messages_text_client_falls_back_to_secondary_provider(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_FALLBACKS", json.dumps([
+        {
+            "base_url": "https://aiself.vip",
+            "auth_token": "fallback-token",
+            "model": "deepseek-chat",
+        }
+    ]))
+    seen = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __init__(self, body: bytes):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+    def fake_opener(request, timeout=45):
+        seen.append(request.full_url)
+        if "api.kimi.com" in request.full_url:
+            raise HTTPError(
+                request.full_url,
+                403,
+                "Forbidden",
+                hdrs=None,
+                fp=BytesIO(b'{"error":{"message":"usage limit exceeded"}}'),
+            )
+        return FakeResponse(json.dumps({
+            "content": [{"type": "text", "text": '{"queries": []}'}],
+        }).encode("utf-8"))
+
+    client = llm_search_strategy.MessagesTextClient(
+        llm_search_strategy.LLMClient(
+            base_url="https://api.kimi.com/coding",
+            auth_token="primary-token",
+            model="kimi-for-coding",
+            opener=fake_opener,
+        )
+    )
+
+    text = client.complete("prompt")
+
+    assert '{"queries": []}' in text
+    assert any("api.kimi.com" in url for url in seen)
+    assert any("aiself.vip" in url for url in seen)
 
 
 def test_llm_search_strategy_appends_missing_coverage_queries():

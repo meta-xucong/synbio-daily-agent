@@ -19,7 +19,6 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Protocol
-from urllib.request import Request
 
 try:
     from .llm_judge import LLMClient, _extract_json_object
@@ -104,62 +103,13 @@ class MessagesTextClient:
             max(DEFAULT_STRATEGY_TIMEOUT_SECONDS, int(self.llm_client.timeout or 0)),
         )
         retries = _positive_int_env("ANTHROPIC_SEARCH_STRATEGY_RETRIES", DEFAULT_STRATEGY_RETRIES)
-        payload = {
-            "model": self.llm_client.model,
-            "max_tokens": max_tokens,
-            "temperature": 0,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if _llm_client_supports_thinking_disable(self.llm_client):
-            payload["thinking"] = {"type": "disabled"}
-        last_error: Exception | None = None
-        for attempt in range(1, retries + 1):
-            request = Request(
-                self.llm_client.messages_url,
-                data=json.dumps(payload, ensure_ascii=self.llm_client.use_ascii_prompts).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json; charset=utf-8",
-                    "x-api-key": self.llm_client.auth_token or "",
-                    "Authorization": f"Bearer {self.llm_client.auth_token or ''}",
-                    "anthropic-version": "2023-06-01",
-                },
-                method="POST",
-            )
-            try:
-                with self.llm_client.opener(request, timeout=timeout) as response:
-                    body = response.read().decode("utf-8", errors="replace")
-                parsed = json.loads(body)
-                content = parsed.get("content")
-                if isinstance(content, list):
-                    text = "\n".join(
-                        str(part.get("text", ""))
-                        for part in content
-                        if isinstance(part, dict) and part.get("text") is not None
-                    ).strip()
-                    if text:
-                        return text
-                    block_types = [
-                        str(part.get("type") or "<unknown>")
-                        for part in content
-                        if isinstance(part, dict)
-                    ]
-                    stop_reason = str(parsed.get("stop_reason") or "")
-                    raise RuntimeError(
-                        "LLM search strategy response contained no text blocks "
-                        f"(stop_reason={stop_reason or 'unknown'}, content_types={block_types})"
-                    )
-                if isinstance(content, str):
-                    return content
-                text = str(parsed.get("text") or "").strip()
-                if text:
-                    return text
-                raise RuntimeError("LLM search strategy response contained no text")
-            except Exception as exc:
-                last_error = exc
-                if attempt >= retries:
-                    break
-                time.sleep(min(2, attempt))
-        raise last_error or RuntimeError("LLM search strategy request failed")
+        return self.llm_client.complete_text(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=0,
+            timeout=timeout,
+            retries=retries,
+        )
 
 
 def normalize_query_text(query: Any) -> str:
