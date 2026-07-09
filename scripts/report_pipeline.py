@@ -139,7 +139,7 @@ APPROVED_REQUIRED_FIELDS = {
 }
 TYPE_TITLE_KEYWORDS = {
     "policy": ("政策", "法规", "监管", "规划", "计划", "报告", "项目", "措施", "指南", "征集", "通知", "公告", "课题", "专项", "申报", "标准", "开放共享", "grant", "call", "program", "programme", "proposal", "award", "regulation", "guidance"),
-    "events": ("大会", "会议", "论坛", "研讨会", "峰会", "活动", "课程", "培训", "webinar", "conference", "symposium", "forum", "course", "summit", "workshop", "meeting", "webcast"),
+    "events": ("大会", "会议", "论坛", "研讨会", "峰会", "活动", "课程", "培训", "大赛", "竞赛", "专业赛", "webinar", "conference", "symposium", "forum", "course", "summit", "workshop", "meeting", "webcast"),
     "funding": ("融资", "投资", "轮融资", "募资", "并购", "收购", "上市", "ipo", "series", "funding", "raised", "raises", "raise", "seed", "pre-a", "pre a", "round", "venture", "capital", "backs", "secures", "investment"),
     "research": ("研究", "论文", "nature", "science", "cell", "pnas", "acs", "发现", "突破", "engineer", "engineered", "recoded", "e. coli", "synthetic cell", "research", "journal", "study", "paper", "published", "publication", "biotechnology", "bioengineering"),
 }
@@ -148,6 +148,18 @@ TYPE_NEGATIVE_KEYWORDS = {
     "funding": ("forum", "conference", "course", "policy", "regulation", "guidance", "研究", "论文"),
     "events": ("investment report", "融资", "获投", "raised", "raises", "funding"),
 }
+EVENT_PREVIEW_HINTS = (
+    "将于", "将在", "即将", "预告", "议程", "日程", "报名", "参会", "征稿", "邀您", "启幕",
+    "coming", "register", "agenda", "schedule", "call for", "join us",
+)
+EVENT_REPORT_HINTS = (
+    "举行", "召开", "举办", "开幕", "闭幕", "落幕", "开园", "发布会", "签约仪式", "决赛", "颁奖",
+    "held", "opened", "launched", "took place",
+)
+EVENT_ANALYSIS_NEGATIVE_HINTS = (
+    "专访", "解读", "观察", "评论", "长跑", "回顾", "复盘", "盘点", "趋势", "洞察",
+    "访谈", "死亡谷", "产业化", "下一站", "为什么", "how", "analysis", "opinion",
+)
 
 def _is_synbio_relevant(title: str = "", summary: str = "", url: str = "") -> Tuple[bool, str, str]:
     """Backward-compatible wrapper for llm_judge.is_synbio_relevant."""
@@ -158,6 +170,71 @@ def _is_synbio_relevant_bool(title: str = "", summary: str = "", url: str = "") 
     """Boolean convenience wrapper for classifier-like callers."""
     is_relevant, _, _ = _is_synbio_relevant(title, summary, url)
     return is_relevant
+
+
+def _event_signal_text(item: Dict[str, Any], *, summary_chars: int = 240) -> str:
+    return " ".join(
+        str(item.get(field) or "")
+        for field in ("title", "source_query")
+    ).lower() + " " + str(item.get("summary") or "")[:summary_chars].lower()
+
+
+def _looks_like_event_preview_content(item: Dict[str, Any]) -> bool:
+    text = _event_signal_text(item)
+    if not any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["events"]):
+        return False
+    if any(keyword.lower() in text for keyword in EVENT_ANALYSIS_NEGATIVE_HINTS):
+        return False
+    if any(keyword.lower() in text for keyword in EVENT_PREVIEW_HINTS):
+        return True
+    title = str(item.get("title") or "").lower()
+    query = str(item.get("source_query") or "").lower()
+    title_query = f"{title} {query}"
+    if any(keyword.lower() in title_query for keyword in TYPE_TITLE_KEYWORDS["events"]):
+        if re.search(r"\b20\d{2}\b", title_query) or re.search(r"\d{1,2}\s*(月|日)", title_query):
+            return True
+        event_host_hints = ("conference", "forum", "summit", "meeting", "symposium", "webinar")
+        if any(hint in str(item.get("url") or "").lower() or hint in str(item.get("source") or "").lower() for hint in event_host_hints):
+            return True
+    event_host_hints = ("conference", "forum", "summit", "meeting", "symposium", "webinar")
+    if any(hint in str(item.get("url") or "").lower() or hint in str(item.get("source") or "").lower() for hint in event_host_hints):
+        if re.search(r"\b20\d{2}\b", title_query) and any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["events"]):
+            return True
+    return any(keyword.lower() in title or keyword.lower() in query for keyword in EVENT_REPORT_HINTS)
+
+
+def _looks_like_policy_content(item: Dict[str, Any]) -> bool:
+    title_source_url = (
+        f"{item.get('title', '')} {item.get('source', '')} {item.get('url', '')}"
+    ).lower()
+    title_source = f"{item.get('title', '')} {item.get('source', '')}".lower()
+    has_policy_keyword = any(keyword.lower() in title_source_url for keyword in TYPE_TITLE_KEYWORDS["policy"])
+    has_authority = any(hint.lower() in title_source for hint in POLICY_AUTHORITY_HINTS)
+    netloc = urlsplit(str(item.get("url", ""))).netloc.lower()
+    is_gov_cn = netloc.endswith(".gov.cn") or ".gov.cn:" in netloc
+    return has_policy_keyword and (has_authority or is_gov_cn)
+
+
+def infer_timeliness_type(item: Dict[str, Any], item_type: str, content_type: str | None = None) -> str:
+    """Infer the freshness bucket independently from the display/report section."""
+    effective_content_type = str(content_type or item.get("content_type") or "").strip().lower()
+    if effective_content_type == "market_report":
+        return "market_report"
+    if _looks_like_policy_content(item):
+        return "policy"
+    text = " ".join(
+        str(item.get(field) or "")
+        for field in ("title", "summary", "source", "url", "source_query")
+    ).lower()
+    if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["funding"]):
+        return "funding"
+    if _looks_like_event_preview_content(item):
+        return "events"
+    if _has_research_signal(item):
+        return "research"
+    if item_type == "policy":
+        return "policy"
+    return "news"
 POLICY_AUTHORITY_HINTS = (
     "gov", "政府", "科委", "科创局", "发改委", "工信", "科技部", "市监", "监管", "部门", "委员会", "协会",
     "ministry", "agency", "commission", "authority", "government", "programme", "program",
@@ -523,9 +600,15 @@ def infer_item_type_from_search_result(result: Dict[str, Any], query: str = "") 
         url,
         query,
     )).lower()
+    event_probe = {
+        "title": title,
+        "summary": summary,
+        "url": url,
+        "source_query": query,
+    }
     if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["funding"]):
         return "funding"
-    if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["events"]):
+    if _looks_like_event_preview_content(event_probe):
         return "events"
     if any(keyword in text for keyword in ("白皮书", "行业报告", "产业报告", "blue paper", "white paper")):
         return "news"
@@ -537,9 +620,9 @@ def infer_item_type_from_search_result(result: Dict[str, Any], query: str = "") 
         return "policy"
     if any(keyword.lower() in text for keyword in TYPE_TITLE_KEYWORDS["research"]):
         return "research"
-    # LLM 语义判断：即使无典型研究关键词，合成生物学相关技术内容也归为 research
+    # 默认把一般行业资讯归为 news；只有显式研究信号才进入 research。
     if _is_synbio_relevant_bool(title=title, summary=summary, url=url):
-        return "research"
+        return "news"
     return "news"
 
 
@@ -1226,14 +1309,25 @@ def _has_research_signal(item: Dict[str, Any]) -> bool:
         str(item.get(field) or "")
         for field in ("title", "summary", "source", "url")
     ).lower()
-    research_terms = (
-        "研究", "论文", "发表", "期刊", "突破",
-        "nature", "science", "cell", "pnas", "acs",
+    title_source = " ".join(
+        str(item.get(field) or "")
+        for field in ("title", "source", "url")
+    ).lower()
+    strong_terms = (
+        "研究", "论文", "发表", "期刊", "nature", "science", "cell", "pnas", "acs",
         "journal", "study", "paper", "published", "publication",
-        "engineer", "engineered", "recoded", "e. coli", "synthetic cell",
-        "biotechnology", "bioengineering",
+        "engineered", "recoded", "e. coli", "synthetic cell",
     )
-    return any(term in text for term in research_terms)
+    academic_hints = (
+        "university", "institute", "laboratory", "lab", "科学院", "大学", "研究院", "实验室",
+        "genengnews", "sciencenet", "nature.com", "cell.com",
+    )
+    weak_terms = ("突破", "发现", "biotechnology", "bioengineering")
+    if any(term in title_source for term in strong_terms):
+        return True
+    if any(hint in title_source for hint in academic_hints) and any(term in text for term in weak_terms):
+        return True
+    return False
 
 
 def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, Dict[str, Any]]:
@@ -2682,7 +2776,7 @@ def is_duplicate(item: Dict[str, Any], fingerprint_db: Dict[str, Any]) -> Tuple[
 
 def check_timeliness(item: Dict[str, Any], item_type: str, now: Optional[datetime] = None) -> Tuple[bool, str]:
     """检查时效性"""
-    effective_type = str(item.get("content_type") or item_type or "news")
+    effective_type = str(item.get("timeliness_type") or item.get("content_type") or item_type or "news")
     if effective_type == "event_preview":
         effective_type = "events"
     date_str = item.get("verified_date") or item.get("date", "")
@@ -2729,7 +2823,9 @@ def classify_content_type(item: Dict[str, Any], item_type: str) -> Tuple[str, st
     if any(keyword in text for keyword in MARKET_REPORT_KEYWORDS):
         return "market_report", "市场研究/行业规模报告，主体是历史数据或预测，不是当日事件"
     if item_type == "events":
-        return "event_preview", "活动预告"
+        if _looks_like_event_preview_content(item):
+            return "event_preview", "活动预告"
+        return "news", "活动报道/产业报道，按新闻时效处理"
     return item_type, "沿用栏目类型"
 
 
@@ -2880,6 +2976,7 @@ def process_raw_data(
         effective_item_type = str(item.get("type") or item_type)
         content_type, content_reason = classify_content_type(item, effective_item_type)
         item["content_type"] = content_type
+        item["timeliness_type"] = infer_timeliness_type(item, effective_item_type, content_type)
         if should_exclude_content_type(content_type):
             rejected.append({
                 "item": item,
@@ -3565,14 +3662,11 @@ def _looks_like_type(item: Dict[str, Any], item_type: str) -> bool:
     
     # 4. 类型专用正向检查（低置信度或 policy/funding/events 仍需关键词验证）
     if item_type == "policy":
-        has_policy_keyword = any(keyword.lower() in title_summary_url for keyword in TYPE_TITLE_KEYWORDS["policy"])
-        has_authority = any(hint.lower() in text for hint in POLICY_AUTHORITY_HINTS)
-        netloc = urlsplit(str(item.get("url", ""))).netloc.lower()
-        is_gov_cn = netloc.endswith(".gov.cn") or ".gov.cn:" in netloc
-        if is_gov_cn and has_policy_keyword:
-            return True
-        return has_policy_keyword and has_authority
-    
+        return _looks_like_policy_content(item)
+
+    if item_type == "events":
+        return _looks_like_event_preview_content(item)
+
     if item_type in ("news", "research"):
         # news/research 在 LLM 判断通过后已直接返回，走到这里是低置信度情况
         return True

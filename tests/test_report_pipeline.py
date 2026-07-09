@@ -640,6 +640,60 @@ def test_build_raw_from_search_log_classifies_authority_research_program_as_poli
     assert not raw["research"]
 
 
+def test_build_raw_from_search_log_defaults_general_synbio_industry_story_to_news():
+    log = _search_log()
+    log["rounds"][0]["queries"] = [{
+        "query": "site:dg.gov.cn 合成生物 生物制造 产业园",
+        "results": [{
+            "title": "诺赫合成生物产业园开园！东莞宠物合成生物赛道产业发展新起点",
+            "url": "http://nyncj.dg.gov.cn/zixun/snkd/content/post_4556905.html",
+            "snippet": "诺赫合成生物产业园正式开园，首批12家宠物医药科创企业集中签约入驻。",
+            "source": "东莞市农业农村局",
+            "date": "2026-07-03",
+        }],
+    }]
+
+    raw = report_pipeline.build_raw_from_search_log(log, report_date="2026-07-09")
+
+    assert [item["title"] for item in raw["news"]] == [
+        "诺赫合成生物产业园开园！东莞宠物合成生物赛道产业发展新起点",
+    ]
+    assert not raw["research"]
+
+
+def test_validate_raw_item_reclassifies_event_analysis_to_news():
+    ok, reason, normalized = report_pipeline.validate_raw_item({
+        "title": "合成生物学跨越“死亡之谷”,一家老牌药企的70年长跑_ZAKER新闻",
+        "source": "ZAKER",
+        "date": "2026-07-03",
+        "search_date": "2026-07-03",
+        "summary": "文章探讨生物制造产业化落地与中试平台，不是活动预告。",
+        "url": "https://app.myzaker.com/news/article.php?pk=6a474a168e9f09426e6579ef",
+        "type": "events",
+        "source_query": "生物制造 死亡谷 落地",
+    }, "events")
+
+    assert ok
+    assert normalized["type"] == "news"
+    assert normalized["reclassified_from"] == "events"
+
+
+def test_classify_content_type_only_keeps_true_event_preview_in_event_window():
+    preview_type, _ = report_pipeline.classify_content_type({
+        "title": "2026中欧生命科学国际论坛将于7月11日至12日举办",
+        "summary": "报名通道开启，活动议程公布。",
+        "source_query": "合成生物 研讨会 会议 活动",
+    }, "events")
+    report_type, _ = report_pipeline.classify_content_type({
+        "title": "合成生物学跨越“死亡之谷”,一家老牌药企的70年长跑_ZAKER新闻",
+        "summary": "专访海正药业，讨论生物制造产业化落地。",
+        "source_query": "生物制造 死亡谷 落地",
+    }, "events")
+
+    assert preview_type == "event_preview"
+    assert report_type == "news"
+
+
 def test_normalize_search_result_date_does_not_invent_missing_dates():
     assert report_pipeline.normalize_search_result_date("", report_date="2026-06-18") == "N/A"
     assert report_pipeline.normalize_search_result_date("3天前", report_date="2026-06-18") == "2026-06-15"
