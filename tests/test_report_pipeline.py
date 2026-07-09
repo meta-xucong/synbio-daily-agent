@@ -2087,6 +2087,31 @@ def test_extract_page_verified_date_prefers_body_date_for_36kr_cache_meta():
     assert result["source"] == "body_context"
 
 
+def test_extract_page_verified_date_uses_og_release_date_before_related_story_dates():
+    html = """
+    <html>
+      <head>
+        <meta property="og:release_date" content="2026-07-03T12:31:00">
+        <title>合成生物学跨越“死亡之谷”,一家老牌药企的70年长跑_ZAKER新闻</title>
+      </head>
+      <body>
+        相关推荐 中国生物制药 2026-07-09
+        Momenta燃爆港交所 2026-07-08
+        燃油价格上涨推高卡车租金 2026-07-07
+      </body>
+    </html>
+    """
+
+    result = report_pipeline.extract_page_verified_date(
+        html,
+        search_date="2026-07-08",
+        page_url="https://app.myzaker.com/news/article.php?pk=6a474a168e9f09426e6579ef",
+    )
+
+    assert result["verified_date"] == "2026-07-03"
+    assert result["source"] == "meta/body"
+
+
 def test_extract_page_verified_date_prefers_lead_body_date_over_recent_content_footer():
     html = """
     <html>

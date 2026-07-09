@@ -245,6 +245,7 @@ PAGE_DATE_META_KEYS = {
     "published_time",
     "publish_time",
     "og:updated_time",
+    "og:release_date",
     "lastmod",
     "sailthru.date",
 }
