@@ -2340,6 +2340,49 @@ def title_match_score(item_title: str, page_title: str) -> float:
     return max(overlap, SequenceMatcher(None, item_norm, page_norm).ratio())
 
 
+GENERIC_TITLE_PATTERNS = (
+    r"^[\u4e00-\u9fff]{2,12}人民政府$",
+    r"^[\u4e00-\u9fff]{2,20}政策文件库$",
+    r"^[\u4e00-\u9fff]{2,20}通知公告$",
+    r"^[\u4e00-\u9fff]{2,20}新闻$",
+)
+
+
+def _looks_like_generic_title(title: str) -> bool:
+    cleaned = _strip_html_tags(title)
+    if not cleaned:
+        return True
+    normalized = normalize_title(cleaned)
+    if not normalized:
+        return True
+    return any(re.fullmatch(pattern, cleaned) for pattern in GENERIC_TITLE_PATTERNS)
+
+
+def _choose_better_page_title(item_title: str, page_titles: list[str]) -> str | None:
+    current = _strip_html_tags(item_title)
+    current_norm = normalize_title(current)
+    candidates = []
+    for signal in page_titles:
+        cleaned = _strip_html_tags(signal)
+        if not cleaned:
+            continue
+        if normalize_title(cleaned) == current_norm:
+            continue
+        if _looks_like_generic_title(cleaned):
+            continue
+        candidates.append(cleaned)
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda value: (
+            title_match_score(current, value),
+            len(normalize_title(value)),
+        ),
+        reverse=True,
+    )
+    return candidates[0]
+
+
 def check_url_title_match(
     item: Dict[str, Any],
     timeout: int = TITLE_MATCH_TIMEOUT_SECONDS,
@@ -2418,6 +2461,14 @@ def remove_title_mismatch_items(
                 "action": "排除",
             })
             continue
+        page_titles = result.get("page_titles") if isinstance(result.get("page_titles"), list) else []
+        replacement = _choose_better_page_title(str(item.get("title") or ""), [str(value) for value in page_titles])
+        if replacement and _looks_like_generic_title(str(item.get("title") or "")):
+            item = dict(item)
+            original_title = str(item.get("title") or "")
+            item["original_title"] = original_title
+            item["title"] = replacement
+            warnings.append(f"{original_title}: 已使用页面标题修正为 {replacement}")
         if result.get("warning"):
             warnings.append(f"{item.get('title', '未命名信息')}: {result['warning']}")
         kept.append(item)

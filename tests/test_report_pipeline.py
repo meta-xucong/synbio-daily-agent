@@ -2692,6 +2692,36 @@ def test_build_approved_title_match_can_be_explicitly_skipped(tmp_path, monkeypa
     assert any("[标题匹配]" in item["reason"] for item in with_gate["rejected"])
 
 
+def test_remove_title_mismatch_items_replaces_generic_title_with_page_title():
+    items = [{
+        "title": "北京市海淀区人民政府",
+        "url": "https://zyk.bjhd.gov.cn/ywdt/xwfbh/202607/t20260703_4820813.shtml",
+        "summary": "北京医药健康产业发布会。",
+        "type": "events",
+    }]
+
+    def fake_title_check(item):
+        return {
+            "ok": True,
+            "url": item["url"],
+            "page_titles": [
+                "北京市海淀区人民政府",
+                "1.13万亿！北京医药健康产业，领跑全国！",
+            ],
+            "score": 1.0,
+        }
+
+    kept, rejected, warnings = report_pipeline.remove_title_mismatch_items(
+        items,
+        title_check_func=fake_title_check,
+    )
+
+    assert not rejected
+    assert kept[0]["title"] == "1.13万亿！北京医药健康产业，领跑全国！"
+    assert kept[0]["original_title"] == "北京市海淀区人民政府"
+    assert any("已使用页面标题修正" in warning for warning in warnings)
+
+
 def test_render_markdown_report_funding_defaults_missing_fields():
     report = report_pipeline.render_markdown_report([
         {
