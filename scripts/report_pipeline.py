@@ -220,6 +220,8 @@ def infer_timeliness_type(item: Dict[str, Any], item_type: str, content_type: st
     effective_content_type = str(content_type or item.get("content_type") or "").strip().lower()
     if effective_content_type == "market_report":
         return "market_report"
+    if effective_content_type == "event_preview":
+        return "events"
     if _looks_like_policy_content(item):
         return "policy"
     text = " ".join(
@@ -1576,7 +1578,7 @@ class PageDateParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_name = tag.lower()
         attributes = {str(name).lower(): str(value or "") for name, value in attrs}
-        if tag_name in {"script", "style", "noscript", "svg"}:
+        if tag_name in {"head", "script", "style", "noscript", "svg"}:
             self._skip_text_depth += 1
         if tag_name == "meta":
             key = (
@@ -1592,7 +1594,7 @@ class PageDateParser(HTMLParser):
             self.time_dates.append(attributes["datetime"])
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() in {"script", "style", "noscript", "svg"} and self._skip_text_depth > 0:
+        if tag.lower() in {"head", "script", "style", "noscript", "svg"} and self._skip_text_depth > 0:
             self._skip_text_depth -= 1
 
     def handle_data(self, data: str) -> None:
@@ -1610,8 +1612,14 @@ def _parse_any_date(value: str) -> Optional[datetime]:
     parsed = parse_date(value)
     if parsed:
         return parsed
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip()
+    for date_format in ("%B %d, %Y", "%b %d, %Y"):
+        try:
+            return datetime.strptime(normalized, date_format)
+        except ValueError:
+            continue
     try:
-        parsed_email_date = parsedate_to_datetime(str(value or ""))
+        parsed_email_date = parsedate_to_datetime(normalized)
         if parsed_email_date is not None:
             return parsed_email_date.replace(tzinfo=None)
     except Exception:
@@ -1750,42 +1758,51 @@ def _is_close_to_search_date(candidate: datetime, search_date: str = "", *, max_
 
 
 def _header_window_date(text: str, title: str, search_date: str = "") -> Optional[datetime]:
+    """Return the date closest to an article heading, before generic metadata.
+
+    The visible page header is normally authored with the article and is more
+    trustworthy than generic metadata or the related-content area.  This
+    helper only identifies a structurally local candidate; the LLM date gate
+    still audits the returned evidence before an item can be sent.
+    """
     content = str(text or "")
     heading = str(title or "").strip()
     if not content:
         return None
     if heading:
         index = content.find(heading)
-        if index >= 0:
-            window = content[index:index + 260]
-        else:
-            window = content[:260]
+        if index < 0:
+            return None
+        start = max(0, index - 180)
+        window = content[start:index + 360]
+        heading_offset = index - start
     else:
         window = content[:260]
+        heading_offset = 0
 
-    datetime_patterns = [
+    datetime_patterns = (
         r"(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})\s+\d{1,2}:\d{2}(?::\d{2})?",
         r"(\d{4}年\d{1,2}月\d{1,2}日)\s+\d{1,2}:\d{2}(?::\d{2})?",
-    ]
-    matches = []
+        r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s*\d{4})",
+    )
+    matches: list[tuple[re.Match[str], datetime]] = []
     for pattern in datetime_patterns:
         for match in re.finditer(pattern, window, flags=re.IGNORECASE):
-            matches.append(match)
-    if not matches:
+            parsed = _parse_any_date(match.group(1))
+            if parsed and _is_reasonable_date(parsed):
+                matches.append((match, parsed))
+    if len(matches) != 1:
         return None
-    matches.sort(key=lambda m: m.start())
-    match = matches[0]
-    prefix = window[max(0, match.start() - 32):match.start()]
+    match, parsed = matches[0]
+    prefix = window[max(0, match.start() - 48):match.start()]
     if not re.search(r"[\u4e00-\u9fffA-Za-z]", prefix):
         return None
+    # A preceding full date is a strong ambiguity signal (for example, a
+    # copyright placeholder followed by a sidebar timestamp), so do not guess.
     earlier_slice = window[:match.start()]
-    for pattern in DATE_TEXT_PATTERNS:
-        if re.search(pattern, earlier_slice, flags=re.IGNORECASE):
-            return None
-    parsed = _parse_any_date(match.group(1))
-    if parsed and _is_reasonable_date(parsed):
-        return parsed
-    return None
+    if any(re.search(pattern, earlier_slice, flags=re.IGNORECASE) for pattern in DATE_TEXT_PATTERNS):
+        return None
+    return parsed
 
 
 def extract_page_verified_date(html: str, search_date: str = "", page_url: str = "") -> Dict[str, Any]:
@@ -1802,10 +1819,20 @@ def extract_page_verified_date(html: str, search_date: str = "", page_url: str =
     ]
     text = unescape(parser.visible_text())
     text = re.sub(r"\s+", " ", text)
-    title_hint = ""
-    title_match = re.search(r"<title[^>]*>(.*?)</title>", html or "", flags=re.IGNORECASE | re.DOTALL)
-    if title_match:
-        title_hint = unescape(re.sub(r"\s+", " ", title_match.group(1))).strip()
+    title_hints = extract_h1_title_signals(html or "")
+    for signal in extract_title_signals(html or ""):
+        title_hints.append(signal)
+        for separator in ("--", "|", "_", "-"):
+            if separator not in signal:
+                continue
+            shortened = signal.rsplit(separator, 1)[0].strip()
+            if len(shortened) >= 8:
+                title_hints.append(shortened)
+    title_hints = list(dict.fromkeys(hint for hint in title_hints if hint))
+    if not title_hints:
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", html or "", flags=re.IGNORECASE | re.DOTALL)
+        if title_match:
+            title_hints = [unescape(re.sub(r"\s+", " ", title_match.group(1))).strip()]
 
     context_dates: list[datetime] = []
     context_pattern = (
@@ -1820,14 +1847,16 @@ def extract_page_verified_date(html: str, search_date: str = "", page_url: str =
         if parsed:
             context_dates.append(parsed)
 
-    header_verified = _header_window_date(text, title_hint, search_date)
-    if header_verified:
-        return {
-            "verified_date": header_verified.strftime("%Y-%m-%d"),
-            "confidence": "high",
-            "source": "body_context",
-            "date_count": 1,
-        }
+    for title_hint in title_hints:
+        header_verified = _header_window_date(text, title_hint, search_date)
+        if header_verified:
+            return {
+                "verified_date": header_verified.strftime("%Y-%m-%d"),
+                "confidence": "high",
+                "source": "body_context",
+                "date_count": 1,
+                "evidence": f"article header near title: {title_hint[:180]} | {header_verified.strftime('%Y-%m-%d')}",
+            }
 
     meta_time_dates = meta_dates
     if meta_time_dates:
@@ -2364,6 +2393,7 @@ class HTMLTitleSignalExtractor(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.signals: list[str] = []
+        self.h1_signals: list[str] = []
         self._capture_tag: str | None = None
         self._capture_chunks: list[str] = []
         self._captured_tags: set[str] = set()
@@ -2392,7 +2422,12 @@ class HTMLTitleSignalExtractor(HTMLParser):
     def handle_endtag(self, tag):
         tag_name = str(tag or "").lower()
         if self._capture_tag == tag_name:
-            self._add_signal("".join(self._capture_chunks))
+            value = "".join(self._capture_chunks)
+            if tag_name == "h1":
+                signal = _strip_html_tags(value)
+                if signal and signal not in self.h1_signals:
+                    self.h1_signals.append(signal)
+            self._add_signal(value)
             self._captured_tags.add(tag_name)
             self._capture_tag = None
             self._capture_chunks = []
@@ -2404,6 +2439,14 @@ def extract_title_signals(html_text: str) -> List[str]:
     parser.feed(html_text or "")
     parser.close()
     return parser.signals
+
+
+def extract_h1_title_signals(html_text: str) -> List[str]:
+    """Return only visible H1 headings for article-local date verification."""
+    parser = HTMLTitleSignalExtractor()
+    parser.feed(html_text or "")
+    parser.close()
+    return parser.h1_signals
 
 
 def _title_tokens(text: str) -> set[str]:
@@ -2822,9 +2865,9 @@ def classify_content_type(item: Dict[str, Any], item_type: str) -> Tuple[str, st
     ).lower()
     if any(keyword in text for keyword in MARKET_REPORT_KEYWORDS):
         return "market_report", "市场研究/行业规模报告，主体是历史数据或预测，不是当日事件"
+    if _looks_like_event_preview_content(item):
+        return "event_preview", "活动预告"
     if item_type == "events":
-        if _looks_like_event_preview_content(item):
-            return "event_preview", "活动预告"
         return "news", "活动报道/产业报道，按新闻时效处理"
     return item_type, "沿用栏目类型"
 
@@ -4489,7 +4532,7 @@ def markdown_cell(value: object) -> str:
 _URL_PATTERN = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 
 
-def markdown_summary_cell(value: object, *, max_length: int = 300) -> str:
+def markdown_summary_cell(value: object, *, max_length: int = 160) -> str:
     text = str(value or "").replace("\n", " ").strip()
     if not text:
         return ""

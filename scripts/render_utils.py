@@ -18,7 +18,7 @@ def safe_text(value: object) -> str:
     return escape(str(value or ""), quote=True)
 
 
-def truncate_summary(value: object, max_length: int = 300) -> str:
+def truncate_summary(value: object, max_length: int = 160) -> str:
     """Truncate long summaries for H5/email display without breaking HTML."""
     text = str(value or "").strip()
     if len(text) <= max_length:

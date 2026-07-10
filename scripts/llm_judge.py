@@ -707,6 +707,8 @@ def _build_date_validation_prompt(
         "title": str(item.get("title", ""))[:300],
         "source": str(item.get("source", ""))[:120],
         "type": str(item.get("type", ""))[:40],
+        "content_type": str(item.get("content_type", ""))[:40],
+        "timeliness_type": str(item.get("timeliness_type", ""))[:40],
         "candidate_date": str(item.get("date", ""))[:40],
         "search_date": str(item.get("search_date", ""))[:40],
         "summary": str(item.get("summary", ""))[:2000],
@@ -718,6 +720,8 @@ def _build_date_validation_prompt(
         return (
             "You are the date-integrity gate for a synthetic-biology daily report.\n"
             "Decide whether candidate_json.candidate_date is likely the actual article publish date or actual event date.\n"
+            "date_verification.evidence is extracted from the original page next to its article heading. Treat it as primary evidence. If it conflicts with candidate_date, reject candidate_date and report the header date as suspected_actual_date.\n"
+            "If candidate_json.content_type is event_preview, first compare the event date stated in its title/summary with report_date. Reject when the event itself is already before report_date, even if its publication date is authentic.\n"
             "Reject dates that look like cached page time, footer/recent-content date, copyright date, project start/plan date, or another historical date mentioned inside the article.\n"
             "Accept only when the candidate_date likely matches the article's real publish date or the real event date being reported.\n"
             "Return strict JSON only, no Markdown. Schema:\n"
@@ -734,6 +738,8 @@ def _build_date_validation_prompt(
     return (
         "你是合成生物行业日报的日期审稿人。\n"
         "判断 candidate_date 是否像文章真正的发布日期或真正的事件日期。\n"
+        "date_verification.evidence 是从原页面文章标题附近提取的证据，应优先于通用元数据；若它与 candidate_date 冲突，必须判定 candidate_date 无效，并给出标题附近的真实日期。\n"
+        "若 candidate_json.content_type 为 event_preview，必须先把标题/摘要中的活动日期与 report_date 做日历比较；活动本身早于 report_date 时，即使发布日期真实也必须判定无效。\n"
         "如果它更像页脚最近内容日期、缓存时间、版权年份、项目计划日期、历史回顾日期，就判定为无效并建议排除。\n"
         "只有当 candidate_date 很像这篇文章自己的真实发布时间或活动真实日期时，才判定有效。\n"
         "必须输出纯 JSON，不要 Markdown。schema:\n"

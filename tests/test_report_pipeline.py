@@ -2203,6 +2203,73 @@ def test_extract_page_verified_date_uses_body_event_date_without_label():
     assert result["confidence"] == "high"
 
 
+def test_extract_page_verified_date_uses_h1_header_before_cache_metadata():
+    html = """
+    <html>
+      <head>
+        <meta property="article:published_time" content="2026-07-10T14:55:40+08:00">
+        <title>Portal page title</title>
+      </head>
+      <body>
+        <h1>Real article heading</h1>
+        <div>Future Consumer · 2023-09-07 16:49</div>
+        <p>Article body.</p>
+        <div>Related content dated 2026-07-09</div>
+      </body>
+    </html>
+    """
+
+    result = report_pipeline.extract_page_verified_date(html, page_url="https://example.com/article")
+
+    assert result["verified_date"] == "2023-09-07"
+    assert result["source"] == "body_context"
+    assert "article header near title" in result["evidence"]
+
+
+def test_extract_page_verified_date_uses_english_header_date_before_h1():
+    html = """
+    <html>
+      <head>
+        <meta property="article:modified_time" content="2026-07-09T10:00:00Z">
+        <title>Eliminating Data Silos</title>
+      </head>
+      <body>
+        <div>News | Videos | April 27, 2026</div>
+        <h1>Eliminating Data Silos</h1>
+        <p>Article body.</p>
+      </body>
+    </html>
+    """
+
+    result = report_pipeline.extract_page_verified_date(html, page_url="https://example.com/article")
+
+    assert result["verified_date"] == "2026-04-27"
+    assert result["source"] == "body_context"
+
+
+def test_event_preview_classification_overrides_misclassified_funding_bucket():
+    item = {
+        "title": "Synthetic biology forum will be held on July 3",
+        "summary": "Registration is open and the event agenda is available.",
+        "source_query": "synthetic biology funding 2026",
+        "source": "example.org",
+        "url": "https://example.org/events/forum",
+    }
+
+    content_type, _ = report_pipeline.classify_content_type(item, "research")
+    timeliness_type = report_pipeline.infer_timeliness_type(item, "research", content_type)
+
+    assert content_type == "event_preview"
+    assert timeliness_type == "events"
+
+
+def test_markdown_summary_cell_is_concise_for_report_tables():
+    summary = report_pipeline.markdown_summary_cell("x" * 300)
+
+    assert len(summary) == 160
+    assert summary.endswith("…")
+
+
 def test_verify_item_page_date_demotes_future_non_event_date_to_search_fallback():
     item = _item(
         title="金河生物项目公告",

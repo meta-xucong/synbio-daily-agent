@@ -41,6 +41,24 @@ def test_heuristic_rejects_basic_biology_without_engineering():
     assert "自然过程" in decision.reject_message() or "基础生物学" in decision.reject_message()
 
 
+def test_date_prompt_prioritizes_article_header_evidence_and_expired_events():
+    prompt = llm_judge._build_date_validation_prompt({
+        "title": "Synthetic biology forum",
+        "type": "events",
+        "content_type": "event_preview",
+        "date": "2026-07-10",
+        "summary": "The forum was held on July 3.",
+        "date_verification": {
+            "evidence": "article header near title: Synthetic biology forum | 2026-07-03",
+        },
+    }, "2026-07-10", ascii_safe=True)
+
+    assert "article heading" in prompt
+    assert "event_preview" in prompt
+    assert '"content_type": "event_preview"' in prompt
+    assert "2026-07-03" in prompt
+
+
 def test_heuristic_includes_engineered_cell_factory():
     decision = llm_judge.heuristic_relevance_decision({
         "title": "工程菌细胞工厂提升萜类化合物生物制造效率",
