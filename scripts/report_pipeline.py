@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 import glob
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit
 from urllib.request import Request, urlopen
 
 try:
@@ -43,6 +43,7 @@ try:
     from .console_utils import ensure_utf8_console
     from .ai_analysis_check import validate_ai_analysis
     from .render_utils import safe_url
+    from .url_identity import canonicalize_url, url_dedup_key
     from .llm_judge import Decision, is_synbio_relevant as _is_synbio_relevant_impl
     from .llm_judge import judge_item_relevance
     from .llm_judge import DateDecision, judge_item_date_validity
@@ -52,6 +53,7 @@ except ImportError:
     from console_utils import ensure_utf8_console
     from ai_analysis_check import validate_ai_analysis
     from render_utils import safe_url
+    from url_identity import canonicalize_url, url_dedup_key
     from llm_judge import Decision, is_synbio_relevant as _is_synbio_relevant_impl
     from llm_judge import judge_item_relevance
     from llm_judge import DateDecision, judge_item_date_validity
@@ -108,10 +110,6 @@ EMPTY_APPROVED_ERROR = "approved为空：本次没有任何可发送信息，必
 MISSING_SEARCH_STRATEGY_ERROR = "LLM搜索策略缺失：正式搜索日志必须配套 data/search_strategy_YYYY-MM-DD.json 并执行 llm_dynamic query"
 LLM_TRACE_ERROR = "approved缺少LLM领域审计痕迹：正式发送必须确认每条信息经过LLM/语义审计"
 DATE_VERIFICATION_ERROR = "approved缺少可信页面发布时间验证：正式发送不能只依赖搜索引擎日期或抓取日期"
-TRACKING_QUERY_PREFIXES = ("utm_",)
-TRACKING_QUERY_KEYS = {
-    "fbclid", "gclid", "mc_cid", "mc_eid", "igshid", "spm", "from", "ref",
-}
 DELETED_CONTENT_PATTERNS = [
     "文章已删除",
     "内容已删除",
@@ -696,7 +694,15 @@ def build_raw_from_search_log(search_log: Any, report_date: str | None = None) -
     raw = {item_type: [] for item_type in sorted(VALID_ITEM_TYPES)}
     seen_urls: set[str] = set()
     skipped = 0
+    history_skipped = 0
+    history_skip_reasons: dict[str, int] = {}
     for round_id, query, result in _search_result_dicts(search_log):
+        history = result.get("search_history") if isinstance(result, dict) else None
+        if isinstance(history, dict) and history.get("skip_downstream") is True:
+            history_skipped += 1
+            reason = str(history.get("reason") or "history_dedup")
+            history_skip_reasons[reason] = history_skip_reasons.get(reason, 0) + 1
+            continue
         item = normalize_search_result_to_raw_item(result, round_id, query=query, report_date=report_date)
         if not item:
             skipped += 1
@@ -712,6 +718,8 @@ def build_raw_from_search_log(search_log: Any, report_date: str | None = None) -
         "structured_results": len(_search_result_dicts(search_log)),
         "raw_items": count_raw_items(raw),
         "skipped_results": skipped,
+        "history_skipped_results": history_skipped,
+        "history_skip_reasons": history_skip_reasons,
     }
     return raw
 
@@ -1375,51 +1383,6 @@ def validate_raw_item(item: Dict[str, Any], item_type: str) -> Tuple[bool, str, 
         return False, f"[schema] type content mismatch: item does not look like {item_type}", normalized
 
     return True, "", normalized
-
-
-def canonicalize_url(url: str) -> str:
-    """Return a stable URL for equality checks while preserving article identity."""
-    parts = urlsplit(str(url or "").strip())
-    scheme = parts.scheme.lower()
-    netloc = parts.netloc.lower()
-    path = parts.path or "/"
-    query_pairs = []
-    for key, value in parse_qsl(parts.query, keep_blank_values=True):
-        key_lower = key.lower()
-        if key_lower in TRACKING_QUERY_KEYS or key_lower.startswith(TRACKING_QUERY_PREFIXES):
-            continue
-        query_pairs.append((key, value))
-    query = urlencode(query_pairs, doseq=True)
-    return urlunsplit((scheme, netloc, path, query, ""))
-
-
-def url_dedup_key(url: str) -> str:
-    """Return a permanent article identity key for sent-URL deduplication."""
-    raw_url = str(url or "").strip()
-    if not raw_url:
-        return ""
-    parts = urlsplit(raw_url)
-    hostname = (parts.hostname or "").lower()
-    if not hostname:
-        return ""
-    if hostname.startswith("www."):
-        hostname = hostname[4:]
-    path = re.sub(r"/{2,}", "/", parts.path or "/")
-    path = path.rstrip("/") or "/"
-
-    if hostname.endswith("36kr.com"):
-        match = re.search(r"/p/(\d+)", path)
-        if match:
-            return f"36kr:p:{match.group(1)}"
-
-    if hostname == "mp.weixin.qq.com":
-        params = dict(parse_qsl(parts.query, keep_blank_values=True))
-        biz = params.get("__biz") or params.get("biz")
-        mid = params.get("mid")
-        if biz and mid:
-            return f"weixin:{biz}:{mid}"
-
-    return f"{hostname}{path}".lower()
 
 
 def _item_url_dedup_keys(item: Dict[str, Any]) -> set[str]:

@@ -33,11 +33,25 @@ try:
     from .settings import CONFIG_DIR, DATA_DIR
     from .llm_judge import LLMClient
     from .llm_search_strategy import _llm_client_supports_thinking_disable
+    from .search_history import (
+        classify_and_record_result,
+        default_registry_path,
+        load_registry,
+        refresh_registry_from_artifacts,
+        save_registry,
+    )
 except ImportError:
     from console_utils import ensure_utf8_console
     from settings import CONFIG_DIR, DATA_DIR
     from llm_judge import LLMClient
     from llm_search_strategy import _llm_client_supports_thinking_disable
+    from search_history import (
+        classify_and_record_result,
+        default_registry_path,
+        load_registry,
+        refresh_registry_from_artifacts,
+        save_registry,
+    )
 
 
 ensure_utf8_console()
@@ -834,11 +848,13 @@ def execute_search_plan(
     llm_provider: Any | None = None,
     max_workers: int = DEFAULT_MAX_WORKERS,
     rpm: int | None = None,
+    search_history_registry: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     worker_count = _positive_int(max_workers, DEFAULT_MAX_WORKERS)
     base_rate_limiter = QueryRateLimiter(rpm)
     failed = False
     log_rounds: list[dict[str, Any]] = []
+    history_stats = {"checked": 0, "prior_seen": 0, "skipped_downstream": 0}
     for round_cfg in rounds:
         round_id = str(round_cfg.get("round") or "").strip()
         round_provider = llm_provider if round_cfg.get("requires_llm_web") and llm_provider is not None else provider
@@ -890,6 +906,26 @@ def execute_search_plan(
                     failed = True
                 query_entries[index] = entry
 
+        if search_history_registry is not None:
+            for entry in query_entries:
+                if not isinstance(entry, dict):
+                    continue
+                entry_history = {"checked": 0, "prior_seen": 0, "skipped_downstream": 0}
+                for result in entry.get("results", []) or []:
+                    if not isinstance(result, dict):
+                        continue
+                    history = classify_and_record_result(search_history_registry, result, date)
+                    result["search_history"] = history
+                    entry_history["checked"] += 1
+                    history_stats["checked"] += 1
+                    if history.get("prior_seen"):
+                        entry_history["prior_seen"] += 1
+                        history_stats["prior_seen"] += 1
+                    if history.get("skip_downstream"):
+                        entry_history["skipped_downstream"] += 1
+                        history_stats["skipped_downstream"] += 1
+                entry["history_dedup"] = entry_history
+
         log_rounds.append({
             "round": round_id,
             "theme": round_cfg.get("theme", ""),
@@ -908,6 +944,8 @@ def execute_search_plan(
         "limit": limit,
         "rounds": log_rounds,
     }
+    if search_history_registry is not None:
+        search_log["history_dedup"] = history_stats
     diagnostics: list[str] = []
     if llm_provider is not None and llm_provider.name == "llm_web":
         high_recall_errors = [
@@ -954,6 +992,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES)
     parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS, help="Bounded query concurrency for base provider rounds")
     parser.add_argument("--rpm", type=int, help="Optional request-per-minute cap for the base provider; Tavily defaults to a conservative free-plan-safe value")
+    parser.add_argument(
+        "--search-history-registry",
+        type=Path,
+        default=default_registry_path(DATA_DIR),
+        help="Persistent candidate history used to skip terminally reviewed URLs downstream",
+    )
+    parser.add_argument(
+        "--disable-search-history-dedup",
+        action="store_true",
+        help="Diagnostics only: do not annotate or downstream-skip previously reviewed search results",
+    )
     parser.add_argument("--allow-query-failures", action="store_true", help="Write failed queries but exit 0; not for production sends")
     parser.add_argument("--disable-high-recall", action="store_true", help="Diagnostics only: do not append llm_discovery/llm_gap_audit rounds")
     parser.add_argument(
@@ -972,6 +1021,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     try:
+        search_history_registry = None
+        history_bootstrap = None
+        if not args.disable_search_history_dedup:
+            search_history_registry = load_registry(args.search_history_registry)
+            history_bootstrap = refresh_registry_from_artifacts(
+                search_history_registry,
+                DATA_DIR,
+                before_date=args.date,
+            )
         provider = make_provider(
             args.provider,
             fixture=args.fixture,
@@ -1009,7 +1067,11 @@ def main(argv: list[str] | None = None) -> int:
             llm_provider=llm_provider,
             max_workers=_positive_int(args.max_workers, DEFAULT_MAX_WORKERS),
             rpm=args.rpm if args.rpm is not None else default_rpm_for_provider(provider.name),
+            search_history_registry=search_history_registry,
         )
+        if search_history_registry is not None:
+            save_registry(args.search_history_registry, search_history_registry)
+            search_log.setdefault("history_dedup", {})["bootstrap"] = history_bootstrap
         _write_json(args.output, search_log)
     except NoSearchProviderConfigured as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -1026,6 +1088,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     total = sum(len(round_entry.get("queries", [])) for round_entry in search_log["rounds"])
     print(f"search_log saved: {args.output} ({executed}/{total} queries executed, provider={provider.name})")
+    history_dedup = search_log.get("history_dedup")
+    if isinstance(history_dedup, dict):
+        print(
+            "search history dedup: "
+            f"checked={history_dedup.get('checked', 0)}, "
+            f"prior_seen={history_dedup.get('prior_seen', 0)}, "
+            f"downstream_skipped={history_dedup.get('skipped_downstream', 0)}"
+        )
     return 0 if ok else 1
 
 
